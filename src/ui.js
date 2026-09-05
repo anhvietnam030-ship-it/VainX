@@ -233,7 +233,7 @@ function roomActionRows(room) {
   const full = isFull(room);
   const ready = allReady(room) && full;
   const waitingForReady = full && !ready && room.status !== 'revealed';
-  const readyEmoji = ready ? '✅' : waitingForReady ? RAINBOW_EMOJI[(room._rainbowIndex ?? 0) % RAINBOW_EMOJI.length] : '🙋';
+  const readyEmoji = ready ? '✅' : waitingForReady ? (room._blinkOn ? '🔴' : '🟡') : '🙋';
 
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -250,8 +250,8 @@ function roomActionRows(room) {
       .setDisabled(room.status === 'revealed'),
     new ButtonBuilder()
       .setCustomId(`ready_${room.id}`)
-      .setLabel(ready ? 'Đã sẵn sàng!' : waitingForReady ? 'SẴN SÀNG NGAY!' : 'Sẵn sàng')
-      .setStyle(ready ? ButtonStyle.Success : ButtonStyle.Primary)
+      .setLabel(ready ? 'Đã sẵn sàng!' : waitingForReady ? (room._blinkOn ? '🔥 SẴN SÀNG NGAY! 🔥' : '⚡ SẴN SÀNG NGAY! ⚡') : 'Sẵn sàng')
+      .setStyle(ready ? ButtonStyle.Success : waitingForReady ? ButtonStyle.Danger : ButtonStyle.Primary)
       .setEmoji(readyEmoji)
       .setDisabled(!full || room.status === 'revealed'),
     new ButtonBuilder()
@@ -321,7 +321,7 @@ function roomActionRowsEN(room) {
   const full = isFull(room);
   const ready = allReady(room) && full;
   const waitingForReady = full && !ready && room.status !== 'revealed';
-  const readyEmoji = ready ? '✅' : waitingForReady ? RAINBOW_EMOJI[(room._rainbowIndex ?? 0) % RAINBOW_EMOJI.length] : '🙋';
+  const readyEmoji = ready ? '✅' : waitingForReady ? (room._blinkOn ? '🔴' : '🟡') : '🙋';
 
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -338,8 +338,8 @@ function roomActionRowsEN(room) {
       .setDisabled(room.status === 'revealed'),
     new ButtonBuilder()
       .setCustomId(`ready_${room.id}`)
-      .setLabel(ready ? 'Ready!' : waitingForReady ? 'READY NOW!' : 'Ready')
-      .setStyle(ready ? ButtonStyle.Success : ButtonStyle.Primary)
+      .setLabel(ready ? 'Ready!' : waitingForReady ? (room._blinkOn ? '🔥 READY NOW! 🔥' : '⚡ READY NOW! ⚡') : 'Ready')
+      .setStyle(ready ? ButtonStyle.Success : waitingForReady ? ButtonStyle.Danger : ButtonStyle.Primary)
       .setEmoji(readyEmoji)
       .setDisabled(!full || room.status === 'revealed')
   );

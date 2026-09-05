@@ -33,8 +33,10 @@ module.exports = {
   // 2 phút sau khi phát code -> tự reset phòng
   CODE_RESET_DELAY_MS: 2 * 60 * 1000,
 
-  // Nhấp nháy nút Play Game mỗi bao lâu (ms)
-  BLINK_INTERVAL_MS: 4000,
+  // Nhấp nháy nút Play Game / Sẵn sàng / Lấy code mỗi bao lâu (ms).
+  // Lưu ý: để quá thấp (dưới ~1s) có thể bị Discord giới hạn tốc độ (rate limit) khi
+  // nhiều phòng cùng nhấp nháy 1 lúc, vì mỗi lần nhấp nháy = 1 lần bot sửa lại tin nhắn.
+  BLINK_INTERVAL_MS: 1500,
 
   // (Phương án 3) Bắt buộc cân bằng team nếu có người chọn team trong phòng.
   // true = nếu có ai chọn team, TẤT CẢ phải chọn team và 2 team phải bằng số (capacity/2 - capacity/2).
