@@ -7,98 +7,177 @@ const {
 const config = require('../config');
 const { isFull, allReady, teamCounts, canRevealCode } = require('./rooms');
 
-function mainMenuEmbed() {
+const COLOR = {
+  empty: 0x99aab5, // xám - chưa có ai
+  partial: 0x5865f2, // blurple - đang có người, chưa đủ
+  fullWaiting: 0xfee75c, // vàng - đủ người, chờ sẵn sàng
+  fullBlocked: 0xe67e22, // cam - đủ người, kẹt vì team lệch
+  revealed: 0x57f287, // xanh lá - đã phát code
+};
+
+const MODE_EMOJI = { '3v3': '⚔️', '5v5': '🛡️' };
+
+function progressBar(current, total, size = 12) {
+  const filled = Math.max(0, Math.min(size, Math.round((current / total) * size)));
+  return '🟩'.repeat(filled) + '⬜'.repeat(size - filled);
+}
+
+function unixSeconds(ms) {
+  return Math.floor(ms / 1000);
+}
+
+// ---------- Bảng chọn chế độ ----------
+
+function mainMenuEmbed(stats) {
+  const line3v3 = stats
+    ? `⚔️ **3v3** — 4 phòng · mỗi phòng **6** người · đang chờ: **${stats['3v3'].current}/${stats['3v3'].total}**`
+    : '⚔️ **3v3** — 4 phòng · mỗi phòng **6** người';
+  const line5v5 = stats
+    ? `🛡️ **5v5** — 4 phòng · mỗi phòng **10** người · đang chờ: **${stats['5v5'].current}/${stats['5v5'].total}**`
+    : '🛡️ **5v5** — 4 phòng · mỗi phòng **10** người';
+
   return new EmbedBuilder()
-    .setTitle('🎮 Ghép đội Vainglory')
+    .setTitle('🎮 ✨ VAINGLORY LOBBY ✨')
     .setDescription(
-      'Chọn chế độ bạn muốn chơi bên dưới để xem danh sách phòng.\n\n' +
-        '**3v3** — 4 phòng, mỗi phòng 6 người\n' +
-        '**5v5** — 4 phòng, mỗi phòng 10 người'
+      '**Chọn chế độ bên dưới để bắt đầu ghép đội!**\n' +
+        '━━━━━━━━━━━━━━━━━━━━━━\n' +
+        `${line3v3}\n${line5v5}\n` +
+        '━━━━━━━━━━━━━━━━━━━━━━\n' +
+        '_Mỗi người chỉ ở được 1 phòng tại một thời điểm._'
     )
-    .setColor(0x5865f2);
+    .setColor(0x5865f2)
+    .setFooter({ text: stats ? '📊 Số liệu tại thời điểm đăng · 🏆 Vào trận ngay!' : '🏆 Ghép đội nhanh — Vào trận ngay!' });
 }
 
 function mainMenuRow() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId('menu_3v3').setLabel('3v3').setStyle(ButtonStyle.Primary).setEmoji('⚔️'),
-    new ButtonBuilder().setCustomId('menu_5v5').setLabel('5v5').setStyle(ButtonStyle.Danger).setEmoji('🛡️')
+    new ButtonBuilder().setCustomId('menu_3v3').setLabel('Chơi 3v3').setStyle(ButtonStyle.Primary).setEmoji('⚔️'),
+    new ButtonBuilder().setCustomId('menu_5v5').setLabel('Chơi 5v5').setStyle(ButtonStyle.Danger).setEmoji('🛡️')
   );
 }
+
+const NUM_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
 
 function roomListRows(roomsOfMode) {
   const row = new ActionRowBuilder();
   for (const room of roomsOfMode) {
     const full = isFull(room);
+    let style = ButtonStyle.Success;
+    if (room.status === 'revealed') style = ButtonStyle.Secondary;
+    else if (full) style = ButtonStyle.Danger;
+
     row.addComponents(
       new ButtonBuilder()
         .setCustomId(`openroom_${room.id}`)
-        .setLabel(`#${room.index} (${room.players.size}/${room.capacity})`)
-        .setStyle(full ? ButtonStyle.Secondary : ButtonStyle.Success)
-        .setDisabled(full && room.status !== 'waiting' ? true : false)
+        .setLabel(`Phòng ${room.index} · ${room.players.size}/${room.capacity}`)
+        .setEmoji(NUM_EMOJI[room.index - 1] || '🔹')
+        .setStyle(style)
+        .setDisabled(full)
     );
   }
   return [row];
 }
 
+// ---------- Panel phòng ----------
+
+function roomColor(room) {
+  if (room.status === 'revealed') return COLOR.revealed;
+  if (isFull(room)) return canRevealCode(room).ok ? COLOR.fullWaiting : COLOR.fullBlocked;
+  if (room.players.size > 0) return COLOR.partial;
+  return COLOR.empty;
+}
+
 function statusText(room) {
-  if (room.status === 'revealed') return '🟢 Đã phát code — chuẩn bị vào game!';
+  if (room.status === 'revealed') {
+    const deadline = room.revealedAt ? unixSeconds(room.revealedAt + config.CODE_RESET_DELAY_MS) : null;
+    return (
+      '🟢 **Đã phát code — chuẩn bị vào game!**\n' +
+      (deadline ? `♻️ Phòng tự reset ${`<t:${deadline}:R>`}` : '')
+    );
+  }
 
   if (isFull(room)) {
     const check = canRevealCode(room);
-    if (check.ok) return '🟡 Đã đủ người — chờ mọi người bấm Sẵn sàng';
-    const lines = [
-      `🟠 **Đã đủ người!** Có ${Math.round(config.READY_COUNTDOWN_MS / 60000)} phút để tất cả bấm Sẵn sàng.`,
-      '⚠️ Ai chưa Sẵn sàng khi hết giờ sẽ **bị đá khỏi phòng** để nhường slot cho người khác.',
-    ];
-    if (check.reason === 'team_unbalanced') lines.push('⚖️ Team đang **chưa cân bằng**, code sẽ không phát cho tới khi đều nhau.');
+    const deadline = room.fullAt ? unixSeconds(room.fullAt + config.READY_COUNTDOWN_MS) : null;
+
+    if (check.ok) {
+      return `🟡 **Đủ người rồi!** Đang chờ tất cả bấm Sẵn sàng để phát code...`;
+    }
+
+    const lines = [`🟠 **Đủ người!** Hạn bấm Sẵn sàng: ${deadline ? `<t:${deadline}:R>` : '—'}`];
+    lines.push('⚠️ Hết giờ mà chưa Sẵn sàng → **bị đá khỏi phòng**, nhường chỗ cho người khác.');
+    if (check.reason === 'team_unbalanced') lines.push('⚖️ Team đang **chưa cân bằng** — code sẽ không phát cho tới khi đều nhau.');
     if (check.reason === 'team_incomplete') lines.push('⚖️ Có người chưa chọn Team — cần **tất cả cùng chọn** hoặc **không ai chọn** team.');
     return lines.join('\n');
   }
 
-  return '⚪ Đang chờ người tham gia';
+  if (room.players.size > 0) {
+    const deadline = room.firstJoinAt ? unixSeconds(room.firstJoinAt + room.timeoutMs) : null;
+    return (
+      '🔵 Đang chờ thêm người tham gia...\n' +
+      (deadline ? `🕐 Tự động reset nếu chưa đủ người: <t:${deadline}:R>` : '')
+    );
+  }
+  return '⚪ Phòng trống — hãy là người đầu tiên!';
 }
 
 function playerLine(player) {
-  const teamTag = player.team ? `**[Team ${player.team}]**` : '_(chưa chọn team)_';
-  const readyTag = player.ready ? '✅ Sẵn sàng' : '❌ Chưa sẵn sàng';
-  return `• <@${player.id ?? ''}> ${teamTag} — ${readyTag}`;
+  const readyTag = player.ready ? '✅' : '⌛';
+  return `${readyTag} <@${player.id ?? ''}>`;
+}
+
+function teamFieldValue(room, team) {
+  const list = Array.from(room.players.entries())
+    .filter(([, p]) => p.team === team)
+    .map(([id, p]) => playerLine({ ...p, id }));
+  return list.length ? list.join('\n') : '_Trống_';
+}
+
+function noneTeamFieldValue(room) {
+  const list = Array.from(room.players.entries())
+    .filter(([, p]) => !p.team)
+    .map(([id, p]) => playerLine({ ...p, id }));
+  return list.length ? list.join('\n') : '_Trống_';
 }
 
 function roomEmbed(room) {
+  const modeEmoji = MODE_EMOJI[room.mode] || '🎮';
+  const { team1, team2, none } = teamCounts(room);
+  const usingTeams = team1 > 0 || team2 > 0;
+
   const embed = new EmbedBuilder()
-    .setTitle(`${room.label} — ${room.players.size}/${room.capacity}`)
-    .setColor(room.status === 'revealed' ? 0x57f287 : isFull(room) ? 0xfee75c : 0x5865f2)
-    .setDescription(statusText(room));
-
-  if (room.players.size > 0) {
-    const lines = Array.from(room.players.entries()).map(([id, p]) =>
-      playerLine({ ...p, id })
+    .setColor(roomColor(room))
+    .setTitle(`${modeEmoji}  ${room.label}`)
+    .setDescription(
+      `${progressBar(room.players.size, room.capacity)}\n` +
+        `**${room.players.size} / ${room.capacity}** người · ${statusText(room)}`
     );
-    embed.addFields({ name: 'Người chơi', value: lines.join('\n').slice(0, 1024) });
 
-    const { team1, team2, none } = teamCounts(room);
-    if (team1 > 0 || team2 > 0) {
-      embed.addFields({
-        name: 'Team',
-        value: `Team 1: **${team1}** — Team 2: **${team2}** — Chưa chọn: **${none}**`,
-      });
-    }
+  if (room.players.size === 0) {
+    embed.addFields({ name: '👥 Người chơi', value: '_Chưa có ai đăng ký — bấm Gia nhập để bắt đầu!_' });
+  } else if (usingTeams) {
+    embed.addFields(
+      { name: '🔵 Team 1', value: teamFieldValue(room, 1), inline: true },
+      { name: '🔴 Team 2', value: teamFieldValue(room, 2), inline: true },
+      { name: '⚪ Chưa chọn', value: noneTeamFieldValue(room), inline: true }
+    );
   } else {
-    embed.addFields({ name: 'Người chơi', value: '_Chưa có ai đăng ký_' });
+    const list = Array.from(room.players.entries()).map(([id, p]) => playerLine({ ...p, id }));
+    embed.addFields({ name: '👥 Người chơi', value: list.join('\n').slice(0, 1024) });
   }
 
   if (room.status === 'revealed' && room.code) {
     embed.addFields({
       name: '🔑 Code phòng',
-      value:
-        'Bấm nút **"📋 Lấy code của tôi"** bên dưới để nhận mã riêng của bạn (dễ copy).\n' +
-        `Phòng sẽ tự reset sau ${Math.round(config.CODE_RESET_DELAY_MS / 1000)} giây.`,
+      value: '👉 Bấm **"📋 Lấy code của tôi"** bên dưới để nhận mã riêng, dễ copy vào game.',
     });
   }
 
-  embed.setFooter({
-    text: `Timeout tự reset khi chưa đủ người: ${Math.round(room.timeoutMs / 60000)} phút`,
-  });
+  embed
+    .setFooter({
+      text: `ID: ${room.id}  •  Timeout chờ đủ người: ${Math.round(room.timeoutMs / 60000)} phút`,
+    })
+    .setTimestamp();
 
   return embed;
 }
@@ -113,34 +192,52 @@ function roomActionRows(room) {
       .setLabel('Gia nhập')
       .setStyle(ButtonStyle.Success)
       .setEmoji('➕')
-      .setDisabled(full),
+      .setDisabled(full || room.status === 'revealed'),
     new ButtonBuilder()
       .setCustomId(`leave_${room.id}`)
       .setLabel('Rời đi')
       .setStyle(ButtonStyle.Secondary)
-      .setEmoji('🚪'),
+      .setEmoji('🚪')
+      .setDisabled(room.status === 'revealed'),
     new ButtonBuilder()
       .setCustomId(`ready_${room.id}`)
-      .setLabel('Sẵn sàng')
+      .setLabel(ready ? 'Đã sẵn sàng!' : 'Sẵn sàng')
       .setStyle(ready ? ButtonStyle.Success : ButtonStyle.Primary)
       .setEmoji(ready ? '✅' : '🙋')
+      .setDisabled(room.status === 'revealed')
   );
 
   const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`team1_${room.id}`).setLabel('Team 1').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`team2_${room.id}`).setLabel('Team 2').setStyle(ButtonStyle.Danger),
-    new ButtonBuilder().setCustomId(`teamnone_${room.id}`).setLabel('Không chọn team').setStyle(ButtonStyle.Secondary)
+    new ButtonBuilder()
+      .setCustomId(`team1_${room.id}`)
+      .setLabel('Team 1')
+      .setEmoji('🔵')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`team2_${room.id}`)
+      .setLabel('Team 2')
+      .setEmoji('🔴')
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`teamnone_${room.id}`)
+      .setLabel('Bỏ chọn team')
+      .setEmoji('⚪')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(room.status === 'revealed')
   );
 
   const canPlay = room.status === 'revealed';
+  const sparkle = canPlay && room._blinkOn ? ' ✨' : '';
   const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setLabel(canPlay ? (room._blinkOn ? '📱 Chơi ngay (iOS)' : '📱 Chơi ngay (iOS) ✨') : '📱 Chơi (iOS)')
+      .setLabel(canPlay ? `📱 Chơi ngay (iOS)${sparkle}` : '📱 Chơi (iOS)')
       .setStyle(ButtonStyle.Link)
       .setURL(config.IOS_STORE_URL)
       .setDisabled(!canPlay),
     new ButtonBuilder()
-      .setLabel(canPlay ? (room._blinkOn ? '🤖 Chơi ngay (Android)' : '🤖 Chơi ngay (Android) ✨') : '🤖 Chơi (Android)')
+      .setLabel(canPlay ? `🤖 Chơi ngay (Android)${sparkle}` : '🤖 Chơi (Android)')
       .setStyle(ButtonStyle.Link)
       .setURL(config.ANDROID_STORE_URL)
       .setDisabled(!canPlay)
@@ -153,7 +250,8 @@ function roomActionRows(room) {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`copycode_${room.id}`)
-          .setLabel('📋 Lấy code của tôi')
+          .setLabel('Lấy code của tôi')
+          .setEmoji('📋')
           .setStyle(ButtonStyle.Success)
       )
     );
@@ -168,4 +266,5 @@ module.exports = {
   roomListRows,
   roomEmbed,
   roomActionRows,
+  progressBar,
 };

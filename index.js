@@ -1,8 +1,3 @@
-const http = require('http');
-http.createServer((req, res) => {
-  res.write("Bot is alive!");
-  res.end();
-}).listen(process.env.PORT || 3000);
 const {
   Client,
   GatewayIntentBits,
@@ -26,6 +21,14 @@ const {
 } = require('./src/rooms');
 const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows } = require('./src/ui');
 const persistence = require('./src/persistence');
+const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
+
+// Mở server HTTP nhỏ để nền tảng hosting kiểu "Web Service" (Render, ...) không báo
+// port scan timeout. Nếu chạy trên máy riêng / VPS / Background Worker thì dòng này
+// vô hại, chỉ tốn 1 cổng cục bộ.
+startKeepAliveServer();
+// Tự ping chính mình mỗi 10 phút để hạn chế bị Render spin-down (xem ghi chú trong keepalive.js).
+startSelfPing();
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 initRooms();
@@ -318,7 +321,15 @@ async function handleSlashCommand(interaction) {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
-    await interaction.channel.send({ embeds: [mainMenuEmbed()], components: [mainMenuRow()] });
+    const statsFor = (mode) => {
+      const list = getRoomsByMode(mode);
+      return {
+        current: list.reduce((sum, r) => sum + r.players.size, 0),
+        total: list.reduce((sum, r) => sum + r.capacity, 0),
+      };
+    };
+    const stats = { '3v3': statsFor('3v3'), '5v5': statsFor('5v5') };
+    await interaction.channel.send({ embeds: [mainMenuEmbed(stats)], components: [mainMenuRow()] });
     return interaction.reply({ content: '✅ Đã đăng bảng chọn phòng.', ephemeral: true });
   }
 
