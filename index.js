@@ -371,6 +371,80 @@ async function handleSlashCommand(interaction) {
     });
   }
 
+  if (commandName === 'setup-phong') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const mode = interaction.options.getString('che_do', true);
+    const roomsOfMode = getRoomsByMode(mode);
+
+    await interaction.reply({
+      content: `✅ Đang đăng 4 panel phòng **${mode.toUpperCase()}** vào kênh này...`,
+      ephemeral: true,
+    });
+
+    for (const room of roomsOfMode) {
+      // Bỏ liên kết panel cũ (nếu có ở kênh khác) để panel mới luôn được tạo tại đúng kênh này.
+      room.panelChannelId = null;
+      room.panelMessageId = null;
+      await renderRoom(room, interaction.channel);
+    }
+    return;
+  }
+
+  if (commandName === 'test-fill') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh test này.', ephemeral: true });
+    }
+    const roomId = interaction.options.getString('phong', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+    if (room.status === 'revealed') {
+      return interaction.reply({
+        content: '❌ Phòng đang ở trạng thái đã phát code. Dùng /reset-room trước rồi thử lại.',
+        ephemeral: true,
+      });
+    }
+
+    const soNguoiInput = interaction.options.getInteger('so_nguoi');
+    const cho_trong = room.capacity - room.players.size;
+    const needed = Math.max(0, Math.min(soNguoiInput ?? cho_trong, cho_trong));
+
+    if (needed <= 0) {
+      return interaction.reply({ content: 'ℹ️ Phòng đã đủ người rồi (hoặc bạn xin thêm 0 người).', ephemeral: true });
+    }
+
+    const wasEmpty = room.players.size === 0;
+
+    for (let i = 1; i <= needed; i++) {
+      const fakeId = `9${Date.now()}${i}`.slice(0, 18); // id số giả, không trùng user thật
+      room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true });
+    }
+
+    const channel = interaction.channel;
+    if (wasEmpty) {
+      room.firstJoinAt = Date.now();
+      scheduleInactivityTimeout(room, channel);
+    }
+
+    await renderRoom(room, channel);
+
+    if (isFull(room)) {
+      await announceRoomFull(room, channel);
+      scheduleReadyCountdown(room, channel);
+      await tryRevealCode(room, channel);
+    }
+
+    return interaction.reply({
+      content:
+        `✅ Đã thêm **${needed}** người giả (auto Sẵn sàng) vào **${room.label}**.\n` +
+        `Giờ bạn chỉ cần tự bấm **Gia nhập** (nếu chưa) và **Sẵn sàng** phần của mình để phòng tự phát code.`,
+      ephemeral: true,
+    });
+  }
+
   if (commandName === 'reset-room') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới ép reset phòng được.', ephemeral: true });

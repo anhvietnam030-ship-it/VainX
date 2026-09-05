@@ -27,6 +27,34 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName('setup-phong')
+    .setDescription('Đăng thẳng 4 panel phòng của 1 chế độ vào kênh này (chỉ admin)')
+    .addStringOption((opt) =>
+      opt
+        .setName('che_do')
+        .setDescription('Chế độ muốn đăng panel')
+        .addChoices({ name: '3v3', value: '3v3' }, { name: '5v5', value: '5v5' })
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('test-fill')
+    .setDescription('[TEST] Tự nhét người chơi giả (đã sẵn sàng) vào phòng để test 1 mình (chỉ admin)')
+    .addStringOption((opt) =>
+      opt
+        .setName('phong')
+        .setDescription('ID phòng, ví dụ: 3v3-1, 5v5-4')
+        .setRequired(true)
+    )
+    .addIntegerOption((opt) =>
+      opt
+        .setName('so_nguoi')
+        .setDescription('Số người giả muốn thêm (để trống = tự lấp đầy phòng)')
+        .setMinValue(1)
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
     .setName('reset-room')
     .setDescription('Ép reset một phòng cụ thể ngay lập tức (chỉ admin)')
     .addStringOption((opt) =>
