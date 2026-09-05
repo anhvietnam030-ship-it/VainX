@@ -37,6 +37,14 @@ const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows, roo
 const persistence = require('./src/persistence');
 const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 
+// Chọn text theo ngôn ngữ Discord client của người bấm nút (chỉ áp dụng được cho
+// các phản hồi ephemeral - riêng người bấm mới thấy). Không dùng được cho tin nhắn
+// công khai trong kênh hay embed panel phòng, vì những cái đó hiển thị chung cho
+// tất cả mọi người, Discord không cho hiển thị khác nhau theo từng người xem.
+function t(interaction, vi, en) {
+  return interaction.locale === 'vi' ? vi : en;
+}
+
 // Mở server HTTP nhỏ để nền tảng hosting kiểu "Web Service" (Render, ...) không báo
 // port scan timeout. Nếu chạy trên máy riêng / VPS / Background Worker thì dòng này
 // vô hại, chỉ tốn 1 cổng cục bộ.
@@ -726,7 +734,11 @@ async function handleButton(interaction) {
     const mode = customId.split('_')[1];
     const roomsOfMode = getRoomsByMode(mode);
     return interaction.reply({
-      content: `Chọn 1 trong 4 phòng **${mode.toUpperCase()}** để tham gia:`,
+      content: t(
+        interaction,
+        `Chọn 1 trong 4 phòng **${mode.toUpperCase()}** để tham gia:`,
+        `Pick one of the 4 **${mode.toUpperCase()}** rooms to join:`
+      ),
       components: roomListRows(roomsOfMode),
       ephemeral: true,
     });
@@ -754,7 +766,7 @@ async function handleButton(interaction) {
   if (customId.startsWith('translate_')) {
     const roomId = customId.replace('translate_', '');
     const room = getRoom(roomId);
-    if (!room) return interaction.reply({ content: '❌ Phòng không tồn tại.', ephemeral: true });
+    if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
     return interaction.reply({
       content: '🌐 English buttons (only visible to you):',
       components: roomActionRowsEN(room),
@@ -764,22 +776,25 @@ async function handleButton(interaction) {
   if (customId.startsWith('invite_')) {
     const roomId = customId.replace('invite_', '');
     const room = getRoom(roomId);
-    if (!room) return interaction.reply({ content: '❌ Phòng không tồn tại.', ephemeral: true });
+    if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
     if (room.status === 'revealed') {
-      return interaction.reply({ content: '❌ Phòng đã phát code, không mời thêm được nữa.', ephemeral: true });
+      return interaction.reply({
+        content: t(interaction, '❌ Phòng đã phát code, không mời thêm được nữa.', "❌ The code has been revealed, you can't invite anyone else now."),
+        ephemeral: true,
+      });
     }
     if (isFull(room)) {
-      return interaction.reply({ content: '❌ Phòng đã đầy rồi.', ephemeral: true });
+      return interaction.reply({ content: t(interaction, '❌ Phòng đã đầy rồi.', '❌ This room is full.'), ephemeral: true });
     }
 
     const select = new UserSelectMenuBuilder()
       .setCustomId(`inviteselect_${room.id}`)
-      .setPlaceholder('Chọn bạn muốn mời vào phòng này')
+      .setPlaceholder(t(interaction, 'Chọn bạn muốn mời vào phòng này', 'Pick a friend to invite to this room'))
       .setMinValues(1)
       .setMaxValues(1);
 
     return interaction.reply({
-      content: `📨 Chọn người bạn muốn mời vào **${room.label}**:`,
+      content: t(interaction, `📨 Chọn người bạn muốn mời vào **${room.label}**:`, `📨 Pick a friend to invite to **${room.label}**:`),
       components: [new ActionRowBuilder().addComponents(select)],
       ephemeral: true,
     });
@@ -792,25 +807,32 @@ async function handleUserSelectMenu(interaction) {
 
   const roomId = customId.replace('inviteselect_', '');
   const room = getRoom(roomId);
-  if (!room) return interaction.update({ content: '❌ Phòng không tồn tại.', components: [] });
+  if (!room) return interaction.update({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), components: [] });
 
   const targetUser = interaction.users.first();
-  if (!targetUser) return interaction.update({ content: '❌ Chưa chọn ai cả.', components: [] });
+  if (!targetUser) return interaction.update({ content: t(interaction, '❌ Chưa chọn ai cả.', "❌ You didn't pick anyone."), components: [] });
 
   if (room.status === 'revealed') {
-    return interaction.update({ content: '❌ Phòng đã phát code, không mời thêm được nữa.', components: [] });
+    return interaction.update({
+      content: t(interaction, '❌ Phòng đã phát code, không mời thêm được nữa.', "❌ The code has been revealed, you can't invite anyone else now."),
+      components: [],
+    });
   }
   if (isFull(room)) {
-    return interaction.update({ content: '❌ Phòng đã đầy rồi.', components: [] });
+    return interaction.update({ content: t(interaction, '❌ Phòng đã đầy rồi.', '❌ This room is full.'), components: [] });
   }
   if (isBanned(room, targetUser.id)) {
     return interaction.update({
-      content: `❌ <@${targetUser.id}> đang bị cấm khỏi **${room.label}**, không mời được.`,
+      content: t(
+        interaction,
+        `❌ <@${targetUser.id}> đang bị cấm khỏi **${room.label}**, không mời được.`,
+        `❌ <@${targetUser.id}> is banned from **${room.label}**, can't invite them.`
+      ),
       components: [],
     });
   }
   if (targetUser.id === interaction.user.id) {
-    return interaction.update({ content: '❌ Không thể tự mời chính mình 😄.', components: [] });
+    return interaction.update({ content: t(interaction, '❌ Không thể tự mời chính mình 😄.', "❌ You can't invite yourself 😄."), components: [] });
   }
 
   const joinRow = new ActionRowBuilder().addComponents(
@@ -826,7 +848,10 @@ async function handleUserSelectMenu(interaction) {
     components: [joinRow],
   });
 
-  return interaction.update({ content: `✅ Đã gửi lời mời cho <@${targetUser.id}>.`, components: [] });
+  return interaction.update({
+    content: t(interaction, `✅ Đã gửi lời mời cho <@${targetUser.id}>.`, `✅ Invite sent to <@${targetUser.id}>.`),
+    components: [],
+  });
 }
 
 function splitTeamCustomId(customId) {
@@ -837,18 +862,26 @@ function splitTeamCustomId(customId) {
 
 async function joinRoom(interaction, roomId) {
   const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: '❌ Phòng không tồn tại.', ephemeral: true });
+  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
 
   if (isBanned(room, interaction.user.id)) {
     return interaction.reply({
-      content: `❌ Bạn đã bị cấm tham gia **${room.label}** (vẫn vào được các phòng khác bình thường).`,
+      content: t(
+        interaction,
+        `❌ Bạn đã bị cấm tham gia **${room.label}** (vẫn vào được các phòng khác bình thường).`,
+        `❌ You're banned from **${room.label}** (you can still join other rooms).`
+      ),
       ephemeral: true,
     });
   }
 
   if (config.JOIN_ROLE_ID && !interaction.member.roles?.cache?.has(config.JOIN_ROLE_ID)) {
     return interaction.reply({
-      content: `❌ Bạn cần role <@&${config.JOIN_ROLE_ID}> mới được tham gia phòng.`,
+      content: t(
+        interaction,
+        `❌ Bạn cần role <@&${config.JOIN_ROLE_ID}> mới được tham gia phòng.`,
+        `❌ You need the <@&${config.JOIN_ROLE_ID}> role to join a room.`
+      ),
       ephemeral: true,
     });
   }
@@ -856,19 +889,27 @@ async function joinRoom(interaction, roomId) {
   const existing = findRoomOfUser(interaction.user.id);
   if (existing && existing.id !== room.id) {
     return interaction.reply({
-      content: `⚠️ Bạn đang ở **${existing.label}** rồi. Hãy rời phòng đó trước khi vào phòng khác.`,
+      content: t(
+        interaction,
+        `⚠️ Bạn đang ở **${existing.label}** rồi. Hãy rời phòng đó trước khi vào phòng khác.`,
+        `⚠️ You're already in **${existing.label}**. Leave that room first before joining another one.`
+      ),
       ephemeral: true,
     });
   }
   if (existing && existing.id === room.id) {
-    return interaction.reply({ content: 'ℹ️ Bạn đã ở trong phòng này rồi.', ephemeral: true });
+    return interaction.reply({ content: t(interaction, 'ℹ️ Bạn đã ở trong phòng này rồi.', 'ℹ️ You are already in this room.'), ephemeral: true });
   }
   if (isFull(room)) {
-    return interaction.reply({ content: '❌ Phòng đã đủ người.', ephemeral: true });
+    return interaction.reply({ content: t(interaction, '❌ Phòng đã đủ người.', '❌ This room is full.'), ephemeral: true });
   }
   if (room.status === 'revealed') {
     return interaction.reply({
-      content: '❌ Phòng đang chuẩn bị vào game, không thể tham gia lúc này.',
+      content: t(
+        interaction,
+        '❌ Phòng đang chuẩn bị vào game, không thể tham gia lúc này.',
+        "❌ This room is about to start the game, you can't join right now."
+      ),
       ephemeral: true,
     });
   }
@@ -894,18 +935,25 @@ async function joinRoom(interaction, roomId) {
     scheduleReadyCountdown(room, channel);
   }
 
-  return interaction.reply({ content: `✅ Bạn đã gia nhập **${room.label}**.`, ephemeral: true });
+  return interaction.reply({
+    content: t(interaction, `✅ Bạn đã gia nhập **${room.label}**.`, `✅ You joined **${room.label}**.`),
+    ephemeral: true,
+  });
 }
 
 async function leaveRoom(interaction, roomId) {
   const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: '❌ Phòng không tồn tại.', ephemeral: true });
+  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
   if (!room.players.has(interaction.user.id)) {
-    return interaction.reply({ content: 'ℹ️ Bạn không ở trong phòng này.', ephemeral: true });
+    return interaction.reply({ content: t(interaction, 'ℹ️ Bạn không ở trong phòng này.', 'ℹ️ You are not in this room.'), ephemeral: true });
   }
   if (room.status === 'revealed') {
     return interaction.reply({
-      content: '❌ Phòng đã phát code, không thể rời lúc này. Chờ phòng tự reset nhé.',
+      content: t(
+        interaction,
+        '❌ Phòng đã phát code, không thể rời lúc này. Chờ phòng tự reset nhé.',
+        "❌ The code has already been revealed, you can't leave right now. Wait for the room to reset."
+      ),
       ephemeral: true,
     });
   }
@@ -923,21 +971,33 @@ async function leaveRoom(interaction, roomId) {
     resetRoom(room);
   }
   await renderRoom(room, channel);
-  return interaction.reply({ content: `✅ Bạn đã rời **${room.label}**.`, ephemeral: true });
+  return interaction.reply({
+    content: t(interaction, `✅ Bạn đã rời **${room.label}**.`, `✅ You left **${room.label}**.`),
+    ephemeral: true,
+  });
 }
 
 async function toggleReady(interaction, roomId) {
   const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: '❌ Phòng không tồn tại.', ephemeral: true });
+  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
   const player = room.players.get(interaction.user.id);
   if (!player) {
-    return interaction.reply({ content: '⚠️ Bạn cần **Gia nhập** phòng trước khi bấm Sẵn sàng.', ephemeral: true });
+    return interaction.reply({
+      content: t(interaction, '⚠️ Bạn cần **Gia nhập** phòng trước khi bấm Sẵn sàng.', '⚠️ You need to **Join** the room before hitting Ready.'),
+      ephemeral: true,
+    });
   }
   if (room.status === 'revealed') {
-    return interaction.reply({ content: 'ℹ️ Phòng đã phát code rồi, chờ vòng sau nhé.', ephemeral: true });
+    return interaction.reply({
+      content: t(interaction, 'ℹ️ Phòng đã phát code rồi, chờ vòng sau nhé.', 'ℹ️ The code has already been revealed, wait for the next round.'),
+      ephemeral: true,
+    });
   }
   if (!checkCooldown(interaction.user.id)) {
-    return interaction.reply({ content: '⏳ Bạn thao tác hơi nhanh, đợi 1-2 giây rồi thử lại.', ephemeral: true });
+    return interaction.reply({
+      content: t(interaction, '⏳ Bạn thao tác hơi nhanh, đợi 1-2 giây rồi thử lại.', "⏳ You're clicking too fast, wait 1-2 seconds and try again."),
+      ephemeral: true,
+    });
   }
 
   player.ready = !player.ready;
@@ -945,29 +1005,42 @@ async function toggleReady(interaction, roomId) {
   await renderRoom(room, channel);
   await tryRevealCode(room, channel);
 
-  let extra = '';
+  let extra = t(interaction, '', '');
   if (room.status === 'waiting' && isFull(room) && allReady(room)) {
-    extra = '\n⚖️ Team hiện chưa cân bằng nên code chưa được phát — tự đổi team hoặc chờ người khác đổi.';
+    extra = t(
+      interaction,
+      '\n⚖️ Team hiện chưa cân bằng nên code chưa được phát — tự đổi team hoặc chờ người khác đổi.',
+      "\n⚖️ Teams aren't balanced yet so the code hasn't been revealed — change team yourself or wait for someone else to."
+    );
   }
 
   return interaction.reply({
-    content: (player.ready ? '✅ Bạn đã sẵn sàng.' : '↩️ Bạn đã bỏ trạng thái sẵn sàng.') + extra,
+    content: t(interaction, player.ready ? '✅ Bạn đã sẵn sàng.' : '↩️ Bạn đã bỏ trạng thái sẵn sàng.', player.ready ? '✅ You are ready.' : '↩️ You are no longer ready.') + extra,
     ephemeral: true,
   });
 }
 
 async function setTeam(interaction, roomId, team) {
   const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: '❌ Phòng không tồn tại.', ephemeral: true });
+  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
   const player = room.players.get(interaction.user.id);
   if (!player) {
-    return interaction.reply({ content: '⚠️ Bạn cần **Gia nhập** phòng trước khi chọn team.', ephemeral: true });
+    return interaction.reply({
+      content: t(interaction, '⚠️ Bạn cần **Gia nhập** phòng trước khi chọn team.', '⚠️ You need to **Join** the room before picking a team.'),
+      ephemeral: true,
+    });
   }
   if (room.status === 'revealed') {
-    return interaction.reply({ content: 'ℹ️ Phòng đã phát code rồi, không đổi team được nữa.', ephemeral: true });
+    return interaction.reply({
+      content: t(interaction, 'ℹ️ Phòng đã phát code rồi, không đổi team được nữa.', "ℹ️ The code has already been revealed, you can't change team anymore."),
+      ephemeral: true,
+    });
   }
   if (!checkCooldown(interaction.user.id)) {
-    return interaction.reply({ content: '⏳ Bạn thao tác hơi nhanh, đợi 1-2 giây rồi thử lại.', ephemeral: true });
+    return interaction.reply({
+      content: t(interaction, '⏳ Bạn thao tác hơi nhanh, đợi 1-2 giây rồi thử lại.', "⏳ You're clicking too fast, wait 1-2 seconds and try again."),
+      ephemeral: true,
+    });
   }
 
   player.team = team;
@@ -976,23 +1049,29 @@ async function setTeam(interaction, roomId, team) {
   await tryRevealCode(room, channel);
 
   return interaction.reply({
-    content: team ? `✅ Bạn đã chọn **Team ${team}**.` : '✅ Bạn chọn không phân team.',
+    content: team
+      ? t(interaction, `✅ Bạn đã chọn **Team ${team}**.`, `✅ You picked **Team ${team}**.`)
+      : t(interaction, '✅ Bạn chọn không phân team.', "✅ You cleared your team selection."),
     ephemeral: true,
   });
 }
 
 async function giveCode(interaction, roomId) {
   const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: '❌ Phòng không tồn tại.', ephemeral: true });
+  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
   if (room.status !== 'revealed' || !room.code) {
-    return interaction.reply({ content: 'ℹ️ Phòng chưa có code.', ephemeral: true });
+    return interaction.reply({ content: t(interaction, 'ℹ️ Phòng chưa có code.', "ℹ️ This room doesn't have a code yet."), ephemeral: true });
   }
   const personal = formatPersonalCode(room, interaction.user.id);
   if (!personal) {
-    return interaction.reply({ content: '⚠️ Bạn không nằm trong phòng này.', ephemeral: true });
+    return interaction.reply({ content: t(interaction, '⚠️ Bạn không nằm trong phòng này.', '⚠️ You are not in this room.'), ephemeral: true });
   }
   await interaction.reply({
-    content: '🔑 Code của bạn (tin nhắn ngay bên dưới, bấm giữ để copy):',
+    content: t(
+      interaction,
+      '🔑 Code của bạn (tin nhắn ngay bên dưới, bấm giữ để copy):',
+      '🔑 Your code (message right below, tap and hold to copy):'
+    ),
     ephemeral: true,
   });
   // Gửi code ở tin nhắn riêng, KHÔNG bọc code block (```) và không kèm chữ nào khác.
