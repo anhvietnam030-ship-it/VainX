@@ -318,6 +318,14 @@ client.on('interactionCreate', async (interaction) => {
     } else if (interaction.isUserSelectMenu()) {
       await handleUserSelectMenu(interaction);
     }
+
+    // Tự dọn rác: mọi phản hồi riêng tư (ephemeral - chỉ người bấm thấy) sẽ tự bị xóa
+    // sau 5 phút, đỡ chất đống trong lịch sử chat của từng người.
+    if (interaction.isRepliable() && interaction.replied && interaction.ephemeral) {
+      setTimeout(() => {
+        interaction.deleteReply().catch(() => {});
+      }, 5 * 60 * 1000);
+    }
   } catch (err) {
     console.error(err);
     const payload = { content: '⚠️ Có lỗi xảy ra, vui lòng thử lại.', ephemeral: true };
