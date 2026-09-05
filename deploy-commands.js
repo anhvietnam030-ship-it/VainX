@@ -104,6 +104,17 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName('xoa-setup-phong')
+    .setDescription('Xóa hẳn panel phòng đã đăng (để đăng lại mới bằng /setup-phong) - chỉ admin')
+    .addStringOption((opt) =>
+      opt
+        .setName('che_do')
+        .setDescription('Chỉ xóa 1 chế độ (để trống = xóa panel của cả 8 phòng)')
+        .addChoices({ name: '3v3', value: '3v3' }, { name: '5v5', value: '5v5' })
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
     .setName('don-rac')
     .setDescription('Xóa nhanh các tin nhắn gần đây trong kênh này (chỉ admin, dưới 14 ngày tuổi)')
     .addIntegerOption((opt) =>

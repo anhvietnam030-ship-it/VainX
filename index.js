@@ -620,6 +620,42 @@ async function handleSlashCommand(interaction) {
     });
   }
 
+  if (commandName === 'xoa-setup-phong') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const mode = interaction.options.getString('che_do'); // optional, để trống = tất cả
+    const targetRooms = mode ? getRoomsByMode(mode) : getAllRooms();
+
+    await interaction.reply({
+      content: `🗑️ Đang xóa panel của ${targetRooms.length} phòng...`,
+      ephemeral: true,
+    });
+
+    let deletedCount = 0;
+    for (const room of targetRooms) {
+      if (room.panelChannelId && room.panelMessageId) {
+        const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
+        if (ch) {
+          const msg = await ch.messages.fetch(room.panelMessageId).catch(() => null);
+          if (msg) {
+            await msg.delete().catch(() => {});
+            deletedCount++;
+          }
+        }
+      }
+      resetRoom(room);
+      room.panelChannelId = null;
+      room.panelMessageId = null;
+    }
+    persistence.saveState(rooms);
+
+    return interaction.followUp({
+      content: `✅ Đã xóa **${deletedCount}** panel và reset **${targetRooms.length}** phòng. Dùng /setup-phong để đăng panel mới.`,
+      ephemeral: true,
+    });
+  }
+
   if (commandName === 'don-rac') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
