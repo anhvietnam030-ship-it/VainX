@@ -12,6 +12,7 @@ const {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  UserSelectMenuBuilder,
 } = require('discord.js');
 const config = require('./config');
 const {
@@ -314,6 +315,8 @@ client.on('interactionCreate', async (interaction) => {
       await handleSlashCommand(interaction);
     } else if (interaction.isButton()) {
       await handleButton(interaction);
+    } else if (interaction.isUserSelectMenu()) {
+      await handleUserSelectMenu(interaction);
     }
   } catch (err) {
     console.error(err);
@@ -661,6 +664,72 @@ async function handleButton(interaction) {
   if (customId.startsWith('copycode_')) {
     return giveCode(interaction, customId.replace('copycode_', ''));
   }
+  if (customId.startsWith('invite_')) {
+    const roomId = customId.replace('invite_', '');
+    const room = getRoom(roomId);
+    if (!room) return interaction.reply({ content: '❌ Phòng không tồn tại.', ephemeral: true });
+    if (room.status === 'revealed') {
+      return interaction.reply({ content: '❌ Phòng đã phát code, không mời thêm được nữa.', ephemeral: true });
+    }
+    if (isFull(room)) {
+      return interaction.reply({ content: '❌ Phòng đã đầy rồi.', ephemeral: true });
+    }
+
+    const select = new UserSelectMenuBuilder()
+      .setCustomId(`inviteselect_${room.id}`)
+      .setPlaceholder('Chọn bạn muốn mời vào phòng này')
+      .setMinValues(1)
+      .setMaxValues(1);
+
+    return interaction.reply({
+      content: `📨 Chọn người bạn muốn mời vào **${room.label}**:`,
+      components: [new ActionRowBuilder().addComponents(select)],
+      ephemeral: true,
+    });
+  }
+}
+
+async function handleUserSelectMenu(interaction) {
+  const { customId } = interaction;
+  if (!customId.startsWith('inviteselect_')) return;
+
+  const roomId = customId.replace('inviteselect_', '');
+  const room = getRoom(roomId);
+  if (!room) return interaction.update({ content: '❌ Phòng không tồn tại.', components: [] });
+
+  const targetUser = interaction.users.first();
+  if (!targetUser) return interaction.update({ content: '❌ Chưa chọn ai cả.', components: [] });
+
+  if (room.status === 'revealed') {
+    return interaction.update({ content: '❌ Phòng đã phát code, không mời thêm được nữa.', components: [] });
+  }
+  if (isFull(room)) {
+    return interaction.update({ content: '❌ Phòng đã đầy rồi.', components: [] });
+  }
+  if (isBanned(room, targetUser.id)) {
+    return interaction.update({
+      content: `❌ <@${targetUser.id}> đang bị cấm khỏi **${room.label}**, không mời được.`,
+      components: [],
+    });
+  }
+  if (targetUser.id === interaction.user.id) {
+    return interaction.update({ content: '❌ Không thể tự mời chính mình 😄.', components: [] });
+  }
+
+  const joinRow = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`join_${room.id}`)
+      .setLabel('Tham gia ngay')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('➕')
+  );
+
+  await interaction.channel.send({
+    content: `📨 <@${interaction.user.id}> mời <@${targetUser.id}> vào **${room.label}** (${room.players.size}/${room.capacity})!`,
+    components: [joinRow],
+  });
+
+  return interaction.update({ content: `✅ Đã gửi lời mời cho <@${targetUser.id}>.`, components: [] });
 }
 
 function splitTeamCustomId(customId) {

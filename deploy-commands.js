@@ -124,6 +124,12 @@ const rest = new REST({ version: '10' }).setToken(config.TOKEN);
       ? Routes.applicationGuildCommands(config.CLIENT_ID, config.GUILD_ID)
       : Routes.applicationCommands(config.CLIENT_ID);
 
+    if (config.GUILD_ID) {
+      // Xóa sạch bản đăng ký TOÀN CỤC cũ (nếu từng deploy lúc chưa có GUILD_ID) để tránh
+      // hiện trùng lệnh (vừa có bản toàn cục vừa có bản theo guild cùng tên).
+      await rest.put(Routes.applicationCommands(config.CLIENT_ID), { body: [] }).catch(() => {});
+    }
+
     await rest.put(route, { body: commands });
     console.log(
       `Đã đăng ký ${commands.length} slash command(s) ${

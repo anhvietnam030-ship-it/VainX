@@ -225,7 +225,13 @@ function roomActionRows(room) {
       .setLabel('Bỏ chọn team')
       .setEmoji('⚪')
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(room.status === 'revealed')
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`invite_${room.id}`)
+      .setLabel('Mời bạn')
+      .setEmoji('📨')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(room.status === 'revealed' || isFull(room))
   );
 
   const canPlay = room.status === 'revealed';

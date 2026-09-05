@@ -2,7 +2,7 @@ const http = require('http');
 const https = require('https');
 const config = require('../config');
 
-function playRedirectHtml() {
+function iosPlayRedirectHtml() {
   return `<!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -10,20 +10,13 @@ function playRedirectHtml() {
 <title>Đang mở Vainglory...</title>
 </head>
 <body>
-  <p>Đang mở Vainglory... nếu không tự mở, <a id="storelink" href="#">bấm vào đây</a>.</p>
+  <p>Đang mở Vainglory...</p>
   <script>
-    var ua = navigator.userAgent || '';
-    var isIOS = /iPhone|iPad|iPod/i.test(ua);
-    var storeUrl = isIOS ? ${JSON.stringify(config.IOS_STORE_URL)} : ${JSON.stringify(config.ANDROID_STORE_URL)};
-    document.getElementById('storelink').href = storeUrl;
-
-    // Thử mở thẳng app đã cài trước
+    // iOS: thử mở thẳng app đã cài trước, App Store sẽ tự hiện nút "OPEN" nếu đã cài sẵn
     window.location.href = ${JSON.stringify(config.APP_URL_SCHEME)};
-
-    // Nếu 1.5s sau vẫn còn ở trang này (app chưa cài / không mở được) -> tự chuyển qua store
     setTimeout(function () {
-      window.location.href = storeUrl;
-    }, 1500);
+      window.location.href = ${JSON.stringify(config.IOS_STORE_URL)};
+    }, 1200);
   </script>
 </body>
 </html>`;
@@ -38,8 +31,18 @@ function startKeepAliveServer() {
 
   const server = http.createServer((req, res) => {
     if (req.url && req.url.startsWith('/play')) {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(playRedirectHtml());
+      const ua = req.headers['user-agent'] || '';
+      const isIOS = /iPhone|iPad|iPod/i.test(ua);
+
+      if (isIOS) {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(iosPlayRedirectHtml());
+      } else {
+        // Android / PC / bất kỳ máy nào khác: redirect thẳng ở tầng server, không qua trang trung
+        // gian nào, không thử mở app.
+        res.writeHead(302, { Location: config.ANDROID_STORE_URL });
+        res.end();
+      }
       return;
     }
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
