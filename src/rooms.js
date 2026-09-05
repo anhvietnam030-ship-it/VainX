@@ -12,8 +12,6 @@ function buildInitialRoom(mode, index) {
     capacity: config.CAPACITY[mode],
     // players: Map<userId, { username, team: 1|2|null, ready: boolean }>
     players: new Map(),
-    // Danh sách userId bị cấm tham gia RIÊNG phòng này (không ảnh hưởng phòng khác)
-    bannedUsers: new Set(),
     status: 'waiting', // waiting | revealed
     code: null, // mã 4 số của phòng (chung), không phải 0000
     revealedAt: null,
@@ -135,20 +133,6 @@ function canRevealCode(room) {
   return { ok: true };
 }
 
-// (Cấm theo phòng) Cấm 1 user khỏi 1 phòng cụ thể — tự đá luôn nếu đang ở trong phòng đó
-function banUser(room, userId) {
-  room.bannedUsers.add(userId);
-  room.players.delete(userId);
-}
-
-function unbanUser(room, userId) {
-  room.bannedUsers.delete(userId);
-}
-
-function isBanned(room, userId) {
-  return room.bannedUsers.has(userId);
-}
-
 // Sinh mã 4 số ngẫu nhiên, không được là "0000"
 function generateCode() {
   let code;
@@ -187,7 +171,4 @@ module.exports = {
   canRevealCode,
   generateCode,
   formatPersonalCode,
-  banUser,
-  unbanUser,
-  isBanned,
 };
