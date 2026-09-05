@@ -1,8 +1,3 @@
-client.once('ready', () => {
-    console.log(`=== BOT DISCORD ĐÃ ONLINE THÀNH CÔNG: ${client.user.tag} ===`);
-});
-
-client.login(process.env.DISCORD_TOKEN);
 const {
   Client,
   GatewayIntentBits,
@@ -585,3 +580,8 @@ async function giveCode(interaction, roomId) {
 }
 
 client.login(config.TOKEN);
+client.once('ready', () => {
+    console.log(`=== BOT DISCORD ĐÃ ONLINE THÀNH CÔNG: ${client.user.tag} ===`);
+});
+
+client.login(process.env.DISCORD_TOKEN);
