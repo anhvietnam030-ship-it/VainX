@@ -981,8 +981,17 @@ async function giveCode(interaction, roomId) {
   if (!personal) {
     return interaction.reply({ content: '⚠️ Bạn không nằm trong phòng này.', ephemeral: true });
   }
-  return interaction.reply({
-    content: `🔑 Code của bạn (bấm giữ để copy):\n\`\`\`${personal}\`\`\``,
+  await interaction.reply({
+    content: '🔑 Code của bạn (tin nhắn ngay bên dưới, bấm giữ để copy):',
+    ephemeral: true,
+  });
+  // Gửi code ở tin nhắn riêng, KHÔNG bọc code block (```) và không kèm chữ nào khác.
+  // Lý do: trên Discord mobile, long-press vào một khối code sẽ copy luôn cả 3 dấu
+  // backtick bao quanh (hành vi có sẵn của app Discord mobile, bot không chỉnh được).
+  // Một tin nhắn chỉ chứa đúng mỗi chuỗi code thì long-press ở máy nào cũng copy sạch,
+  // không dính ký tự thừa.
+  return interaction.followUp({
+    content: personal,
     ephemeral: true,
   });
 }
