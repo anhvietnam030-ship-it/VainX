@@ -20,6 +20,7 @@ function serializeRoom(room) {
     panelMessageId: room.panelMessageId,
     timeoutMs: room.timeoutMs,
     players: Array.from(room.players.entries()).map(([id, p]) => ({ id, ...p })),
+    bannedUsers: Array.from(room.bannedUsers || []),
   };
 }
 

@@ -25,6 +25,9 @@ const {
   canRevealCode,
   generateCode,
   formatPersonalCode,
+  banUser,
+  unbanUser,
+  isBanned,
 } = require('./src/rooms');
 const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows } = require('./src/ui');
 const persistence = require('./src/persistence');
@@ -53,6 +56,7 @@ persistence.loadState().forEach((data, id) => {
   room.players = new Map(
     (data.players || []).map((p) => [p.id, { username: p.username, team: p.team, ready: p.ready }])
   );
+  room.bannedUsers = new Set(data.bannedUsers || []);
 });
 
 // Cooldown chống spam (Phương án 2): userId -> timestamp lần thao tác gần nhất
@@ -371,6 +375,56 @@ async function handleSlashCommand(interaction) {
     });
   }
 
+  if (commandName === 'ban-phong') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = interaction.options.getString('phong', true);
+    const targetUser = interaction.options.getUser('user', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+
+    const wasInRoom = room.players.has(targetUser.id);
+    banUser(room, targetUser.id);
+    persistence.saveState(rooms);
+
+    if (wasInRoom) {
+      const channel =
+        (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) ||
+        interaction.channel;
+      await renderRoom(room, channel);
+    }
+
+    return interaction.reply({
+      content: `✅ Đã cấm <@${targetUser.id}> tham gia **${room.label}**${
+        wasInRoom ? ' (đã bị đá khỏi phòng luôn)' : ''
+      }. Các phòng khác không bị ảnh hưởng.`,
+      ephemeral: true,
+    });
+  }
+
+  if (commandName === 'unban-phong') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = interaction.options.getString('phong', true);
+    const targetUser = interaction.options.getUser('user', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+
+    unbanUser(room, targetUser.id);
+    persistence.saveState(rooms);
+
+    return interaction.reply({
+      content: `✅ Đã bỏ cấm <@${targetUser.id}> khỏi **${room.label}**.`,
+      ephemeral: true,
+    });
+  }
+
   if (commandName === 'setup-phong') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
@@ -508,6 +562,13 @@ function splitTeamCustomId(customId) {
 async function joinRoom(interaction, roomId) {
   const room = getRoom(roomId);
   if (!room) return interaction.reply({ content: '❌ Phòng không tồn tại.', ephemeral: true });
+
+  if (isBanned(room, interaction.user.id)) {
+    return interaction.reply({
+      content: `❌ Bạn đã bị cấm tham gia **${room.label}** (vẫn vào được các phòng khác bình thường).`,
+      ephemeral: true,
+    });
+  }
 
   if (config.JOIN_ROLE_ID && !interaction.member.roles?.cache?.has(config.JOIN_ROLE_ID)) {
     return interaction.reply({

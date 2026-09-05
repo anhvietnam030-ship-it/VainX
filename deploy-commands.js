@@ -27,6 +27,22 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName('ban-phong')
+    .setDescription('Cấm 1 thành viên tham gia 1 phòng cụ thể (chỉ admin)')
+    .addStringOption((opt) =>
+      opt.setName('phong').setDescription('ID phòng, ví dụ: 3v3-1, 5v5-4').setRequired(true)
+    )
+    .addUserOption((opt) => opt.setName('user').setDescription('Thành viên muốn cấm').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('unban-phong')
+    .setDescription('Bỏ cấm 1 thành viên khỏi 1 phòng cụ thể (chỉ admin)')
+    .addStringOption((opt) =>
+      opt.setName('phong').setDescription('ID phòng, ví dụ: 3v3-1, 5v5-4').setRequired(true)
+    )
+    .addUserOption((opt) => opt.setName('user').setDescription('Thành viên muốn bỏ cấm').setRequired(true)),
+
+  new SlashCommandBuilder()
     .setName('setup-phong')
     .setDescription('Đăng thẳng 4 panel phòng của 1 chế độ vào kênh này (chỉ admin)')
     .addStringOption((opt) =>
