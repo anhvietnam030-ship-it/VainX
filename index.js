@@ -45,6 +45,13 @@ function t(interaction, vi, en) {
   return interaction.locale === 'vi' ? vi : en;
 }
 
+// Ghép song ngữ VN + EN cho những tin nhắn CÔNG KHAI (kênh chung / DM chủ động),
+// vì những tin này hiển thị y hệt cho mọi người xem, không thể chỉ hiện 1 thứ
+// tiếng riêng theo từng người như các phản hồi ephemeral ở trên.
+function bi(vi, en) {
+  return `${vi}\n🌐 ${en}`;
+}
+
 // Mở server HTTP nhỏ để nền tảng hosting kiểu "Web Service" (Render, ...) không báo
 // port scan timeout. Nếu chạy trên máy riêng / VPS / Background Worker thì dòng này
 // vô hại, chỉ tốn 1 cổng cục bộ.
@@ -133,7 +140,12 @@ function scheduleInactivityTimeout(room, channel, customMs) {
       resetRoom(room);
       await renderRoom(room, channel);
       await channel
-        .send(`⏰ **${room.label}** đã tự động reset vì quá thời gian chờ mà chưa đủ người / chưa sẵn sàng.`)
+        .send(
+          bi(
+            `⏰ **${room.label}** đã tự động reset vì quá thời gian chờ mà chưa đủ người / chưa sẵn sàng.`,
+            `**${room.label}** was auto-reset because it wasn't full / everyone ready in time.`
+          )
+        )
         .catch(() => {});
     }
   }, ms);
@@ -142,11 +154,13 @@ function scheduleInactivityTimeout(room, channel, customMs) {
 async function announceRoomFull(room, channel) {
   const ids = Array.from(room.players.keys());
   const mentions = ids.map((id) => `<@${id}>`).join(' ');
+  const readyMinutes = Math.round(config.READY_COUNTDOWN_MS / 60000);
   await channel
     .send(
-      `✅ **${room.label}** đã đủ người! ${mentions}\nHãy bấm **Sẵn sàng** trong vòng ${Math.round(
-        config.READY_COUNTDOWN_MS / 60000
-      )} phút, nếu không sẽ bị đá khỏi phòng.`
+      bi(
+        `✅ **${room.label}** đã đủ người! ${mentions}\nHãy bấm **Sẵn sàng** trong vòng ${readyMinutes} phút, nếu không sẽ bị đá khỏi phòng.`,
+        `**${room.label}** is now full! ${mentions}\nPlease hit **Ready** within ${readyMinutes} minutes, or you'll be kicked from the room.`
+      )
     )
     .catch(() => {});
 
@@ -156,10 +170,12 @@ async function announceRoomFull(room, channel) {
       .fetch(id)
       .then((user) =>
         user.send(
-          `✅ **${room.label}** mà bạn đăng ký đã **đủ người**!\n` +
-            `Vào kênh <#${channel.id}> và bấm **Sẵn sàng** trong vòng ${Math.round(
-              config.READY_COUNTDOWN_MS / 60000
-            )} phút, nếu không bạn sẽ bị đá khỏi phòng để nhường chỗ cho người khác.`
+          bi(
+            `✅ **${room.label}** mà bạn đăng ký đã **đủ người**!\n` +
+              `Vào kênh <#${channel.id}> và bấm **Sẵn sàng** trong vòng ${readyMinutes} phút, nếu không bạn sẽ bị đá khỏi phòng để nhường chỗ cho người khác.`,
+            `**${room.label}** you signed up for is now **full**!\n` +
+              `Go to <#${channel.id}> and hit **Ready** within ${readyMinutes} minutes, or you'll be kicked to make room for someone else.`
+          )
         )
       )
       .catch(() => {}); // user tắt DM hoặc lỗi khác -> bỏ qua, không chặn luồng chính
@@ -195,7 +211,10 @@ async function handleReadyCountdownExpire(room, channel) {
     // đồng hồ 30' gốc (từ firstJoinAt) vẫn chạy làm lưới an toàn.
     await channel
       .send(
-        `⚖️ **${room.label}**: mọi người đã sẵn sàng nhưng team chưa cân bằng nên chưa phát được code. Hãy tự đổi team hoặc rời phòng.`
+        bi(
+          `⚖️ **${room.label}**: mọi người đã sẵn sàng nhưng team chưa cân bằng nên chưa phát được code. Hãy tự đổi team hoặc rời phòng.`,
+          `**${room.label}**: everyone is ready but teams aren't balanced yet, so the code hasn't been revealed. Please change team or leave the room.`
+        )
       )
       .catch(() => {});
     await renderRoom(room, channel);
@@ -203,11 +222,13 @@ async function handleReadyCountdownExpire(room, channel) {
   }
 
   const mentions = kicked.map((id) => `<@${id}>`).join(' ');
+  const readyMinutes2 = Math.round(config.READY_COUNTDOWN_MS / 60000);
   await channel
     .send(
-      `⏱️ Hết ${Math.round(
-        config.READY_COUNTDOWN_MS / 60000
-      )} phút chờ sẵn sàng tại **${room.label}** — đã đá ${mentions} ra khỏi phòng để nhường chỗ. Bấm **Gia nhập** để đăng ký lại.`
+      bi(
+        `⏱️ Hết ${readyMinutes2} phút chờ sẵn sàng tại **${room.label}** — đã đá ${mentions} ra khỏi phòng để nhường chỗ. Bấm **Gia nhập** để đăng ký lại.`,
+        `⏱️ The ${readyMinutes2}-minute ready window for **${room.label}** is over — kicked ${mentions} to free up their spots. Hit **Join** to sign up again.`
+      )
     )
     .catch(() => {});
 
@@ -244,7 +265,10 @@ async function tryRevealCode(room, channel) {
   await renderRoom(room, channel);
   await channel
     .send(
-      `🔑 **${room.label}** đã đủ người sẵn sàng! Code phòng đã được phát — mỗi người bấm nút **"Lấy code của tôi"** trên panel để nhận mã riêng.`
+      bi(
+        `🔑 **${room.label}** đã đủ người sẵn sàng! Code phòng đã được phát — mỗi người bấm nút **"Lấy code của tôi"** trên panel để nhận mã riêng.`,
+        `🔑 **${room.label}** is full and ready! The room code has been revealed — everyone tap **"Get my code"** on the panel to get your own copy.`
+      )
     )
     .catch(() => {});
 
@@ -264,7 +288,14 @@ async function tryRevealCode(room, channel) {
     clearRoomTimers(room);
     resetRoom(room);
     await renderRoom(room, channel);
-    await channel.send(`♻️ **${room.label}** đã được reset, mời mọi người đăng ký lại.`).catch(() => {});
+    await channel
+        .send(
+          bi(
+            `♻️ **${room.label}** đã được reset, mời mọi người đăng ký lại.`,
+            `**${room.label}** has been reset, everyone is welcome to sign up again.`
+          )
+        )
+        .catch(() => {});
   }, config.CODE_RESET_DELAY_MS);
 }
 
@@ -293,7 +324,14 @@ client.once('ready', async () => {
           clearRoomTimers(room);
           resetRoom(room);
           await renderRoom(room, channel);
-          await channel.send(`♻️ **${room.label}** đã được reset, mời mọi người đăng ký lại.`).catch(() => {});
+          await channel
+        .send(
+          bi(
+            `♻️ **${room.label}** đã được reset, mời mọi người đăng ký lại.`,
+            `**${room.label}** has been reset, everyone is welcome to sign up again.`
+          )
+        )
+        .catch(() => {});
         }, remaining);
       }
     } else if (room.status === 'waiting') {
@@ -990,6 +1028,16 @@ async function toggleReady(interaction, roomId) {
   if (room.status === 'revealed') {
     return interaction.reply({
       content: t(interaction, 'ℹ️ Phòng đã phát code rồi, chờ vòng sau nhé.', 'ℹ️ The code has already been revealed, wait for the next round.'),
+      ephemeral: true,
+    });
+  }
+  if (!isFull(room)) {
+    return interaction.reply({
+      content: t(
+        interaction,
+        `⚠️ Phòng chưa đủ người (${room.players.size}/${room.capacity}) — chưa thể bấm Sẵn sàng.`,
+        `⚠️ Room isn't full yet (${room.players.size}/${room.capacity}) — you can't hit Ready.`
+      ),
       ephemeral: true,
     });
   }
