@@ -104,6 +104,22 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName('don-rac')
+    .setDescription('Xóa nhanh các tin nhắn gần đây trong kênh này (chỉ admin, dưới 14 ngày tuổi)')
+    .addIntegerOption((opt) =>
+      opt
+        .setName('so_luong')
+        .setDescription('Số tin nhắn muốn xóa (mặc định 50, tối đa 100)')
+        .setMinValue(1)
+        .setMaxValue(100)
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('reset-tat-ca-phong')
+    .setDescription('Reset toàn bộ 8 phòng (3v3 + 5v5) về trạng thái trống cùng lúc (chỉ admin)'),
+
+  new SlashCommandBuilder()
     .setName('reset-room')
     .setDescription('Ép reset một phòng cụ thể ngay lập tức (chỉ admin)')
     .addStringOption((opt) =>

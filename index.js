@@ -620,6 +620,49 @@ async function handleSlashCommand(interaction) {
     });
   }
 
+  if (commandName === 'don-rac') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const soLuong = interaction.options.getInteger('so_luong') || 50;
+    const channel = interaction.channel;
+
+    await interaction.reply({ content: `🧹 Đang dọn ${soLuong} tin nhắn gần nhất...`, ephemeral: true });
+
+    try {
+      const deleted = await channel.bulkDelete(soLuong, true);
+      return interaction.followUp({
+        content: `✅ Đã xóa **${deleted.size}** tin nhắn (Discord chỉ cho xóa hàng loạt tin nhắn dưới 14 ngày tuổi, tin cũ hơn sẽ bị bỏ qua).`,
+        ephemeral: true,
+      });
+    } catch (err) {
+      console.error('Lỗi don-rac:', err);
+      return interaction.followUp({
+        content: '⚠️ Không xóa được — có thể bot thiếu quyền **Manage Messages** trong kênh này, hoặc tin nhắn quá cũ.',
+        ephemeral: true,
+      });
+    }
+  }
+
+  if (commandName === 'reset-tat-ca-phong') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+
+    await interaction.reply({ content: '♻️ Đang reset toàn bộ 8 phòng...', ephemeral: true });
+
+    for (const room of getAllRooms()) {
+      resetRoom(room);
+      const channel =
+        (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) ||
+        interaction.channel;
+      await renderRoom(room, channel);
+    }
+    persistence.saveState(rooms);
+
+    return interaction.followUp({ content: '✅ Đã reset toàn bộ 8 phòng (3v3 + 5v5) về trạng thái trống.', ephemeral: true });
+  }
+
   if (commandName === 'reset-room') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới ép reset phòng được.', ephemeral: true });
