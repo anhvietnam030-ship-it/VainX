@@ -33,7 +33,7 @@ const {
   unbanUser,
   isBanned,
 } = require('./src/rooms');
-const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows } = require('./src/ui');
+const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows, roomActionRowsEN } = require('./src/ui');
 const persistence = require('./src/persistence');
 const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 
@@ -750,6 +750,16 @@ async function handleButton(interaction) {
   }
   if (customId.startsWith('copycode_')) {
     return giveCode(interaction, customId.replace('copycode_', ''));
+  }
+  if (customId.startsWith('translate_')) {
+    const roomId = customId.replace('translate_', '');
+    const room = getRoom(roomId);
+    if (!room) return interaction.reply({ content: '❌ Phòng không tồn tại.', ephemeral: true });
+    return interaction.reply({
+      content: '🌐 English buttons (only visible to you):',
+      components: roomActionRowsEN(room),
+      ephemeral: true,
+    });
   }
   if (customId.startsWith('invite_')) {
     const roomId = customId.replace('invite_', '');

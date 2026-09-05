@@ -204,7 +204,12 @@ function roomActionRows(room) {
       .setLabel(ready ? 'Đã sẵn sàng!' : 'Sẵn sàng')
       .setStyle(ready ? ButtonStyle.Success : ButtonStyle.Primary)
       .setEmoji(ready ? '✅' : '🙋')
-      .setDisabled(room.status === 'revealed')
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`translate_${room.id}`)
+      .setLabel('English')
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji('🌐')
   );
 
   const row2 = new ActionRowBuilder().addComponents(
@@ -261,11 +266,93 @@ function roomActionRows(room) {
   return rows;
 }
 
+// ---------- Panel phòng (bản dịch tiếng Anh, chỉ hiển thị ephemeral khi bấm nút "English") ----------
+
+function roomActionRowsEN(room) {
+  const full = isFull(room);
+  const ready = allReady(room) && full;
+
+  const row1 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`join_${room.id}`)
+      .setLabel('Join')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('➕')
+      .setDisabled(full || room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`leave_${room.id}`)
+      .setLabel('Leave')
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji('🚪')
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`ready_${room.id}`)
+      .setLabel(ready ? 'Ready!' : 'Ready')
+      .setStyle(ready ? ButtonStyle.Success : ButtonStyle.Primary)
+      .setEmoji(ready ? '✅' : '🙋')
+      .setDisabled(room.status === 'revealed')
+  );
+
+  const row2 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(`team1_${room.id}`)
+      .setLabel('Team 1')
+      .setEmoji('🔵')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`team2_${room.id}`)
+      .setLabel('Team 2')
+      .setEmoji('🔴')
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`teamnone_${room.id}`)
+      .setLabel('Clear team')
+      .setEmoji('⚪')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`invite_${room.id}`)
+      .setLabel('Invite friend')
+      .setEmoji('📨')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(room.status === 'revealed' || isFull(room))
+  );
+
+  const canPlay = room.status === 'revealed';
+  const sparkle = canPlay && room._blinkOn ? ' ✨' : '';
+  const row3 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setLabel(canPlay ? `🎮 Play now${sparkle}` : '🎮 Play game')
+      .setStyle(ButtonStyle.Link)
+      .setURL(`${config.PUBLIC_BASE_URL}/play`)
+      .setDisabled(!canPlay)
+  );
+
+  const rows = [row1, row2, row3];
+
+  if (room.status === 'revealed') {
+    rows.push(
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`copycode_${room.id}`)
+          .setLabel('Get my code')
+          .setEmoji('📋')
+          .setStyle(ButtonStyle.Success)
+      )
+    );
+  }
+
+  return rows;
+}
+
 module.exports = {
   mainMenuEmbed,
   mainMenuRow,
   roomListRows,
   roomEmbed,
   roomActionRows,
+  roomActionRowsEN,
   progressBar,
 };
