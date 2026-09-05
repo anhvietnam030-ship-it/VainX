@@ -1,3 +1,8 @@
+client.once('ready', () => {
+    console.log(`=== BOT DISCORD ĐÃ ONLINE THÀNH CÔNG: ${client.user.tag} ===`);
+});
+
+client.login(process.env.DISCORD_TOKEN);
 const {
   Client,
   GatewayIntentBits,
