@@ -232,14 +232,9 @@ function roomActionRows(room) {
   const sparkle = canPlay && room._blinkOn ? ' ✨' : '';
   const row3 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
-      .setLabel(canPlay ? `📱 Chơi ngay (iOS)${sparkle}` : '📱 Chơi (iOS)')
+      .setLabel(canPlay ? `🎮 Vào game ngay${sparkle}` : '🎮 Vào game')
       .setStyle(ButtonStyle.Link)
-      .setURL(config.IOS_STORE_URL)
-      .setDisabled(!canPlay),
-    new ButtonBuilder()
-      .setLabel(canPlay ? `🤖 Chơi ngay (Android)${sparkle}` : '🤖 Chơi (Android)')
-      .setStyle(ButtonStyle.Link)
-      .setURL(config.ANDROID_STORE_URL)
+      .setURL(`${config.PUBLIC_BASE_URL}/play`)
       .setDisabled(!canPlay)
   );
 

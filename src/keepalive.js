@@ -1,5 +1,33 @@
 const http = require('http');
 const https = require('https');
+const config = require('../config');
+
+function playRedirectHtml() {
+  return `<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8" />
+<title>Đang mở Vainglory...</title>
+</head>
+<body>
+  <p>Đang mở Vainglory... nếu không tự mở, <a id="storelink" href="#">bấm vào đây</a>.</p>
+  <script>
+    var ua = navigator.userAgent || '';
+    var isIOS = /iPhone|iPad|iPod/i.test(ua);
+    var storeUrl = isIOS ? ${JSON.stringify(config.IOS_STORE_URL)} : ${JSON.stringify(config.ANDROID_STORE_URL)};
+    document.getElementById('storelink').href = storeUrl;
+
+    // Thử mở thẳng app đã cài trước
+    window.location.href = ${JSON.stringify(config.APP_URL_SCHEME)};
+
+    // Nếu 1.5s sau vẫn còn ở trang này (app chưa cài / không mở được) -> tự chuyển qua store
+    setTimeout(function () {
+      window.location.href = storeUrl;
+    }, 1500);
+  </script>
+</body>
+</html>`;
+}
 
 // Render (và nhiều nền tảng "Web Service" khác) yêu cầu app phải mở 1 cổng HTTP
 // để nó dò xem app còn sống hay không. Bot Discord bản thân không cần cổng nào cả
@@ -9,6 +37,11 @@ function startKeepAliveServer() {
   const port = process.env.PORT || 3000;
 
   const server = http.createServer((req, res) => {
+    if (req.url && req.url.startsWith('/play')) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(playRedirectHtml());
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Vainglory Lobby Bot dang chay OK.');
   });
