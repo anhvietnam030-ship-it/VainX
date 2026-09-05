@@ -579,9 +579,9 @@ async function giveCode(interaction, roomId) {
   });
 }
 
-client.login(config.TOKEN);
-client.once('ready', () => {
-    console.log(`=== BOT DISCORD ĐÃ ONLINE THÀNH CÔNG: ${client.user.tag} ===`);
-});
+client.login(config.TOKEN)
+  .then(() => console.log(`=== BOT DISCORD ĐÃ ONLINE THÀNH CÔNG: ${client.user.tag} ===`))
+  .catch((err) => console.error('=== LỖI ĐĂNG NHẬP DISCORD ===', err));
 
-client.login(process.env.DISCORD_TOKEN);
+// Bắt lỗi ngầm (unhandled) để log ra Render thay vì bot tự chết âm thầm không rõ lý do
+process.on('unhandledRejection', (err) => console.error('=== UNHANDLED REJECTION ===', err));
