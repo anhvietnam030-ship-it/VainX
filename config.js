@@ -39,7 +39,7 @@ module.exports = {
   // (Phương án 3) Bắt buộc cân bằng team nếu có người chọn team trong phòng.
   // true = nếu có ai chọn team, TẤT CẢ phải chọn team và 2 team phải bằng số (capacity/2 - capacity/2).
   // false = không kiểm tra, đủ người + sẵn sàng là phát code.
-  ENFORCE_TEAM_BALANCE: true,
+  ENFORCE_TEAM_BALANCE: false,
 
   // (Phương án 2) Cooldown chống spam nút Sẵn sàng / Team (ms)
   ACTION_COOLDOWN_MS: 2000,
