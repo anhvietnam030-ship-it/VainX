@@ -1,3 +1,10 @@
+// Fix: một số nền tảng host (Render, ...) ưu tiên phân giải DNS ra IPv6 trước,
+// nhưng route IPv6 ra ngoài không thông tới Discord gateway -> WebSocket kết nối
+// bị TREO VÔ THỜI HẠN, không báo lỗi gì (bot chạy "live" nhưng không bao giờ login xong).
+// Ép Node ưu tiên IPv4 trước để tránh việc này.
+const dns = require('node:dns');
+dns.setDefaultResultOrder('ipv4first');
+
 const {
   Client,
   GatewayIntentBits,
