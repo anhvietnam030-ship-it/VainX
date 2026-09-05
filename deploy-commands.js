@@ -27,6 +27,39 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName('set-ready')
+    .setDescription('Ép trạng thái Sẵn sàng cho 1 người trong phòng thay họ (chỉ admin)')
+    .addStringOption((opt) =>
+      opt.setName('phong').setDescription('ID phòng, ví dụ: 3v3-1, 5v5-4').setRequired(true)
+    )
+    .addUserOption((opt) => opt.setName('user').setDescription('Người chơi cần đổi trạng thái').setRequired(true))
+    .addStringOption((opt) =>
+      opt
+        .setName('trang_thai')
+        .setDescription('Sẵn sàng hay Hủy sẵn sàng')
+        .addChoices({ name: 'Sẵn sàng', value: 'ready' }, { name: 'Hủy sẵn sàng', value: 'notready' })
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('gia-han-phong')
+    .setDescription('Cộng thêm thời gian trước khi 1 phòng tự reset do chưa đủ người (chỉ admin)')
+    .addStringOption((opt) =>
+      opt.setName('phong').setDescription('ID phòng, ví dụ: 3v3-1, 5v5-4').setRequired(true)
+    )
+    .addIntegerOption((opt) =>
+      opt.setName('phut').setDescription('Số phút muốn cộng thêm').setMinValue(1).setMaxValue(180).setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('moi-ban')
+    .setDescription('Mời 1 người bạn vào chung phòng bạn đang ở (ai cũng dùng được)')
+    .addStringOption((opt) =>
+      opt.setName('phong').setDescription('ID phòng, ví dụ: 3v3-1, 5v5-4').setRequired(true)
+    )
+    .addUserOption((opt) => opt.setName('ban').setDescription('Người bạn muốn mời').setRequired(true)),
+
+  new SlashCommandBuilder()
     .setName('ban-phong')
     .setDescription('Cấm 1 thành viên tham gia 1 phòng cụ thể (chỉ admin)')
     .addStringOption((opt) =>

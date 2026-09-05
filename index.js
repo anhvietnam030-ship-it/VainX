@@ -9,6 +9,9 @@ const {
   Client,
   GatewayIntentBits,
   PermissionFlagsBits,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
 } = require('discord.js');
 const config = require('./config');
 const {
@@ -373,6 +376,113 @@ async function handleSlashCommand(interaction) {
       }.`,
       ephemeral: true,
     });
+  }
+
+  if (commandName === 'set-ready') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = interaction.options.getString('phong', true);
+    const targetUser = interaction.options.getUser('user', true);
+    const trangThai = interaction.options.getString('trang_thai', true); // 'ready' | 'notready'
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+    const player = room.players.get(targetUser.id);
+    if (!player) {
+      return interaction.reply({
+        content: `❌ <@${targetUser.id}> hiện không ở trong **${room.label}**.`,
+        ephemeral: true,
+      });
+    }
+
+    player.ready = trangThai === 'ready';
+
+    const channel =
+      (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) ||
+      interaction.channel;
+    await renderRoom(room, channel);
+
+    if (player.ready) {
+      const check = canRevealCode(room);
+      if (check.ok) await tryRevealCode(room, channel);
+    }
+
+    persistence.saveState(rooms);
+    return interaction.reply({
+      content: `✅ Đã đặt <@${targetUser.id}> thành **${player.ready ? 'Sẵn sàng' : 'Chưa sẵn sàng'}** trong **${room.label}**.`,
+      ephemeral: true,
+    });
+  }
+
+  if (commandName === 'gia-han-phong') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = interaction.options.getString('phong', true);
+    const phut = interaction.options.getInteger('phut', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+    if (!room.firstJoinAt || room.status === 'revealed') {
+      return interaction.reply({
+        content: 'ℹ️ Phòng này hiện đang trống hoặc đã phát code, không có đồng hồ nào đang chạy để gia hạn.',
+        ephemeral: true,
+      });
+    }
+
+    room.timeoutMs += phut * 60 * 1000;
+    const remaining = Math.max(room.timeoutMs - (Date.now() - room.firstJoinAt), 1000);
+
+    const channel =
+      (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) ||
+      interaction.channel;
+    scheduleInactivityTimeout(room, channel, remaining);
+    await renderRoom(room, channel);
+    persistence.saveState(rooms);
+
+    return interaction.reply({
+      content: `✅ Đã gia hạn thêm **${phut} phút** cho **${room.label}** trước khi tự reset.`,
+      ephemeral: true,
+    });
+  }
+
+  if (commandName === 'moi-ban') {
+    const roomId = interaction.options.getString('phong', true);
+    const targetUser = interaction.options.getUser('ban', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+    if (room.status === 'revealed') {
+      return interaction.reply({ content: '❌ Phòng đã phát code, không mời thêm được nữa.', ephemeral: true });
+    }
+    if (isFull(room)) {
+      return interaction.reply({ content: '❌ Phòng đã đầy rồi.', ephemeral: true });
+    }
+    if (isBanned(room, targetUser.id)) {
+      return interaction.reply({
+        content: `❌ <@${targetUser.id}> đang bị cấm khỏi **${room.label}**, không mời được.`,
+        ephemeral: true,
+      });
+    }
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`join_${room.id}`)
+        .setLabel('Tham gia ngay')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('➕')
+    );
+
+    await interaction.channel.send({
+      content: `📨 <@${interaction.user.id}> mời <@${targetUser.id}> vào **${room.label}** (${room.players.size}/${room.capacity})!`,
+      components: [row],
+    });
+
+    return interaction.reply({ content: `✅ Đã gửi lời mời cho <@${targetUser.id}>.`, ephemeral: true });
   }
 
   if (commandName === 'ban-phong') {

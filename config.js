@@ -21,8 +21,9 @@ module.exports = {
   // Bao nhiêu phòng cho mỗi chế độ
   ROOMS_PER_MODE: 4,
 
-  // 30 phút không đủ người / không sẵn sàng xong -> tự reset (đổi được bằng lệnh /set-timeout)
-  DEFAULT_ROOM_TIMEOUT_MS: 30 * 60 * 1000,
+  // 1 tiếng không đủ người / không sẵn sàng xong -> tự reset (đổi được bằng lệnh /set-timeout,
+  // hoặc gia hạn riêng 1 phòng đang chạy bằng /gia-han-phong)
+  DEFAULT_ROOM_TIMEOUT_MS: 60 * 60 * 1000,
 
   // Khi phòng vừa đủ người: có 2 phút để TẤT CẢ bấm Sẵn sàng.
   // Hết giờ mà ai chưa sẵn sàng thì bị đá khỏi phòng, nhường slot cho người khác,
@@ -49,4 +50,13 @@ module.exports = {
   // Link tải game
   IOS_STORE_URL: 'https://apps.apple.com/us/app/vainglory/id671464704',
   ANDROID_STORE_URL: 'https://play.google.com/store/apps/details?id=com.superevilmegacorp.game',
+
+  // Custom URL scheme của app Vainglory để mở thẳng app đã cài (không phải link công khai chính thức,
+  // dựa trên thực tế đã test — nếu sau này app đổi scheme thì cập nhật lại đây).
+  APP_URL_SCHEME: 'vainglory://',
+
+  // URL public của chính con bot (để tạo trang redirect /play mở app).
+  // Trên Render sẽ tự có RENDER_EXTERNAL_URL, không cần khai tay; nếu domain khác thì set
+  // biến môi trường PUBLIC_BASE_URL để ghi đè.
+  PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || 'https://vainx.onrender.com',
 };
