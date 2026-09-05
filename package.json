@@ -1,0 +1,15 @@
+{
+  "name": "vainglory-lobby-bot",
+  "version": "1.0.0",
+  "description": "Discord bot quản lý phòng ghép đội Vainglory 3v3 / 5v5",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js",
+    "deploy": "node deploy-commands.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "dotenv": "^16.4.5"
+  }
+}
