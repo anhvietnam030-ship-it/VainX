@@ -59,4 +59,14 @@ module.exports = {
   // Trên Render sẽ tự có RENDER_EXTERNAL_URL, không cần khai tay; nếu domain khác thì set
   // biến môi trường PUBLIC_BASE_URL để ghi đè.
   PUBLIC_BASE_URL: process.env.PUBLIC_BASE_URL || process.env.RENDER_EXTERNAL_URL || 'https://vainx.onrender.com',
+
+  // (Tùy chọn - UI/UX) Ảnh/GIF banner riêng cho từng chế độ, hiện trong panel phòng.
+  // Để trống (null) thì embed vẫn chạy bình thường, chỉ là không có hình minh họa.
+  // Muốn có hiệu ứng hình (VD: 2 thanh kiếm lửa cho 3v3, dải màu rainbow cho 5v5):
+  // dán URL ảnh/GIF công khai (https://...) vào biến môi trường BANNER_3V3_URL / BANNER_5V5_URL
+  // trên Render — không cần sửa code, không cần deploy lại.
+  MODE_BANNER_URL: {
+    '3v3': process.env.BANNER_3V3_URL || null,
+    '5v5': process.env.BANNER_5V5_URL || null,
+  },
 };

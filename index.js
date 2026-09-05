@@ -132,6 +132,25 @@ async function renderRoom(room, channel) {
   }
 }
 
+// Bảng màu "tia chớp" ngẫu nhiên khi phòng đủ người đang chờ Sẵn sàng
+const FLASH_COLORS = [0xffffff, 0xffd700, 0xff69b4, 0x00ffff, 0xff4500, 0x9b59b6];
+
+// Bắt đầu hiệu ứng nhấp nháy (nút Sẵn sàng đổi màu rainbow + embed thỉnh thoảng "chớp")
+// khi phòng vừa đủ người, đang chờ mọi người bấm Sẵn sàng. Tự dừng khi phát code hoặc reset
+// (vì clearRoomTimers đã xóa timer này rồi).
+function startWaitingBlink(room, channel) {
+  if (room.timers.blink) return; // đã chạy rồi, khỏi chạy chồng
+  room._rainbowIndex = 0;
+  room.timers.blink = setInterval(() => {
+    room._blinkOn = !room._blinkOn;
+    room._rainbowIndex = (room._rainbowIndex ?? 0) + 1;
+    if (room._blinkOn) {
+      room._flashColor = FLASH_COLORS[Math.floor(Math.random() * FLASH_COLORS.length)];
+    }
+    renderRoom(room, channel).catch(() => {});
+  }, config.BLINK_INTERVAL_MS);
+}
+
 function scheduleInactivityTimeout(room, channel, customMs) {
   if (room.timers.inactivity) clearTimeout(room.timers.inactivity);
   const ms = customMs ?? room.timeoutMs;
@@ -186,6 +205,7 @@ function scheduleReadyCountdown(room, channel) {
   if (room.timers.readyCountdown) clearTimeout(room.timers.readyCountdown);
   room.fullAt = Date.now();
   room.timers.readyCountdown = setTimeout(() => handleReadyCountdownExpire(room, channel), config.READY_COUNTDOWN_MS);
+  startWaitingBlink(room, channel);
 }
 
 // Hết 2 phút chờ sẵn sàng: đá người chưa sẵn sàng, tính lại đồng hồ 30' cho người còn lại
@@ -205,6 +225,11 @@ async function handleReadyCountdownExpire(room, channel) {
     }
   }
   room.fullAt = null;
+  if (room.timers.blink) {
+    clearInterval(room.timers.blink);
+    room.timers.blink = null;
+    room._flashColor = null;
+  }
 
   if (kicked.length === 0) {
     // Mọi người đã sẵn sàng nhưng vẫn kẹt (thường do team chưa cân bằng) -> không đá ai,
@@ -261,6 +286,12 @@ async function tryRevealCode(room, channel) {
   room.status = 'revealed';
   room.revealedAt = Date.now();
   room._blinkOn = true;
+  room._flashColor = null;
+
+  if (room.timers.blink) {
+    clearInterval(room.timers.blink);
+    room.timers.blink = null;
+  }
 
   await renderRoom(room, channel);
   await channel
@@ -341,6 +372,7 @@ client.once('ready', async () => {
           await handleReadyCountdownExpire(room, channel);
         } else {
           room.timers.readyCountdown = setTimeout(() => handleReadyCountdownExpire(room, channel), remaining);
+          startWaitingBlink(room, channel);
         }
       } else if (room.firstJoinAt) {
         const remaining = room.timeoutMs - (Date.now() - room.firstJoinAt);
@@ -827,9 +859,9 @@ async function handleButton(interaction) {
 
     const select = new UserSelectMenuBuilder()
       .setCustomId(`inviteselect_${room.id}`)
-      .setPlaceholder(t(interaction, 'Chọn bạn muốn mời vào phòng này', 'Pick a friend to invite to this room'))
+      .setPlaceholder(t(interaction, 'Chọn (nhiều) bạn muốn mời vào phòng này', 'Pick friends to invite to this room'))
       .setMinValues(1)
-      .setMaxValues(1);
+      .setMaxValues(25);
 
     return interaction.reply({
       content: t(interaction, `📨 Chọn người bạn muốn mời vào **${room.label}**:`, `📨 Pick a friend to invite to **${room.label}**:`),
@@ -847,8 +879,10 @@ async function handleUserSelectMenu(interaction) {
   const room = getRoom(roomId);
   if (!room) return interaction.update({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), components: [] });
 
-  const targetUser = interaction.users.first();
-  if (!targetUser) return interaction.update({ content: t(interaction, '❌ Chưa chọn ai cả.', "❌ You didn't pick anyone."), components: [] });
+  const targets = interaction.users; // Collection<userId, User> - có thể nhiều người
+  if (!targets || targets.size === 0) {
+    return interaction.update({ content: t(interaction, '❌ Chưa chọn ai cả.', "❌ You didn't pick anyone."), components: [] });
+  }
 
   if (room.status === 'revealed') {
     return interaction.update({
@@ -859,18 +893,31 @@ async function handleUserSelectMenu(interaction) {
   if (isFull(room)) {
     return interaction.update({ content: t(interaction, '❌ Phòng đã đầy rồi.', '❌ This room is full.'), components: [] });
   }
-  if (isBanned(room, targetUser.id)) {
+
+  const invitedIds = [];
+  const skipped = [];
+
+  for (const targetUser of targets.values()) {
+    if (targetUser.id === interaction.user.id) {
+      skipped.push(t(interaction, `<@${targetUser.id}> (chính bạn)`, `<@${targetUser.id}> (yourself)`));
+      continue;
+    }
+    if (isBanned(room, targetUser.id)) {
+      skipped.push(
+        t(interaction, `<@${targetUser.id}> (đang bị cấm khỏi phòng)`, `<@${targetUser.id}> (banned from this room)`)
+      );
+      continue;
+    }
+    invitedIds.push(targetUser.id);
+  }
+
+  if (invitedIds.length === 0) {
     return interaction.update({
-      content: t(
-        interaction,
-        `❌ <@${targetUser.id}> đang bị cấm khỏi **${room.label}**, không mời được.`,
-        `❌ <@${targetUser.id}> is banned from **${room.label}**, can't invite them.`
-      ),
+      content:
+        t(interaction, '❌ Không mời được ai cả.', '❌ Could not invite anyone.') +
+        (skipped.length ? `\n${t(interaction, 'Bỏ qua', 'Skipped')}: ${skipped.join(', ')}` : ''),
       components: [],
     });
-  }
-  if (targetUser.id === interaction.user.id) {
-    return interaction.update({ content: t(interaction, '❌ Không thể tự mời chính mình 😄.', "❌ You can't invite yourself 😄."), components: [] });
   }
 
   const joinRow = new ActionRowBuilder().addComponents(
@@ -881,15 +928,26 @@ async function handleUserSelectMenu(interaction) {
       .setEmoji('➕')
   );
 
+  const mentionList = invitedIds.map((id) => `<@${id}>`).join(' ');
   await interaction.channel.send({
-    content: `📨 <@${interaction.user.id}> mời <@${targetUser.id}> vào **${room.label}** (${room.players.size}/${room.capacity})!`,
+    content: t(
+      interaction,
+      `📨 <@${interaction.user.id}> mời ${mentionList} vào **${room.label}** (${room.players.size}/${room.capacity})!`,
+      `📨 <@${interaction.user.id}> invited ${mentionList} to **${room.label}** (${room.players.size}/${room.capacity})!`
+    ),
     components: [joinRow],
   });
 
-  return interaction.update({
-    content: t(interaction, `✅ Đã gửi lời mời cho <@${targetUser.id}>.`, `✅ Invite sent to <@${targetUser.id}>.`),
-    components: [],
-  });
+  let summary = t(
+    interaction,
+    `✅ Đã mời **${invitedIds.length}** người: ${mentionList}.`,
+    `✅ Invited **${invitedIds.length}** people: ${mentionList}.`
+  );
+  if (skipped.length) {
+    summary += `\n⚠️ ${t(interaction, 'Bỏ qua', 'Skipped')}: ${skipped.join(', ')}`;
+  }
+
+  return interaction.update({ content: summary, components: [] });
 }
 
 function splitTeamCustomId(customId) {
@@ -1003,6 +1061,11 @@ async function leaveRoom(interaction, roomId) {
     clearTimeout(room.timers.readyCountdown);
     room.timers.readyCountdown = null;
     room.fullAt = null;
+    if (room.timers.blink) {
+      clearInterval(room.timers.blink);
+      room.timers.blink = null;
+      room._flashColor = null;
+    }
   }
 
   if (room.players.size === 0) {

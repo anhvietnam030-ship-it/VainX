@@ -15,6 +15,8 @@ const COLOR = {
   revealed: 0x57f287, // xanh lá - đã phát code
 };
 
+const RAINBOW_EMOJI = ['🔴', '🟠', '🟡', '🟢', '🔵', '🟣', '🌈'];
+
 const MODE_EMOJI = { '3v3': '⚔️', '5v5': '🛡️' };
 
 function progressBar(current, total, size = 12) {
@@ -98,7 +100,12 @@ function roomListRows(roomsOfMode) {
 
 function roomColor(room) {
   if (room.status === 'revealed') return COLOR.revealed;
-  if (isFull(room)) return canRevealCode(room).ok ? COLOR.fullWaiting : COLOR.fullBlocked;
+  if (isFull(room)) {
+    if (!canRevealCode(room).ok) return COLOR.fullBlocked;
+    // 🌩️ Hiệu ứng "tia chớp": thỉnh thoảng chớp sang màu ngẫu nhiên trong lúc chờ sẵn sàng
+    if (room._blinkOn && room._flashColor) return room._flashColor;
+    return COLOR.fullWaiting;
+  }
   if (room.players.size > 0) return COLOR.partial;
   return COLOR.empty;
 }
@@ -208,6 +215,11 @@ function roomEmbed(room) {
     });
   }
 
+  // (Tùy chọn) Ảnh/GIF banner riêng theo chế độ — dán URL vào Environment Variables
+  // BANNER_3V3_URL / BANNER_5V5_URL trên Render là hiện ra ngay, không cần sửa code/deploy lại.
+  const bannerUrl = config.MODE_BANNER_URL && config.MODE_BANNER_URL[room.mode];
+  if (bannerUrl) embed.setImage(bannerUrl);
+
   embed
     .setFooter({
       text: `ID: ${room.id}  •  ${bi(`Timeout chờ đủ người: ${Math.round(room.timeoutMs / 60000)} phút`, `Fill timeout: ${Math.round(room.timeoutMs / 60000)} min`)}`,
@@ -220,6 +232,8 @@ function roomEmbed(room) {
 function roomActionRows(room) {
   const full = isFull(room);
   const ready = allReady(room) && full;
+  const waitingForReady = full && !ready && room.status !== 'revealed';
+  const readyEmoji = ready ? '✅' : waitingForReady ? RAINBOW_EMOJI[(room._rainbowIndex ?? 0) % RAINBOW_EMOJI.length] : '🙋';
 
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -236,9 +250,9 @@ function roomActionRows(room) {
       .setDisabled(room.status === 'revealed'),
     new ButtonBuilder()
       .setCustomId(`ready_${room.id}`)
-      .setLabel(ready ? 'Đã sẵn sàng!' : 'Sẵn sàng')
+      .setLabel(ready ? 'Đã sẵn sàng!' : waitingForReady ? 'SẴN SÀNG NGAY!' : 'Sẵn sàng')
       .setStyle(ready ? ButtonStyle.Success : ButtonStyle.Primary)
-      .setEmoji(ready ? '✅' : '🙋')
+      .setEmoji(readyEmoji)
       .setDisabled(!full || room.status === 'revealed'),
     new ButtonBuilder()
       .setCustomId(`translate_${room.id}`)
@@ -291,9 +305,9 @@ function roomActionRows(room) {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`copycode_${room.id}`)
-          .setLabel('Lấy code của tôi')
-          .setEmoji('📋')
-          .setStyle(ButtonStyle.Success)
+          .setLabel(room._blinkOn ? '✨ LẤY CODE NGAY! ✨' : 'Lấy code của tôi')
+          .setEmoji(room._blinkOn ? '🌈' : '📋')
+          .setStyle(room._blinkOn ? ButtonStyle.Danger : ButtonStyle.Success)
       )
     );
   }
@@ -306,6 +320,8 @@ function roomActionRows(room) {
 function roomActionRowsEN(room) {
   const full = isFull(room);
   const ready = allReady(room) && full;
+  const waitingForReady = full && !ready && room.status !== 'revealed';
+  const readyEmoji = ready ? '✅' : waitingForReady ? RAINBOW_EMOJI[(room._rainbowIndex ?? 0) % RAINBOW_EMOJI.length] : '🙋';
 
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -322,9 +338,9 @@ function roomActionRowsEN(room) {
       .setDisabled(room.status === 'revealed'),
     new ButtonBuilder()
       .setCustomId(`ready_${room.id}`)
-      .setLabel(ready ? 'Ready!' : 'Ready')
+      .setLabel(ready ? 'Ready!' : waitingForReady ? 'READY NOW!' : 'Ready')
       .setStyle(ready ? ButtonStyle.Success : ButtonStyle.Primary)
-      .setEmoji(ready ? '✅' : '🙋')
+      .setEmoji(readyEmoji)
       .setDisabled(!full || room.status === 'revealed')
   );
 
@@ -372,9 +388,9 @@ function roomActionRowsEN(room) {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId(`copycode_${room.id}`)
-          .setLabel('Get my code')
-          .setEmoji('📋')
-          .setStyle(ButtonStyle.Success)
+          .setLabel(room._blinkOn ? '✨ GET CODE NOW! ✨' : 'Get my code')
+          .setEmoji(room._blinkOn ? '🌈' : '📋')
+          .setStyle(room._blinkOn ? ButtonStyle.Danger : ButtonStyle.Success)
       )
     );
   }
