@@ -159,16 +159,16 @@ function generateCode() {
 }
 
 // Định dạng code hiển thị riêng cho từng người theo team họ chọn
-// Không chọn team -> "<code>_<username>"
-// Chọn team 1/2   -> "<code>-<team>-<username>"
+// Không chọn team -> "<code>-<username>"
+// Chọn team 1/2   -> "<code>-<team>_<username>"
 function formatPersonalCode(room, userId) {
   if (!room.code) return null;
   const player = room.players.get(userId);
   if (!player) return null;
   if (player.team) {
-    return `${room.code}-${player.team}-${player.username}`;
+    return `${room.code}-${player.team}_${player.username}`;
   }
-  return `${room.code}_${player.username}`;
+  return `${room.code}-${player.username}`;
 }
 
 module.exports = {
