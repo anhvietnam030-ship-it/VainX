@@ -101,6 +101,20 @@ function isAdmin(interaction) {
   return false;
 }
 
+// Dùng khi tương tác xảy ra trong DM (interaction.member = null vì DM không có ngữ cảnh
+// server) - phải tự tra cứu thành viên đó trong guild chính để biết họ có phải admin không.
+// Cần thiết cho các nút quản lý phòng ẩn (được bấm từ trong DM).
+async function isAdminUserId(userId) {
+  if (!config.GUILD_ID) return false;
+  const guild = await client.guilds.fetch(config.GUILD_ID).catch(() => null);
+  if (!guild) return false;
+  const member = await guild.members.fetch(userId).catch(() => null);
+  if (!member) return false;
+  if (member.permissions?.has(PermissionFlagsBits.Administrator)) return true;
+  if (config.ADMIN_ROLE_ID && member.roles?.cache?.has(config.ADMIN_ROLE_ID)) return true;
+  return false;
+}
+
 async function logAdmin(text) {
   if (!config.LOG_CHANNEL_ID) return;
   const ch = await client.channels.fetch(config.LOG_CHANNEL_ID).catch(() => null);
@@ -990,6 +1004,28 @@ async function handleButton(interaction) {
       ephemeral: true,
     });
   }
+  if (customId.startsWith('hiddeninvitebtn_')) {
+    const roomId = customId.replace('hiddeninvitebtn_', '');
+    const room = getHiddenRoom(roomId);
+    if (!room) return interaction.reply({ content: '❌ Phòng ẩn này không tồn tại (có thể đã bị xóa).', ephemeral: true });
+
+    const isAdminNow = await isAdminUserId(interaction.user.id);
+    if (!isAdminNow) {
+      return interaction.reply({ content: '❌ Chỉ admin mới mời thêm người vào phòng ẩn được.', ephemeral: true });
+    }
+
+    const select = new UserSelectMenuBuilder()
+      .setCustomId(`hiddeninvite_${room.id}`)
+      .setPlaceholder(`Chọn người muốn mời vào ${room.label}`)
+      .setMinValues(1)
+      .setMaxValues(25);
+
+    return interaction.reply({
+      content: `📨 Chọn (nhiều) người muốn mời riêng vào **${room.label}**:`,
+      components: [new ActionRowBuilder().addComponents(select)],
+      ephemeral: true,
+    });
+  }
   if (customId.startsWith('invite_')) {
     const roomId = customId.replace('invite_', '');
     const room = getRoom(roomId);
@@ -1031,6 +1067,11 @@ async function handleHiddenInviteSelect(interaction, roomId) {
   const room = getHiddenRoom(roomId);
   if (!room) {
     return interaction.update({ content: '❌ Phòng ẩn này không tồn tại (có thể đã bị xóa).', components: [] });
+  }
+
+  const isAdminNow = await isAdminUserId(interaction.user.id);
+  if (!isAdminNow) {
+    return interaction.update({ content: '❌ Chỉ admin mới mời thêm người vào phòng ẩn được.', components: [] });
   }
 
   const targets = interaction.users;

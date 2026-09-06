@@ -280,12 +280,19 @@ function roomActionRows(room) {
       .setEmoji('⚪')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(room.status === 'revealed'),
-    new ButtonBuilder()
-      .setCustomId(`invite_${room.id}`)
-      .setLabel('Mời bạn')
-      .setEmoji('📨')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(room.status === 'revealed' || isFull(room) || !!room.hidden)
+    room.hidden
+      ? new ButtonBuilder()
+          .setCustomId(`hiddeninvitebtn_${room.id}`)
+          .setLabel('Mời riêng')
+          .setEmoji('📨')
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(room.status === 'revealed' || isFull(room))
+      : new ButtonBuilder()
+          .setCustomId(`invite_${room.id}`)
+          .setLabel('Mời bạn')
+          .setEmoji('📨')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(room.status === 'revealed' || isFull(room))
   );
 
   const canPlay = room.status === 'revealed';
@@ -363,12 +370,19 @@ function roomActionRowsEN(room) {
       .setEmoji('⚪')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(room.status === 'revealed'),
-    new ButtonBuilder()
-      .setCustomId(`invite_${room.id}`)
-      .setLabel('Invite friend')
-      .setEmoji('📨')
-      .setStyle(ButtonStyle.Secondary)
-      .setDisabled(room.status === 'revealed' || isFull(room) || !!room.hidden)
+    room.hidden
+      ? new ButtonBuilder()
+          .setCustomId(`hiddeninvitebtn_${room.id}`)
+          .setLabel('Invite privately')
+          .setEmoji('📨')
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(room.status === 'revealed' || isFull(room))
+      : new ButtonBuilder()
+          .setCustomId(`invite_${room.id}`)
+          .setLabel('Invite friend')
+          .setEmoji('📨')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(room.status === 'revealed' || isFull(room))
   );
 
   const canPlay = room.status === 'revealed';
