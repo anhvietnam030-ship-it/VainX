@@ -523,8 +523,62 @@ client.on('interactionCreate', async (interaction) => {
 
 // ---------- Slash commands ----------
 
+// Danh sách các lệnh CHỈ ADMIN dùng được (không tính /lobby, /moi-ban — ai cũng dùng được).
+// Dùng để tự động dọn (xóa) phản hồi ephemeral của các lệnh này sau 2 phút, khỏi cần admin
+// tự bấm "Bỏ qua tin nhắn" mỗi lần.
+const ADMIN_ONLY_COMMANDS = new Set([
+  'set-timeout',
+  'ready',
+  'gia-han-phong',
+  'ban-phong',
+  'unban-phong',
+  'kick-room',
+  'kick-group',
+  'setup-phong-an',
+  'moi-phong-an',
+  'danh-sach-phong-an',
+  'xoa-phong-an',
+  'setup',
+  'test-fill',
+  'test-fill-an',
+  'xoa-setup-phong',
+  'don-rac',
+  'xoa-tin-nhan-bot',
+  'xoa-phong-thuong',
+  'reset-tat-ca-phong',
+  'reset-room',
+]);
+
+const ADMIN_MSG_AUTO_DELETE_MS = 2 * 60 * 1000; // 2 phút
+
+// "Đè" tạm interaction.reply/followUp để MỌI phản hồi ephemeral của lệnh admin tự xóa sau
+// 2 phút, thay vì đứng nguyên chờ admin bấm "Bỏ qua tin nhắn" thủ công. Không đụng gì tới
+// các phản hồi khác (join/leave/ready... của người chơi thường) vì chỉ bọc khi commandName
+// nằm trong ADMIN_ONLY_COMMANDS.
+function wrapAdminEphemeralAutoDelete(interaction) {
+  const originalReply = interaction.reply.bind(interaction);
+  interaction.reply = async (options) => {
+    const result = await originalReply(options);
+    setTimeout(() => interaction.deleteReply().catch(() => {}), ADMIN_MSG_AUTO_DELETE_MS);
+    return result;
+  };
+
+  const originalFollowUp = interaction.followUp.bind(interaction);
+  interaction.followUp = async (options) => {
+    const msg = await originalFollowUp(options);
+    setTimeout(() => {
+      if (msg && typeof msg.delete === 'function') msg.delete().catch(() => {});
+    }, ADMIN_MSG_AUTO_DELETE_MS);
+    return msg;
+  };
+}
+
 async function handleSlashCommand(interaction) {
   const { commandName } = interaction;
+
+  if (ADMIN_ONLY_COMMANDS.has(commandName)) {
+    wrapAdminEphemeralAutoDelete(interaction);
+  }
 
   if (commandName === 'lobby') {
     if (!isAdmin(interaction)) {
@@ -1015,6 +1069,62 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({
       content:
         `✅ Đã thêm **${needed}** người giả (auto Sẵn sàng) vào **${room.label}**.\n` +
+        `Giờ bạn chỉ cần tự bấm **Gia nhập** (nếu chưa) và **Sẵn sàng** phần của mình để phòng tự phát code.`,
+      ephemeral: true,
+    });
+  }
+
+  if (commandName === 'test-fill-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh test này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const room = getHiddenRoom(roomId);
+    if (!room) {
+      return interaction.reply({
+        content: `❌ Không tìm thấy phòng ẩn "${roomId}" — dùng \`/danh-sach-phong-an\` để xem ID chính xác.`,
+        ephemeral: true,
+      });
+    }
+    if (room.status === 'revealed') {
+      return interaction.reply({
+        content: '❌ Phòng đang ở trạng thái đã phát code. Dùng /reset-room trước rồi thử lại.',
+        ephemeral: true,
+      });
+    }
+
+    const soNguoiInput = interaction.options.getInteger('so_nguoi');
+    const cho_trong = room.capacity - room.players.size;
+    const needed = Math.max(0, Math.min(soNguoiInput ?? cho_trong, cho_trong));
+
+    if (needed <= 0) {
+      return interaction.reply({ content: 'ℹ️ Phòng đã đủ người rồi (hoặc bạn xin thêm 0 người).', ephemeral: true });
+    }
+
+    const wasEmpty = room.players.size === 0;
+
+    for (let i = 1; i <= needed; i++) {
+      const fakeId = `9${Date.now()}${i}`.slice(0, 18); // id số giả, không trùng user thật
+      room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true });
+    }
+
+    const channel = interaction.channel;
+    if (wasEmpty) {
+      room.firstJoinAt = Date.now();
+      scheduleInactivityTimeout(room, channel);
+    }
+
+    await renderRoom(room, channel);
+
+    if (isFull(room)) {
+      await announceRoomFull(room, channel);
+      scheduleReadyCountdown(room, channel);
+      await tryRevealCode(room, channel);
+    }
+
+    return interaction.reply({
+      content:
+        `✅ Đã thêm **${needed}** người giả (auto Sẵn sàng) vào **${room.label}** (phòng ẩn).\n` +
         `Giờ bạn chỉ cần tự bấm **Gia nhập** (nếu chưa) và **Sẵn sàng** phần của mình để phòng tự phát code.`,
       ephemeral: true,
     });

@@ -151,6 +151,23 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
+    .setName('test-fill-an')
+    .setDescription('[TEST] Giống /test-fill nhưng dùng cho phòng ẨN (chỉ admin)')
+    .addStringOption((opt) =>
+      opt
+        .setName('phong')
+        .setDescription('ID phòng ẩn (xem bằng /danh-sach-phong-an)')
+        .setRequired(true)
+    )
+    .addIntegerOption((opt) =>
+      opt
+        .setName('so_nguoi')
+        .setDescription('Số người giả muốn thêm (để trống = tự lấp đầy phòng)')
+        .setMinValue(1)
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
     .setName('xoa-setup-phong')
     .setDescription('Xóa hẳn panel phòng đã đăng (để đăng lại mới bằng /setup) - chỉ admin')
     .addStringOption((opt) =>
