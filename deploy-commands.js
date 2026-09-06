@@ -76,6 +76,20 @@ const commands = [
     .addUserOption((opt) => opt.setName('user').setDescription('Thành viên muốn bỏ cấm').setRequired(true)),
 
   new SlashCommandBuilder()
+    .setName('kick-room')
+    .setDescription('Đá 1 người khỏi TRẬN đang diễn ra trong phòng (họ vẫn xem/vào lại phòng được) - chỉ admin')
+    .addStringOption((opt) =>
+      opt.setName('phong').setDescription('ID phòng, ví dụ: 3v3-1, 5v5-4, hoặc ID phòng ẩn').setRequired(true)
+    )
+    .addUserOption((opt) => opt.setName('user').setDescription('Người chơi cần đá khỏi trận').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('kick-group')
+    .setDescription('[ẨN] Xoá hẳn 1 người khỏi nhóm được mời vào phòng ẩn (mất quyền xem luôn) - chỉ admin')
+    .addStringOption((opt) => opt.setName('phong').setDescription('ID phòng ẩn').setRequired(true))
+    .addUserOption((opt) => opt.setName('user').setDescription('Người cần xoá khỏi nhóm phòng ẩn').setRequired(true)),
+
+  new SlashCommandBuilder()
     .setName('tao-phong-an')
     .setDescription('[ẨN] Tạo 1 phòng bí mật, không ai thấy trừ người được mời riêng (chỉ admin)')
     .addStringOption((opt) =>
@@ -177,8 +191,6 @@ const rest = new REST({ version: '10' }).setToken(config.TOKEN);
       : Routes.applicationCommands(config.CLIENT_ID);
 
     if (config.GUILD_ID) {
-      // Xóa sạch bản đăng ký TOÀN CỤC cũ (nếu từng deploy lúc chưa có GUILD_ID) để tránh
-      // hiện trùng lệnh (vừa có bản toàn cục vừa có bản theo guild cùng tên).
       await rest.put(Routes.applicationCommands(config.CLIENT_ID), { body: [] }).catch(() => {});
     }
 

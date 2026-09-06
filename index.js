@@ -105,14 +105,30 @@ function isAdmin(interaction) {
 // server) - phải tự tra cứu thành viên đó trong guild chính để biết họ có phải admin không.
 // Cần thiết cho các nút quản lý phòng ẩn (được bấm từ trong DM).
 async function isAdminUserId(userId) {
-  if (!config.GUILD_ID) return false;
-  const guild = await client.guilds.fetch(config.GUILD_ID).catch(() => null);
-  if (!guild) return false;
-  const member = await guild.members.fetch(userId).catch(() => null);
-  if (!member) return false;
-  if (member.permissions?.has(PermissionFlagsBits.Administrator)) return true;
-  if (config.ADMIN_ROLE_ID && member.roles?.cache?.has(config.ADMIN_ROLE_ID)) return true;
+  // KHÔNG fail cứng nếu thiếu GUILD_ID trong .env — biến này vốn optional cho các lệnh khác
+  // nên rất dễ bị bỏ quên, và nếu fail cứng ở đây thì MỌI admin thật đều bị báo sai "không
+  // có quyền" khi thao tác từ trong DM (panel phòng ẩn). Thay vào đó: nếu có GUILD_ID thì ưu
+  // tiên dùng đúng guild đó; nếu không, dò qua tất cả server mà bot đang tham gia.
+  const guildIds = config.GUILD_ID ? [config.GUILD_ID] : Array.from(client.guilds.cache.keys());
+
+  for (const guildId of guildIds) {
+    const guild = client.guilds.cache.get(guildId) || (await client.guilds.fetch(guildId).catch(() => null));
+    if (!guild) continue;
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) continue;
+    if (member.permissions?.has(PermissionFlagsBits.Administrator)) return true;
+    if (config.ADMIN_ROLE_ID && member.roles?.cache?.has(config.ADMIN_ROLE_ID)) return true;
+  }
   return false;
+}
+
+// Chuẩn hóa ID phòng gõ/dán vào lệnh admin: bỏ dấu backtick (```` ` ````) và khoảng trắng thừa.
+// Lý do: ID phòng được hiển thị trong code-format (`3v3-an-...`) để dễ đọc, nhưng trên
+// Discord mobile, long-press "copy" sẽ dính luôn dấu backtick bao quanh — dán vào ô lệnh
+// sẽ không khớp ID thật, khiến lệnh báo "không tìm thấy phòng" dù ID đúng (mà PC thì copy
+// sạch nên không dính lỗi này — đúng kiểu "lúc được lúc không" tùy máy).
+function sanitizeRoomId(raw) {
+  return String(raw ?? '').replace(/`/g, '').trim();
 }
 
 async function logAdmin(text) {
@@ -545,7 +561,7 @@ async function handleSlashCommand(interaction) {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
-    const roomId = interaction.options.getString('phong', true);
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const targetUser = interaction.options.getUser('user', true);
     const trangThai = interaction.options.getString('trang_thai', true); // 'ready' | 'notready'
     const room = getRoom(roomId);
@@ -583,7 +599,7 @@ async function handleSlashCommand(interaction) {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
-    const roomId = interaction.options.getString('phong', true);
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const phut = interaction.options.getInteger('phut', true);
     const room = getRoom(roomId);
     if (!room) {
@@ -613,7 +629,7 @@ async function handleSlashCommand(interaction) {
   }
 
   if (commandName === 'moi-ban') {
-    const roomId = interaction.options.getString('phong', true);
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const targetUser = interaction.options.getUser('ban', true);
     const room = getRoom(roomId);
     if (!room) {
@@ -652,7 +668,7 @@ async function handleSlashCommand(interaction) {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
-    const roomId = interaction.options.getString('phong', true);
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const targetUser = interaction.options.getUser('user', true);
     const room = getRoom(roomId);
     if (!room) {
@@ -682,7 +698,7 @@ async function handleSlashCommand(interaction) {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
-    const roomId = interaction.options.getString('phong', true);
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const targetUser = interaction.options.getUser('user', true);
     const room = getRoom(roomId);
     if (!room) {
@@ -694,6 +710,99 @@ async function handleSlashCommand(interaction) {
 
     return interaction.reply({
       content: `✅ Đã bỏ cấm <@${targetUser.id}> khỏi **${room.label}**.`,
+      ephemeral: true,
+    });
+  }
+
+  // Đá khỏi TRẬN đang diễn ra trong phòng — KHÔNG ban, KHÔNG đụng tới quyền xem/mời của
+  // phòng ẩn. Người bị đá vẫn còn trong danh sách được mời (nếu là phòng ẩn) và có thể tự
+  // bấm "Gia nhập" lại ngay trên panel của họ.
+  if (commandName === 'kick-room') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const targetUser = interaction.options.getUser('user', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+    if (!room.players.has(targetUser.id)) {
+      return interaction.reply({
+        content: `ℹ️ <@${targetUser.id}> hiện không ở trong **${room.label}** (có thể đã rời trước đó).`,
+        ephemeral: true,
+      });
+    }
+
+    room.players.delete(targetUser.id);
+    persistence.saveState(rooms);
+
+    const channel =
+      (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) ||
+      interaction.channel;
+    await renderRoom(room, channel);
+
+    if (room.hidden) {
+      client.users
+        .fetch(targetUser.id)
+        .then((user) => user.send(`⚠️ Bạn đã bị admin đá khỏi trận đang diễn ra tại **${room.label}**. Bạn vẫn có thể bấm **Gia nhập** lại trên panel để tham gia trận sau.`))
+        .catch(() => {});
+    }
+
+    return interaction.reply({
+      content: `✅ Đã đá <@${targetUser.id}> khỏi trận tại **${room.label}** (chưa cấm — họ vào lại được).`,
+      ephemeral: true,
+    });
+  }
+
+  // Xoá hẳn khỏi NHÓM được mời của 1 phòng ẨN — mất quyền xem/tương tác panel luôn, không
+  // giống kick-room (chỉ đá khỏi trận, vẫn còn quyền xem). Chỉ áp dụng cho phòng ẩn vì phòng
+  // thường không có khái niệm "danh sách được mời".
+  if (commandName === 'kick-group') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const targetUser = interaction.options.getUser('user', true);
+    const room = getHiddenRoom(roomId);
+    if (!room) {
+      return interaction.reply({
+        content: `❌ Không tìm thấy phòng ẩn "${roomId}" (lệnh này chỉ dùng cho phòng ẩn — xem ID đúng bằng \`/danh-sach-phong-an\`).`,
+        ephemeral: true,
+      });
+    }
+
+    room.players.delete(targetUser.id);
+
+    const targetIdx = room.panelTargets.findIndex((t) => t.userId === targetUser.id);
+    if (targetIdx === -1) {
+      return interaction.reply({
+        content: `ℹ️ <@${targetUser.id}> chưa từng được mời vào **${room.label}**, không có gì để xoá.`,
+        ephemeral: true,
+      });
+    }
+    const [target] = room.panelTargets.splice(targetIdx, 1);
+
+    // Xoá hẳn tin nhắn panel trong DM của họ (không chỉ sửa nội dung) để họ không còn thấy gì nữa
+    try {
+      const ch = await client.channels.fetch(target.channelId).catch(() => null);
+      if (ch && target.messageId) {
+        const msg = await ch.messages.fetch(target.messageId).catch(() => null);
+        if (msg) await msg.delete().catch(() => {});
+      }
+    } catch (err) {
+      console.error(`Không xoá được tin nhắn panel phòng ẩn cho ${targetUser.id}:`, err);
+    }
+
+    client.users
+      .fetch(targetUser.id)
+      .then((user) => user.send(`🚫 Bạn đã bị admin xoá khỏi nhóm phòng ẩn **${room.label}** — không còn quyền xem/tham gia phòng này nữa.`))
+      .catch(() => {});
+
+    await renderRoom(room, interaction.channel);
+
+    return interaction.reply({
+      content: `✅ Đã xoá <@${targetUser.id}> khỏi nhóm **${room.label}** (đã xoá luôn panel DM của họ).`,
       ephemeral: true,
     });
   }
@@ -726,7 +835,7 @@ async function handleSlashCommand(interaction) {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
-    const roomId = interaction.options.getString('phong', true);
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getHiddenRoom(roomId);
     if (!room) {
       return interaction.reply({
@@ -766,7 +875,7 @@ async function handleSlashCommand(interaction) {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
-    const roomId = interaction.options.getString('phong', true);
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getHiddenRoom(roomId);
     if (!room) {
       return interaction.reply({ content: `❌ Không tìm thấy phòng ẩn "${roomId}".`, ephemeral: true });
@@ -810,7 +919,7 @@ async function handleSlashCommand(interaction) {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh test này.', ephemeral: true });
     }
-    const roomId = interaction.options.getString('phong', true);
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getRoom(roomId);
     if (!room) {
       return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
@@ -942,7 +1051,7 @@ async function handleSlashCommand(interaction) {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới ép reset phòng được.', ephemeral: true });
     }
-    const roomId = interaction.options.getString('phong', true);
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getRoom(roomId);
     if (!room) {
       return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
