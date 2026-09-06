@@ -174,17 +174,6 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
-    .setName('xoa-tin-nhan-bot')
-    .setDescription('Xóa tin nhắn của chính Bot trong kênh này — từng phần hoặc toàn bộ (chỉ admin)')
-    .addIntegerOption((opt) =>
-      opt
-        .setName('so_luong')
-        .setDescription('Số tin nhắn của Bot muốn xóa (để trống = xóa TẤT CẢ tin nhắn của Bot trong kênh)')
-        .setMinValue(1)
-        .setRequired(false)
-    ),
-
-  new SlashCommandBuilder()
     .setName('xoa-phong-thuong')
     .setDescription('Xóa hẳn 1 phòng thường đã tạo thêm bằng /setup (không xóa được 4 phòng gốc) - chỉ admin')
     .addStringOption((opt) =>
@@ -206,25 +195,43 @@ const commands = [
     ),
 ].map((c) => c.toJSON());
 
+// /xoa-tin-nhan-bot đăng ký RIÊNG dưới dạng lệnh TOÀN CỤC (global) kèm quyền dùng trong DM
+// (.setDMPermission(true)) — để admin xóa được tin nhắn Bot ngay trong DM riêng với Bot,
+// nơi các panel phòng ẩn được gửi tới. Lệnh đăng ký theo guild (như mọi lệnh phía trên)
+// KHÔNG BAO GIỜ hiện được trong DM — đây là giới hạn của Discord, không phải bug.
+const dmCommands = [
+  new SlashCommandBuilder()
+    .setName('xoa-tin-nhan-bot')
+    .setDescription('Xóa tin nhắn của Bot trong kênh hoặc DM (chỉ admin)')
+    .setDMPermission(true)
+    .addIntegerOption((opt) =>
+      opt
+        .setName('so_luong')
+        .setDescription('Số tin nhắn của Bot muốn xóa (để trống = xóa TẤT CẢ)')
+        .setMinValue(1)
+        .setRequired(false)
+    ),
+].map((c) => c.toJSON());
+
 const rest = new REST({ version: '10' }).setToken(config.TOKEN);
 
 (async () => {
   try {
     if (!config.CLIENT_ID) throw new Error('Thiếu CLIENT_ID trong .env');
 
-    const route = config.GUILD_ID
-      ? Routes.applicationGuildCommands(config.CLIENT_ID, config.GUILD_ID)
-      : Routes.applicationCommands(config.CLIENT_ID);
-
     if (config.GUILD_ID) {
-      await rest.put(Routes.applicationCommands(config.CLIENT_ID), { body: [] }).catch(() => {});
+      // Lệnh server-only đăng theo guild (cập nhật gần như ngay lập tức, tiện lúc test).
+      await rest.put(Routes.applicationGuildCommands(config.CLIENT_ID, config.GUILD_ID), { body: commands });
+      // Lệnh dùng được cả trong DM PHẢI đăng ký toàn cục — dù có GUILD_ID hay không.
+      await rest.put(Routes.applicationCommands(config.CLIENT_ID), { body: dmCommands });
+    } else {
+      // Không có GUILD_ID -> mọi lệnh đều phải đăng cùng 1 lần lên endpoint toàn cục
+      // (PUT sẽ ghi đè toàn bộ danh sách ở endpoint đó, gộp chung tránh bị mất lệnh).
+      await rest.put(Routes.applicationCommands(config.CLIENT_ID), { body: [...commands, ...dmCommands] });
     }
 
-    await rest.put(route, { body: commands });
     console.log(
-      `Đã đăng ký ${commands.length} slash command(s) ${
-        config.GUILD_ID ? `cho guild ${config.GUILD_ID}` : 'toàn cục (có thể mất tới 1h để hiện)'
-      }.`
+      `Đã đăng ký ${commands.length} lệnh ${config.GUILD_ID ? `cho guild ${config.GUILD_ID}` : 'toàn cục (có thể mất tới 1h để hiện)'} + ${dmCommands.length} lệnh dùng được cả trong DM (toàn cục, có thể mất tới 1h để hiện).`
     );
   } catch (err) {
     console.error(err);

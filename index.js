@@ -110,6 +110,13 @@ function isAdmin(interaction) {
   return false;
 }
 
+// Dùng cho những lệnh có thể được gọi TỪ CẢ TRONG SERVER LẪN TRONG DM (ví dụ
+// /xoa-tin-nhan-bot) — tự chọn đúng cách kiểm tra quyền admin theo ngữ cảnh.
+async function isAdminAnywhere(interaction) {
+  if (interaction.member) return isAdmin(interaction);
+  return isAdminUserId(interaction.user.id);
+}
+
 // Dùng khi tương tác xảy ra trong DM (interaction.member = null vì DM không có ngữ cảnh
 // server) - phải tự tra cứu thành viên đó trong guild chính để biết họ có phải admin không.
 // Cần thiết cho các nút quản lý phòng ẩn (được bấm từ trong DM).
@@ -1071,19 +1078,25 @@ async function handleSlashCommand(interaction) {
   }
 
   if (commandName === 'xoa-tin-nhan-bot') {
-    if (!isAdmin(interaction)) {
+    // Lệnh này dùng được cả TRONG SERVER lẫn TRONG DM riêng với Bot -> phải tự chọn đúng
+    // cách kiểm tra quyền admin theo ngữ cảnh (isAdmin thường trả về false trong DM vì
+    // Discord không gửi kèm interaction.member ở đó).
+    const allowed = await isAdminAnywhere(interaction);
+    if (!allowed) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
-    // Để trống so_luong = xóa TẤT CẢ tin nhắn của Bot trong kênh này (quét ngược lịch sử,
+    // Để trống so_luong = xóa TẤT CẢ tin nhắn của Bot trong kênh/DM này (quét ngược lịch sử,
     // gộp theo lô 100 tin/lần fetch). Có nhập so_luong = chỉ xóa đúng số đó (mới nhất trước).
     const soLuong = interaction.options.getInteger('so_luong'); // null = tất cả
     const channel = interaction.channel;
+    const isDM = !interaction.guild; // true khi lệnh được gõ trong DM với Bot
+    const noiChung = isDM ? 'trong DM này' : 'trong kênh này';
     const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
     await interaction.reply({
       content: soLuong
-        ? `🧹 Đang xóa tối đa **${soLuong}** tin nhắn của Bot trong kênh này...`
-        : '🧹 Đang xóa **TẤT CẢ** tin nhắn của Bot trong kênh này (có thể mất một lúc nếu kênh nhiều tin nhắn cũ)...',
+        ? `🧹 Đang xóa tối đa **${soLuong}** tin nhắn của Bot ${noiChung}...`
+        : `🧹 Đang xóa **TẤT CẢ** tin nhắn của Bot ${noiChung} (có thể mất một lúc nếu nhiều tin cũ)...`,
       ephemeral: true,
     });
 
@@ -1103,24 +1116,34 @@ async function handleSlashCommand(interaction) {
         }
 
         if (botMsgs.length > 0) {
-          const now = Date.now();
-          const recent = botMsgs.filter((m) => now - m.createdTimestamp < TWO_WEEKS_MS);
-          const old = botMsgs.filter((m) => now - m.createdTimestamp >= TWO_WEEKS_MS);
+          if (isDM) {
+            // Discord KHÔNG hỗ trợ xóa hàng loạt (bulkDelete) trong kênh DM — chỉ xóa được
+            // từng tin một qua API, nên phải xóa lần lượt (kèm nghỉ ngắn để tránh rate-limit).
+            for (const msg of botMsgs) {
+              await msg.delete().catch(() => {});
+              totalDeleted += 1;
+              await new Promise((resolve) => setTimeout(resolve, 350));
+            }
+          } else {
+            const now = Date.now();
+            const recent = botMsgs.filter((m) => now - m.createdTimestamp < TWO_WEEKS_MS);
+            const old = botMsgs.filter((m) => now - m.createdTimestamp >= TWO_WEEKS_MS);
 
-          if (recent.length === 1) {
-            await recent[0].delete().catch(() => {});
-            totalDeleted += 1;
-          } else if (recent.length > 1) {
-            const deleted = await channel.bulkDelete(recent, true).catch(() => new Map());
-            totalDeleted += deleted.size;
-          }
-          for (const msg of old) {
-            await msg.delete().catch(() => {});
-            totalDeleted += 1;
+            if (recent.length === 1) {
+              await recent[0].delete().catch(() => {});
+              totalDeleted += 1;
+            } else if (recent.length > 1) {
+              const deleted = await channel.bulkDelete(recent, true).catch(() => new Map());
+              totalDeleted += deleted.size;
+            }
+            for (const msg of old) {
+              await msg.delete().catch(() => {});
+              totalDeleted += 1;
+            }
           }
         }
 
-        if (batch.size < 100) break; // đã quét tới đầu kênh
+        if (batch.size < 100) break; // đã quét tới đầu kênh/DM
       }
     } catch (err) {
       console.error('Lỗi xoa-tin-nhan-bot:', err);
@@ -1128,8 +1151,8 @@ async function handleSlashCommand(interaction) {
 
     return interaction.followUp({
       content:
-        `✅ Đã xóa **${totalDeleted}** tin nhắn của Bot trong kênh này.` +
-        (totalDeleted > 0
+        `✅ Đã xóa **${totalDeleted}** tin nhắn của Bot ${noiChung}.` +
+        (totalDeleted > 0 && !isDM
           ? '\n⚠️ Nếu vừa xóa trúng panel phòng đang hoạt động, dùng lại `/setup` để đăng panel mới.'
           : ''),
       ephemeral: true,
