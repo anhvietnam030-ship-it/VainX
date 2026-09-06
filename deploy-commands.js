@@ -76,6 +76,31 @@ const commands = [
     .addUserOption((opt) => opt.setName('user').setDescription('Thành viên muốn bỏ cấm').setRequired(true)),
 
   new SlashCommandBuilder()
+    .setName('tao-phong-an')
+    .setDescription('[ẨN] Tạo 1 phòng bí mật, không ai thấy trừ người được mời riêng (chỉ admin)')
+    .addStringOption((opt) =>
+      opt
+        .setName('che_do')
+        .setDescription('Chế độ')
+        .addChoices({ name: '3v3', value: '3v3' }, { name: '5v5', value: '5v5' })
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('moi-phong-an')
+    .setDescription('[ẨN] Mời (nhiều) người vào phòng ẩn qua DM riêng (chỉ admin)')
+    .addStringOption((opt) => opt.setName('phong').setDescription('ID phòng ẩn (xem bằng /danh-sach-phong-an)').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('danh-sach-phong-an')
+    .setDescription('[ẨN] Xem danh sách các phòng ẩn đang tồn tại (chỉ admin)'),
+
+  new SlashCommandBuilder()
+    .setName('xoa-phong-an')
+    .setDescription('[ẨN] Đóng và xóa 1 phòng ẩn (chỉ admin)')
+    .addStringOption((opt) => opt.setName('phong').setDescription('ID phòng ẩn').setRequired(true)),
+
+  new SlashCommandBuilder()
     .setName('setup-phong')
     .setDescription('Đăng thẳng 4 panel phòng của 1 chế độ vào kênh này (chỉ admin)')
     .addStringOption((opt) =>

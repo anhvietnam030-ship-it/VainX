@@ -3,6 +3,10 @@ const config = require('../config');
 // roomId dạng "3v3-1", "3v3-2", ... "5v5-4"
 const rooms = new Map();
 
+// Phòng ẨN — không nằm trong danh sách công khai, không hiện trong /setup-phong,
+// không tính vào thống kê bảng chính. Chỉ admin tạo được, không lưu qua restart.
+const hiddenRooms = new Map();
+
 function buildInitialRoom(mode, index) {
   return {
     id: `${mode}-${index}`,
@@ -46,7 +50,7 @@ function initRooms() {
 }
 
 function getRoom(roomId) {
-  return rooms.get(roomId);
+  return rooms.get(roomId) || hiddenRooms.get(roomId);
 }
 
 function getAllRooms() {
@@ -57,17 +61,51 @@ function getRoomsByMode(mode) {
   return getAllRooms().filter((r) => r.mode === mode);
 }
 
-// Tìm xem 1 user đang ở phòng nào trong TẤT CẢ các phòng (mọi chế độ)
+// ---------- Phòng ẨN ----------
+
+function createHiddenRoom(mode) {
+  const room = buildInitialRoom(mode, 0);
+  room.id = `${mode}-an-${Date.now()}`;
+  room.hidden = true;
+  room.label = `Phòng ${mode.toUpperCase()} (Ẩn) #${room.id.slice(-4)}`;
+  room.panelTargets = []; // [{ channelId, messageId }] - mỗi người được mời có 1 bản DM riêng
+  hiddenRooms.set(room.id, room);
+  return room;
+}
+
+function getHiddenRoom(roomId) {
+  return hiddenRooms.get(roomId);
+}
+
+function getAllHiddenRooms() {
+  return Array.from(hiddenRooms.values());
+}
+
+function deleteHiddenRoom(roomId) {
+  const room = hiddenRooms.get(roomId);
+  if (room) clearRoomTimers(room);
+  hiddenRooms.delete(roomId);
+  return !!room;
+}
+
+// Tìm xem 1 user đang ở phòng nào trong TẤT CẢ các phòng (mọi chế độ, kể cả phòng ẩn)
 function findRoomOfUser(userId) {
   for (const room of rooms.values()) {
+    if (room.players.has(userId)) return room;
+  }
+  for (const room of hiddenRooms.values()) {
     if (room.players.has(userId)) return room;
   }
   return null;
 }
 
-// Mỗi người được ở tối đa 1 phòng 3v3 VÀ 1 phòng 5v5 CÙNG LÚC (không được 2 phòng cùng chế độ)
+// Mỗi người được ở tối đa 1 phòng 3v3 VÀ 1 phòng 5v5 CÙNG LÚC (không được 2 phòng cùng chế độ,
+// tính cả phòng ẩn)
 function findRoomOfUserInMode(userId, mode) {
   for (const room of rooms.values()) {
+    if (room.mode === mode && room.players.has(userId)) return room;
+  }
+  for (const room of hiddenRooms.values()) {
     if (room.mode === mode && room.players.has(userId)) return room;
   }
   return null;
@@ -190,4 +228,8 @@ module.exports = {
   banUser,
   unbanUser,
   isBanned,
+  createHiddenRoom,
+  getHiddenRoom,
+  getAllHiddenRooms,
+  deleteHiddenRoom,
 };

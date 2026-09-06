@@ -32,6 +32,10 @@ const {
   banUser,
   unbanUser,
   isBanned,
+  createHiddenRoom,
+  getHiddenRoom,
+  getAllHiddenRooms,
+  deleteHiddenRoom,
 } = require('./src/rooms');
 const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows, roomActionRowsEN } = require('./src/ui');
 const persistence = require('./src/persistence');
@@ -104,7 +108,32 @@ async function logAdmin(text) {
 }
 
 // Vẽ lại / tạo panel phòng trong kênh, dùng chung cho mọi thay đổi state
+async function renderHiddenRoom(room) {
+  const embed = roomEmbed(room);
+  const rowsUi = roomActionRows(room);
+
+  for (const target of room.panelTargets) {
+    try {
+      const ch = await client.channels.fetch(target.channelId).catch(() => null);
+      if (!ch) continue;
+      if (target.messageId) {
+        const msg = await ch.messages.fetch(target.messageId).catch(() => null);
+        if (msg) {
+          await msg.edit({ embeds: [embed], components: rowsUi });
+          continue;
+        }
+      }
+      const sent = await ch.send({ embeds: [embed], components: rowsUi });
+      target.messageId = sent.id;
+    } catch (err) {
+      console.error(`Lỗi render phòng ẩn ${room.id} cho DM ${target.channelId}:`, err);
+    }
+  }
+}
+
 async function renderRoom(room, channel) {
+  if (room.hidden) return renderHiddenRoom(room);
+
   const embed = roomEmbed(room);
   const rowsUi = roomActionRows(room);
 
@@ -172,8 +201,25 @@ function scheduleInactivityTimeout(room, channel, customMs) {
 
 async function announceRoomFull(room, channel) {
   const ids = Array.from(room.players.keys());
-  const mentions = ids.map((id) => `<@${id}>`).join(' ');
   const readyMinutes = Math.round(config.READY_COUNTDOWN_MS / 60000);
+
+  if (room.hidden) {
+    // Phòng ẩn: không có kênh chung để ping, nhưng vẫn nhắc riêng từng người qua DM như bình thường.
+    for (const id of ids) {
+      client.users
+        .fetch(id)
+        .then((user) =>
+          user.send(
+            `✅ **${room.label}** đã **đủ người**!\n` +
+              `Bấm **Sẵn sàng** ngay trong tin nhắn phòng phía trên trong vòng ${readyMinutes} phút, nếu không bạn sẽ bị đá khỏi phòng để nhường chỗ cho người khác.`
+          )
+        )
+        .catch(() => {});
+    }
+    return;
+  }
+
+  const mentions = ids.map((id) => `<@${id}>`).join(' ');
   await channel
     .send(
       bi(
@@ -624,6 +670,84 @@ async function handleSlashCommand(interaction) {
     });
   }
 
+  if (commandName === 'tao-phong-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const mode = interaction.options.getString('che_do', true);
+    const room = createHiddenRoom(mode);
+
+    return interaction.reply({
+      content:
+        `✅ Đã tạo **${room.label}** (ID: \`${room.id}\`).\n` +
+        `Phòng này **hoàn toàn không hiện công khai** ở đâu cả — dùng \`/moi-phong-an phong:${room.id}\` để mời từng người vào (họ sẽ nhận được panel qua DM riêng, không ai khác thấy).`,
+      ephemeral: true,
+    });
+  }
+
+  if (commandName === 'moi-phong-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = interaction.options.getString('phong', true);
+    const room = getHiddenRoom(roomId);
+    if (!room) {
+      return interaction.reply({
+        content: `❌ Không tìm thấy phòng ẩn "${roomId}" — dùng \`/danh-sach-phong-an\` để xem ID chính xác.`,
+        ephemeral: true,
+      });
+    }
+
+    const select = new UserSelectMenuBuilder()
+      .setCustomId(`hiddeninvite_${room.id}`)
+      .setPlaceholder(`Chọn người muốn mời vào ${room.label}`)
+      .setMinValues(1)
+      .setMaxValues(25);
+
+    return interaction.reply({
+      content: `📨 Chọn (nhiều) người muốn mời riêng vào **${room.label}**:`,
+      components: [new ActionRowBuilder().addComponents(select)],
+      ephemeral: true,
+    });
+  }
+
+  if (commandName === 'danh-sach-phong-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const list = getAllHiddenRooms();
+    if (list.length === 0) {
+      return interaction.reply({ content: 'ℹ️ Hiện chưa có phòng ẩn nào.', ephemeral: true });
+    }
+    const lines = list.map(
+      (r) => `• \`${r.id}\` — ${r.label} — ${r.players.size}/${r.capacity} người — đã mời ${r.panelTargets.length} người`
+    );
+    return interaction.reply({ content: `📋 Danh sách phòng ẩn:\n${lines.join('\n')}`, ephemeral: true });
+  }
+
+  if (commandName === 'xoa-phong-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = interaction.options.getString('phong', true);
+    const room = getHiddenRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng ẩn "${roomId}".`, ephemeral: true });
+    }
+
+    // Báo cho những người đã được mời biết phòng đã bị đóng (DM riêng, không ai khác thấy)
+    for (const target of room.panelTargets) {
+      const ch = await client.channels.fetch(target.channelId).catch(() => null);
+      if (ch) {
+        const msg = target.messageId ? await ch.messages.fetch(target.messageId).catch(() => null) : null;
+        if (msg) await msg.edit({ content: `🚫 **${room.label}** đã bị admin đóng.`, embeds: [], components: [] }).catch(() => {});
+      }
+    }
+
+    deleteHiddenRoom(roomId);
+    return interaction.reply({ content: `✅ Đã xóa **${room.label}**.`, ephemeral: true });
+  }
+
   if (commandName === 'setup-phong') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
@@ -871,8 +995,61 @@ async function handleButton(interaction) {
   }
 }
 
+async function handleHiddenInviteSelect(interaction, roomId) {
+  const room = getHiddenRoom(roomId);
+  if (!room) {
+    return interaction.update({ content: '❌ Phòng ẩn này không tồn tại (có thể đã bị xóa).', components: [] });
+  }
+
+  const targets = interaction.users;
+  if (!targets || targets.size === 0) {
+    return interaction.update({ content: '❌ Chưa chọn ai cả.', components: [] });
+  }
+
+  const invited = [];
+  const failed = [];
+
+  for (const targetUser of targets.values()) {
+    // Đã có bản DM cho người này rồi -> khỏi gửi lại, tránh spam trùng
+    const already = room.panelTargets.some((t) => t.userId === targetUser.id);
+    if (already) {
+      invited.push(targetUser.id);
+      continue;
+    }
+    try {
+      const dm = await targetUser.createDM();
+      const embed = roomEmbed(room);
+      const rowsUi = roomActionRows(room);
+      const sent = await dm.send({
+        content: `📨 Bạn được **admin mời riêng** vào một phòng ẩn: **${room.label}** — chỉ bạn và những người được mời mới thấy phòng này.`,
+        embeds: [embed],
+        components: rowsUi,
+      });
+      room.panelTargets.push({ userId: targetUser.id, channelId: dm.id, messageId: sent.id });
+      invited.push(targetUser.id);
+    } catch (err) {
+      console.error('Không DM được cho', targetUser.id, err);
+      failed.push(targetUser.id);
+    }
+  }
+
+  let summary = invited.length
+    ? `✅ Đã gửi lời mời phòng ẩn **${room.label}** cho ${invited.length} người: ${invited.map((id) => `<@${id}>`).join(' ')}.`
+    : '';
+  if (failed.length) {
+    summary += `${summary ? '\n' : ''}⚠️ Không DM được cho: ${failed.map((id) => `<@${id}>`).join(' ')} (có thể họ tắt DM từ thành viên server).`;
+  }
+
+  return interaction.update({ content: summary || '❌ Không mời được ai cả.', components: [] });
+}
+
 async function handleUserSelectMenu(interaction) {
   const { customId } = interaction;
+
+  if (customId.startsWith('hiddeninvite_')) {
+    return handleHiddenInviteSelect(interaction, customId.replace('hiddeninvite_', ''));
+  }
+
   if (!customId.startsWith('inviteselect_')) return;
 
   const roomId = customId.replace('inviteselect_', '');
@@ -971,7 +1148,7 @@ async function joinRoom(interaction, roomId) {
     });
   }
 
-  if (config.JOIN_ROLE_ID && !interaction.member.roles?.cache?.has(config.JOIN_ROLE_ID)) {
+  if (interaction.member && config.JOIN_ROLE_ID && !interaction.member.roles?.cache?.has(config.JOIN_ROLE_ID)) {
     return interaction.reply({
       content: t(
         interaction,

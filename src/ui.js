@@ -285,7 +285,7 @@ function roomActionRows(room) {
       .setLabel('Mời bạn')
       .setEmoji('📨')
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(room.status === 'revealed' || isFull(room))
+      .setDisabled(room.status === 'revealed' || isFull(room) || !!room.hidden)
   );
 
   const canPlay = room.status === 'revealed';
@@ -368,7 +368,7 @@ function roomActionRowsEN(room) {
       .setLabel('Invite friend')
       .setEmoji('📨')
       .setStyle(ButtonStyle.Secondary)
-      .setDisabled(room.status === 'revealed' || isFull(room))
+      .setDisabled(room.status === 'revealed' || isFull(room) || !!room.hidden)
   );
 
   const canPlay = room.status === 'revealed';
