@@ -127,7 +127,7 @@ const commands = [
     .addIntegerOption((opt) =>
       opt
         .setName('so_luong')
-        .setDescription('Để trống = chỉ đăng panel. Nhập số = đảm bảo đủ số phòng đó (tự thêm nếu thiếu, tối đa 10)')
+        .setDescription('Để trống = chỉ đăng panel. Nhập số = tạo thêm số đó phòng mới (cộng dồn, tối đa 10/chế độ)')
         .setMinValue(1)
         .setMaxValue(10)
         .setRequired(false)
@@ -202,7 +202,7 @@ const commands = [
 const dmCommands = [
   new SlashCommandBuilder()
     .setName('xoa-tin-nhan-bot')
-    .setDescription('Xóa tin nhắn của Bot trong kênh hoặc DM (chỉ admin)')
+    .setDescription('Xóa tin nhắn của Bot (trong kênh hoặc DM với Bot) — từng phần hoặc toàn bộ (chỉ admin)')
     .setDMPermission(true)
     .addIntegerOption((opt) =>
       opt

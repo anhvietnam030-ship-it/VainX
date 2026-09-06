@@ -920,34 +920,37 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã xóa **${room.label}**.`, ephemeral: true });
   }
 
-  // Gộp /setup-phong (đăng panel) + /them-phong (tạo thêm phòng) thành 1 lệnh /setup duy nhất:
-  // không nhập so_luong -> chỉ đăng lại panel của các phòng hiện có (như /setup-phong cũ);
-  // có nhập so_luong -> đảm bảo đủ số phòng đó (tự tạo thêm nếu còn thiếu, tối đa 10
-  // phòng/chế độ), rồi mới đăng panel của TẤT CẢ phòng trong chế độ đó.
+  // /setup che_do [so_luong]: không nhập so_luong -> chỉ đăng lại panel các phòng hiện có;
+  // có nhập so_luong -> TẠO THÊM đúng số đó phòng mới (cộng dồn vào số đang có, không phải
+  // set tổng), tối đa config.MAX_ROOMS_PER_MODE (10) phòng/chế độ, rồi đăng panel tất cả.
+  // Ví dụ: đang có 2 phòng, gõ so_luong:3 -> có thêm 3 phòng mới -> tổng thành 5 phòng.
+  // Không còn phòng mặc định lúc khởi động — admin phải tự /setup để tạo phòng đầu tiên.
   if (commandName === 'setup') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const mode = interaction.options.getString('che_do', true);
-    const soLuong = interaction.options.getInteger('so_luong'); // optional
+    const soLuong = interaction.options.getInteger('so_luong'); // optional: số phòng MUỐN THÊM MỚI
 
     let note = '';
     if (soLuong) {
-      const currentCount = getRoomsByMode(mode).length;
-      if (soLuong > currentCount) {
-        const { created, capped, currentTotal, maxAllowed } = addRoomsToMode(mode, soLuong - currentCount);
-        if (created.length > 0) {
-          note += `\n✅ Đã tạo thêm **${created.length}** phòng mới: ${created.map((r) => `\`${r.id}\``).join(', ')}.`;
-        }
-        if (capped) {
-          note += `\n⚠️ Chỉ tạo được tới **${currentTotal}/${maxAllowed}** phòng vì đã chạm giới hạn tối đa ${maxAllowed} phòng/chế độ.`;
-        }
-      } else if (soLuong < currentCount) {
-        note += `\nℹ️ Chế độ này đã có **${currentCount}** phòng (nhiều hơn ${soLuong} bạn nhập) — lệnh này không tự xóa bớt, dùng \`/xoa-phong-thuong\` nếu muốn giảm.`;
+      const { created, capped, currentTotal, maxAllowed } = addRoomsToMode(mode, soLuong);
+      if (created.length > 0) {
+        note += `\n✅ Đã tạo thêm **${created.length}** phòng mới: ${created.map((r) => `\`${r.id}\``).join(', ')} (tổng hiện tại: **${currentTotal}/${maxAllowed}** phòng).`;
+      }
+      if (capped) {
+        note += `\n⚠️ Bạn xin thêm ${soLuong} phòng nhưng chỉ tạo được ${created.length} vì đã chạm giới hạn tối đa ${maxAllowed} phòng/chế độ.`;
       }
     }
 
     const roomsOfMode = getRoomsByMode(mode);
+
+    if (roomsOfMode.length === 0) {
+      return interaction.reply({
+        content: `❌ Chế độ **${mode.toUpperCase()}** hiện chưa có phòng nào. Gõ \`/setup che_do:${mode} so_luong:<số phòng muốn tạo>\` để tạo phòng trước.`,
+        ephemeral: true,
+      });
+    }
 
     await interaction.reply({
       content: `✅ Đang đăng ${roomsOfMode.length} panel phòng **${mode.toUpperCase()}** vào kênh này...${note}`,
@@ -1242,6 +1245,18 @@ async function handleButton(interaction) {
   if (customId === 'menu_3v3' || customId === 'menu_5v5') {
     const mode = customId.split('_')[1];
     const roomsOfMode = getRoomsByMode(mode);
+
+    if (roomsOfMode.length === 0) {
+      return interaction.reply({
+        content: t(
+          interaction,
+          `⚠️ Hiện chưa có phòng **${mode.toUpperCase()}** nào — chờ admin tạo phòng bằng \`/setup\`.`,
+          `⚠️ There are no **${mode.toUpperCase()}** rooms yet — wait for an admin to create some with \`/setup\`.`
+        ),
+        ephemeral: true,
+      });
+    }
+
     return interaction.reply({
       content: t(
         interaction,

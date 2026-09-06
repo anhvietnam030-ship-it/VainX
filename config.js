@@ -14,7 +14,10 @@ module.exports = {
     '5v5': 10,
   },
 
-  ROOMS_PER_MODE: 4,
+  // Không còn tạo phòng mặc định lúc khởi động nữa — admin phải tự dùng /setup che_do so_luong
+  // để tạo phòng. Giữ biến này = 0 để rooms.js/index.js hiểu là "không có phòng gốc nào được
+  // bảo vệ", tức mọi phòng đều do admin tạo (và admin xóa được) qua /setup + /xoa-phong-thuong.
+  ROOMS_PER_MODE: 0,
   // Số phòng thường (không tính phòng ẩn) tối đa cho MỖI chế độ, tính cả 4 phòng mặc định.
   // Admin dùng /them-phong để tạo thêm phòng ngoài 4 phòng gốc, nhưng không được vượt số này.
   MAX_ROOMS_PER_MODE: 10,
