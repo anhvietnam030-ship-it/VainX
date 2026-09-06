@@ -538,6 +538,7 @@ const ADMIN_ONLY_COMMANDS = new Set([
   'moi-phong-an',
   'danh-sach-phong-an',
   'xoa-phong-an',
+  'xoa-tat-ca-phong-an',
   'setup',
   'test-fill',
   'test-fill-an',
@@ -972,6 +973,32 @@ async function handleSlashCommand(interaction) {
 
     deleteHiddenRoom(roomId);
     return interaction.reply({ content: `✅ Đã xóa **${room.label}**.`, ephemeral: true });
+  }
+
+  if (commandName === 'xoa-tat-ca-phong-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const allHidden = getAllHiddenRooms();
+    if (allHidden.length === 0) {
+      return interaction.reply({ content: 'ℹ️ Hiện không có phòng ẩn nào để xóa.', ephemeral: true });
+    }
+
+    await interaction.reply({ content: `🗑️ Đang xóa toàn bộ **${allHidden.length}** phòng ẩn...`, ephemeral: true });
+
+    for (const room of allHidden) {
+      // Báo cho những người đã được mời biết phòng đã bị đóng (DM riêng, không ai khác thấy)
+      for (const target of room.panelTargets) {
+        const ch = await client.channels.fetch(target.channelId).catch(() => null);
+        if (ch) {
+          const msg = target.messageId ? await ch.messages.fetch(target.messageId).catch(() => null) : null;
+          if (msg) await msg.edit({ content: `🚫 **${room.label}** đã bị admin đóng.`, embeds: [], components: [] }).catch(() => {});
+        }
+      }
+      deleteHiddenRoom(room.id);
+    }
+
+    return interaction.followUp({ content: `✅ Đã xóa toàn bộ **${allHidden.length}** phòng ẩn.`, ephemeral: true });
   }
 
   // /setup che_do [so_luong]: không nhập so_luong -> chỉ đăng lại panel các phòng hiện có;

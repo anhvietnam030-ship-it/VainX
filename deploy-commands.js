@@ -115,6 +115,10 @@ const commands = [
     .addStringOption((opt) => opt.setName('phong').setDescription('ID phòng ẩn').setRequired(true)),
 
   new SlashCommandBuilder()
+    .setName('xoa-tat-ca-phong-an')
+    .setDescription('[ẨN] Đóng và xóa TOÀN BỘ phòng ẩn đang có cùng lúc (chỉ admin)'),
+
+  new SlashCommandBuilder()
     .setName('setup')
     .setDescription('Đăng panel phòng của 1 chế độ vào kênh này, có thể kèm tạo thêm phòng (chỉ admin)')
     .addStringOption((opt) =>

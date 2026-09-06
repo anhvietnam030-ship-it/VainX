@@ -72,16 +72,23 @@ function ensureRoom(mode, index) {
 function addRoomsToMode(mode, count) {
   const existing = getRoomsByMode(mode);
   const maxAllowed = config.MAX_ROOMS_PER_MODE;
+  const usedIndices = new Set(existing.map((r) => r.index));
   const canAdd = Math.max(0, maxAllowed - existing.length);
   const toAdd = Math.min(count, canAdd);
-  let nextIndex = existing.reduce((max, r) => Math.max(max, r.index), 0) + 1;
 
+  // Lấp đầy số thứ tự còn TRỐNG (do trước đó admin đã /xoa-phong-thuong 1 phòng ở giữa) trước,
+  // rồi mới tạo số mới tiếp theo — đảm bảo luôn ra dãy liền mạch (VD: đang có phòng #1, thêm 9
+  // phòng thì phải ra đúng #2,#3,...,#10, không nhảy số hay để trống ở giữa).
   const created = [];
-  for (let i = 0; i < toAdd; i++) {
-    const room = buildInitialRoom(mode, nextIndex);
-    rooms.set(room.id, room);
-    created.push(room);
-    nextIndex++;
+  let idx = 1;
+  while (created.length < toAdd && idx <= maxAllowed) {
+    if (!usedIndices.has(idx)) {
+      const room = buildInitialRoom(mode, idx);
+      rooms.set(room.id, room);
+      created.push(room);
+      usedIndices.add(idx);
+    }
+    idx++;
   }
 
   return { created, requested: count, capped: count > toAdd, currentTotal: existing.length + created.length, maxAllowed };
