@@ -185,8 +185,22 @@ function scheduleInactivityTimeout(room, channel, customMs) {
   const ms = customMs ?? room.timeoutMs;
   room.timers.inactivity = setTimeout(async () => {
     if (room.status !== 'revealed') {
+      const invitedIds = room.hidden ? room.panelTargets.map((t) => t.userId) : [];
       resetRoom(room);
       await renderRoom(room, channel);
+
+      if (room.hidden) {
+        // Phòng ẩn: KHÔNG được gửi thông báo vào kênh công khai (dù channel truyền vào là kênh
+        // admin gõ lệnh test) - chỉ báo riêng qua DM cho những người đã từng được mời.
+        for (const id of invitedIds) {
+          client.users
+            .fetch(id)
+            .then((user) => user.send(`⏰ **${room.label}** đã tự động reset vì quá thời gian chờ.`))
+            .catch(() => {});
+        }
+        return;
+      }
+
       await channel
         .send(
           bi(
@@ -677,10 +691,19 @@ async function handleSlashCommand(interaction) {
     const mode = interaction.options.getString('che_do', true);
     const room = createHiddenRoom(mode);
 
+    let dmNote = '';
+    try {
+      await sendHiddenRoomDM(room, interaction.user, `👑 Bạn (admin) vừa tạo phòng ẩn: **${room.label}**.`);
+    } catch (err) {
+      console.error('Không DM được panel phòng ẩn cho admin:', err);
+      dmNote = '\n⚠️ Không DM được panel cho bạn (có thể bạn đang tắt DM từ thành viên server) — bật lên rồi thử lại.';
+    }
+
     return interaction.reply({
       content:
-        `✅ Đã tạo **${room.label}** (ID: \`${room.id}\`).\n` +
-        `Phòng này **hoàn toàn không hiện công khai** ở đâu cả — dùng \`/moi-phong-an phong:${room.id}\` để mời từng người vào (họ sẽ nhận được panel qua DM riêng, không ai khác thấy).`,
+        `✅ Đã tạo **${room.label}** (ID: \`${room.id}\`) và gửi panel vào DM của bạn.\n` +
+        `Dùng \`/moi-phong-an phong:${room.id}\` để mời thêm người khác (họ sẽ nhận panel qua DM riêng, không ai khác thấy).` +
+        dmNote,
       ephemeral: true,
     });
   }
@@ -995,6 +1018,15 @@ async function handleButton(interaction) {
   }
 }
 
+async function sendHiddenRoomDM(room, targetUser, introText) {
+  const dm = await targetUser.createDM();
+  const embed = roomEmbed(room);
+  const rowsUi = roomActionRows(room);
+  const sent = await dm.send({ content: introText, embeds: [embed], components: rowsUi });
+  room.panelTargets.push({ userId: targetUser.id, channelId: dm.id, messageId: sent.id });
+  return sent;
+}
+
 async function handleHiddenInviteSelect(interaction, roomId) {
   const room = getHiddenRoom(roomId);
   if (!room) {
@@ -1017,15 +1049,11 @@ async function handleHiddenInviteSelect(interaction, roomId) {
       continue;
     }
     try {
-      const dm = await targetUser.createDM();
-      const embed = roomEmbed(room);
-      const rowsUi = roomActionRows(room);
-      const sent = await dm.send({
-        content: `📨 Bạn được **admin mời riêng** vào một phòng ẩn: **${room.label}** — chỉ bạn và những người được mời mới thấy phòng này.`,
-        embeds: [embed],
-        components: rowsUi,
-      });
-      room.panelTargets.push({ userId: targetUser.id, channelId: dm.id, messageId: sent.id });
+      await sendHiddenRoomDM(
+        room,
+        targetUser,
+        `📨 Bạn được **admin mời riêng** vào một phòng ẩn: **${room.label}** — chỉ bạn và những người được mời mới thấy phòng này.`
+      );
       invited.push(targetUser.id);
     } catch (err) {
       console.error('Không DM được cho', targetUser.id, err);
