@@ -53,6 +53,52 @@ function getRoom(roomId) {
   return rooms.get(roomId) || hiddenRooms.get(roomId);
 }
 
+// Dùng khi nạp lại state đã lưu lúc khởi động: nếu id không nằm trong 4 phòng mặc định
+// (vì admin đã /them-phong trước khi bot restart) thì tạo lại đúng slot đó trước khi
+// gán dữ liệu đã lưu vào, tránh mất phòng admin đã thêm.
+function ensureRoom(mode, index) {
+  const id = `${mode}-${index}`;
+  let room = rooms.get(id);
+  if (!room) {
+    room = buildInitialRoom(mode, index);
+    rooms.set(id, room);
+  }
+  return room;
+}
+
+// Admin thêm thêm (nhiều) phòng thường cho 1 chế độ, tối đa config.MAX_ROOMS_PER_MODE
+// phòng/chế độ (tính cả 4 phòng mặc định). Trả về những phòng vừa tạo được (có thể ít hơn
+// số xin nếu đụng trần).
+function addRoomsToMode(mode, count) {
+  const existing = getRoomsByMode(mode);
+  const maxAllowed = config.MAX_ROOMS_PER_MODE;
+  const canAdd = Math.max(0, maxAllowed - existing.length);
+  const toAdd = Math.min(count, canAdd);
+  let nextIndex = existing.reduce((max, r) => Math.max(max, r.index), 0) + 1;
+
+  const created = [];
+  for (let i = 0; i < toAdd; i++) {
+    const room = buildInitialRoom(mode, nextIndex);
+    rooms.set(room.id, room);
+    created.push(room);
+    nextIndex++;
+  }
+
+  return { created, requested: count, capped: count > toAdd, currentTotal: existing.length + created.length, maxAllowed };
+}
+
+// Admin xóa 1 phòng thường đã tạo thêm ngoài số phòng mặc định (index > ROOMS_PER_MODE).
+// Không cho xóa phòng ẩn qua đây, và không cho xóa 4 phòng gốc (dùng /xoa-setup-phong hoặc
+// /reset-room nếu muốn reset chúng thay vì xóa hẳn).
+function removeExtraRoom(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return { ok: false, reason: 'not_found' };
+  if (room.index <= config.ROOMS_PER_MODE) return { ok: false, reason: 'protected', room };
+  clearRoomTimers(room);
+  rooms.delete(roomId);
+  return { ok: true, room };
+}
+
 function getAllRooms() {
   return Array.from(rooms.values());
 }
@@ -215,6 +261,9 @@ module.exports = {
   getRoom,
   getAllRooms,
   getRoomsByMode,
+  ensureRoom,
+  addRoomsToMode,
+  removeExtraRoom,
   findRoomOfUser,
   findRoomOfUserInMode,
   clearRoomTimers,

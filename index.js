@@ -36,6 +36,9 @@ const {
   getHiddenRoom,
   getAllHiddenRooms,
   deleteHiddenRoom,
+  ensureRoom,
+  addRoomsToMode,
+  removeExtraRoom,
 } = require('./src/rooms');
 const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows, roomActionRowsEN } = require('./src/ui');
 const persistence = require('./src/persistence');
@@ -66,7 +69,13 @@ startSelfPing();
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 initRooms();
 persistence.loadState().forEach((data, id) => {
-  const room = getRoom(id);
+  // Nếu id không nằm trong 4 phòng mặc định (vì admin đã /setup che_do so_luong để tạo thêm trước khi bot restart)
+  // thì tạo lại đúng slot đó trước khi gán dữ liệu đã lưu vào, tránh mất phòng admin đã thêm.
+  let room = getRoom(id);
+  if (!room) {
+    const match = /^(3v3|5v5)-(\d+)$/.exec(id);
+    if (match) room = ensureRoom(match[1], parseInt(match[2], 10));
+  }
   if (!room) return;
   room.status = data.status || 'waiting';
   room.code = data.code || null;
@@ -519,6 +528,7 @@ async function handleSlashCommand(interaction) {
       return {
         current: list.reduce((sum, r) => sum + r.players.size, 0),
         total: list.reduce((sum, r) => sum + r.capacity, 0),
+        roomCount: list.length,
       };
     };
     const stats = { '3v3': statsFor('3v3'), '5v5': statsFor('5v5') };
@@ -557,7 +567,7 @@ async function handleSlashCommand(interaction) {
     });
   }
 
-  if (commandName === 'set-ready') {
+  if (commandName === 'ready') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
@@ -807,7 +817,7 @@ async function handleSlashCommand(interaction) {
     });
   }
 
-  if (commandName === 'tao-phong-an') {
+  if (commandName === 'setup-phong-an') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
@@ -835,6 +845,15 @@ async function handleSlashCommand(interaction) {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
+    // Menu chọn người (User Select) chỉ hiện đủ danh sách thành viên khi mở TRONG 1 kênh
+    // của server — mở từ DM sẽ bị Discord giới hạn chỉ thấy vài người. Chặn ở đây để không
+    // lặp lại bug "chỉ mời được 2 người".
+    if (!interaction.guild) {
+      return interaction.reply({
+        content: '⚠️ Lệnh này phải chạy trong 1 kênh của server (không dùng được từ DM), vì DM không hiện đủ danh sách thành viên để chọn.',
+        ephemeral: true,
+      });
+    }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getHiddenRoom(roomId);
     if (!room) {
@@ -851,7 +870,7 @@ async function handleSlashCommand(interaction) {
       .setMaxValues(25);
 
     return interaction.reply({
-      content: `📨 Chọn (nhiều) người muốn mời riêng vào **${room.label}**:`,
+      content: `📨 Chọn (nhiều) người muốn mời riêng vào **${room.label}** (tối đa 25 người/lần — chạy lại lệnh này nếu cần mời thêm):`,
       components: [new ActionRowBuilder().addComponents(select)],
       ephemeral: true,
     });
@@ -894,15 +913,37 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã xóa **${room.label}**.`, ephemeral: true });
   }
 
-  if (commandName === 'setup-phong') {
+  // Gộp /setup-phong (đăng panel) + /them-phong (tạo thêm phòng) thành 1 lệnh /setup duy nhất:
+  // không nhập so_luong -> chỉ đăng lại panel của các phòng hiện có (như /setup-phong cũ);
+  // có nhập so_luong -> đảm bảo đủ số phòng đó (tự tạo thêm nếu còn thiếu, tối đa 10
+  // phòng/chế độ), rồi mới đăng panel của TẤT CẢ phòng trong chế độ đó.
+  if (commandName === 'setup') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const mode = interaction.options.getString('che_do', true);
+    const soLuong = interaction.options.getInteger('so_luong'); // optional
+
+    let note = '';
+    if (soLuong) {
+      const currentCount = getRoomsByMode(mode).length;
+      if (soLuong > currentCount) {
+        const { created, capped, currentTotal, maxAllowed } = addRoomsToMode(mode, soLuong - currentCount);
+        if (created.length > 0) {
+          note += `\n✅ Đã tạo thêm **${created.length}** phòng mới: ${created.map((r) => `\`${r.id}\``).join(', ')}.`;
+        }
+        if (capped) {
+          note += `\n⚠️ Chỉ tạo được tới **${currentTotal}/${maxAllowed}** phòng vì đã chạm giới hạn tối đa ${maxAllowed} phòng/chế độ.`;
+        }
+      } else if (soLuong < currentCount) {
+        note += `\nℹ️ Chế độ này đã có **${currentCount}** phòng (nhiều hơn ${soLuong} bạn nhập) — lệnh này không tự xóa bớt, dùng \`/xoa-phong-thuong\` nếu muốn giảm.`;
+      }
+    }
+
     const roomsOfMode = getRoomsByMode(mode);
 
     await interaction.reply({
-      content: `✅ Đang đăng 4 panel phòng **${mode.toUpperCase()}** vào kênh này...`,
+      content: `✅ Đang đăng ${roomsOfMode.length} panel phòng **${mode.toUpperCase()}** vào kênh này...${note}`,
       ephemeral: true,
     });
 
@@ -912,6 +953,7 @@ async function handleSlashCommand(interaction) {
       room.panelMessageId = null;
       await renderRoom(room, interaction.channel);
     }
+    persistence.saveState(rooms);
     return;
   }
 
@@ -999,7 +1041,7 @@ async function handleSlashCommand(interaction) {
     persistence.saveState(rooms);
 
     return interaction.followUp({
-      content: `✅ Đã xóa **${deletedCount}** panel và reset **${targetRooms.length}** phòng. Dùng /setup-phong để đăng panel mới.`,
+      content: `✅ Đã xóa **${deletedCount}** panel và reset **${targetRooms.length}** phòng. Dùng /setup để đăng panel mới.`,
       ephemeral: true,
     });
   }
@@ -1028,14 +1070,118 @@ async function handleSlashCommand(interaction) {
     }
   }
 
+  if (commandName === 'xoa-tin-nhan-bot') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    // Để trống so_luong = xóa TẤT CẢ tin nhắn của Bot trong kênh này (quét ngược lịch sử,
+    // gộp theo lô 100 tin/lần fetch). Có nhập so_luong = chỉ xóa đúng số đó (mới nhất trước).
+    const soLuong = interaction.options.getInteger('so_luong'); // null = tất cả
+    const channel = interaction.channel;
+    const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
+
+    await interaction.reply({
+      content: soLuong
+        ? `🧹 Đang xóa tối đa **${soLuong}** tin nhắn của Bot trong kênh này...`
+        : '🧹 Đang xóa **TẤT CẢ** tin nhắn của Bot trong kênh này (có thể mất một lúc nếu kênh nhiều tin nhắn cũ)...',
+      ephemeral: true,
+    });
+
+    let totalDeleted = 0;
+    let lastId;
+    try {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        if (soLuong && totalDeleted >= soLuong) break;
+        const batch = await channel.messages.fetch({ limit: 100, ...(lastId ? { before: lastId } : {}) });
+        if (batch.size === 0) break;
+        lastId = batch.last().id;
+
+        let botMsgs = Array.from(batch.filter((m) => m.author.id === client.user.id).values());
+        if (soLuong && botMsgs.length > soLuong - totalDeleted) {
+          botMsgs = botMsgs.slice(0, soLuong - totalDeleted);
+        }
+
+        if (botMsgs.length > 0) {
+          const now = Date.now();
+          const recent = botMsgs.filter((m) => now - m.createdTimestamp < TWO_WEEKS_MS);
+          const old = botMsgs.filter((m) => now - m.createdTimestamp >= TWO_WEEKS_MS);
+
+          if (recent.length === 1) {
+            await recent[0].delete().catch(() => {});
+            totalDeleted += 1;
+          } else if (recent.length > 1) {
+            const deleted = await channel.bulkDelete(recent, true).catch(() => new Map());
+            totalDeleted += deleted.size;
+          }
+          for (const msg of old) {
+            await msg.delete().catch(() => {});
+            totalDeleted += 1;
+          }
+        }
+
+        if (batch.size < 100) break; // đã quét tới đầu kênh
+      }
+    } catch (err) {
+      console.error('Lỗi xoa-tin-nhan-bot:', err);
+    }
+
+    return interaction.followUp({
+      content:
+        `✅ Đã xóa **${totalDeleted}** tin nhắn của Bot trong kênh này.` +
+        (totalDeleted > 0
+          ? '\n⚠️ Nếu vừa xóa trúng panel phòng đang hoạt động, dùng lại `/setup` để đăng panel mới.'
+          : ''),
+      ephemeral: true,
+    });
+  }
+
+  if (commandName === 'xoa-phong-thuong') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const room = getRoom(roomId);
+    if (!room || room.hidden) {
+      return interaction.reply({
+        content: `❌ Không tìm thấy phòng thường "${roomId}" (lệnh này không xóa được phòng ẩn — dùng \`/xoa-phong-an\` cho phòng ẩn).`,
+        ephemeral: true,
+      });
+    }
+
+    // Xóa panel cũ trên Discord trước khi xóa phòng khỏi bộ nhớ, tránh để lại panel "mồ côi".
+    if (room.panelChannelId && room.panelMessageId) {
+      const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
+      if (ch) {
+        const msg = await ch.messages.fetch(room.panelMessageId).catch(() => null);
+        if (msg) await msg.delete().catch(() => {});
+      }
+    }
+
+    const result = removeExtraRoom(roomId);
+    if (!result.ok) {
+      if (result.reason === 'protected') {
+        return interaction.reply({
+          content: `❌ **${room.label}** nằm trong ${config.ROOMS_PER_MODE} phòng gốc (mặc định), không xóa hẳn được — dùng \`/reset-room\` nếu chỉ muốn đưa phòng về trạng thái trống.`,
+          ephemeral: true,
+        });
+      }
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+
+    persistence.saveState(rooms);
+    return interaction.reply({ content: `✅ Đã xóa hẳn **${result.room.label}** (\`${result.room.id}\`).`, ephemeral: true });
+  }
+
   if (commandName === 'reset-tat-ca-phong') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
 
-    await interaction.reply({ content: '♻️ Đang reset toàn bộ 8 phòng...', ephemeral: true });
+    const allRoomsNow = getAllRooms();
+    await interaction.reply({ content: `♻️ Đang reset toàn bộ ${allRoomsNow.length} phòng...`, ephemeral: true });
 
-    for (const room of getAllRooms()) {
+    for (const room of allRoomsNow) {
       resetRoom(room);
       const channel =
         (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) ||
@@ -1044,7 +1190,7 @@ async function handleSlashCommand(interaction) {
     }
     persistence.saveState(rooms);
 
-    return interaction.followUp({ content: '✅ Đã reset toàn bộ 8 phòng (3v3 + 5v5) về trạng thái trống.', ephemeral: true });
+    return interaction.followUp({ content: `✅ Đã reset toàn bộ ${allRoomsNow.length} phòng (3v3 + 5v5) về trạng thái trống.`, ephemeral: true });
   }
 
   if (commandName === 'reset-room') {
@@ -1076,8 +1222,8 @@ async function handleButton(interaction) {
     return interaction.reply({
       content: t(
         interaction,
-        `Chọn 1 trong 4 phòng **${mode.toUpperCase()}** để tham gia:`,
-        `Pick one of the 4 **${mode.toUpperCase()}** rooms to join:`
+        `Chọn 1 trong ${roomsOfMode.length} phòng **${mode.toUpperCase()}** để tham gia:`,
+        `Pick one of the ${roomsOfMode.length} **${mode.toUpperCase()}** rooms to join:`
       ),
       components: roomListRows(roomsOfMode),
       ephemeral: true,
@@ -1123,6 +1269,23 @@ async function handleButton(interaction) {
       return interaction.reply({ content: '❌ Chỉ admin mới mời thêm người vào phòng ẩn được.', ephemeral: true });
     }
 
+    // NGUYÊN NHÂN của bug "chỉ mời được 2 người, không hiện đủ danh sách": panel phòng ẩn
+    // được gửi qua DM, nên khi admin bấm "Mời riêng" NGAY TRONG DM, menu chọn người (User
+    // Select) được tạo ra cũng nằm trong ngữ cảnh DM — mà Discord chỉ cho User Select trong
+    // DM thấy vài người liên quan gần đây (không có ngữ cảnh server nên không tra được đủ
+    // danh sách thành viên), khác hẳn khi menu đó được mở trong 1 kênh của server (đủ danh
+    // sách, tìm kiếm được, chọn tối đa 25 người/lần — mức tối đa Discord cho phép/1 menu).
+    // Vì vậy: nếu bấm nút này từ trong DM, không tạo menu ở đây nữa (vì kiểu gì cũng thiếu
+    // người) mà hướng dẫn admin dùng lệnh /moi-phong-an ngay trong 1 kênh của server.
+    if (!interaction.guild) {
+      return interaction.reply({
+        content:
+          '⚠️ Không thể hiện đủ danh sách thành viên khi mời từ trong DM (Discord giới hạn khiến menu chọn người ở đây chỉ thấy được vài người, không phải cả server).\n' +
+          `👉 Vào **1 kênh trong server** và gõ \`/moi-phong-an phong:${room.id}\` — lệnh đó sẽ hiện menu chọn được đầy đủ, tìm kiếm được, tối đa 25 người mỗi lần (đủ dùng nhiều lần nếu cần mời hơn 25 người).`,
+        ephemeral: true,
+      });
+    }
+
     const select = new UserSelectMenuBuilder()
       .setCustomId(`hiddeninvite_${room.id}`)
       .setPlaceholder(`Chọn người muốn mời vào ${room.label}`)
@@ -1130,7 +1293,7 @@ async function handleButton(interaction) {
       .setMaxValues(25);
 
     return interaction.reply({
-      content: `📨 Chọn (nhiều) người muốn mời riêng vào **${room.label}**:`,
+      content: `📨 Chọn (nhiều) người muốn mời riêng vào **${room.label}** (tối đa 25 người/lần — chạy lại nút này nếu cần mời thêm):`,
       components: [new ActionRowBuilder().addComponents(select)],
       ephemeral: true,
     });

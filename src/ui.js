@@ -39,14 +39,14 @@ function bi(vi, en) {
 function mainMenuEmbed(stats) {
   const line3v3 = stats
     ? bi(
-        `⚔️ **3v3** — 4 phòng · mỗi phòng **6** người · đang chờ: **${stats['3v3'].current}/${stats['3v3'].total}**`,
-        `⚔️ **3v3** — 4 rooms · **6** players each · waiting: **${stats['3v3'].current}/${stats['3v3'].total}**`
+        `⚔️ **3v3** — ${stats['3v3'].roomCount} phòng · mỗi phòng **6** người · đang chờ: **${stats['3v3'].current}/${stats['3v3'].total}**`,
+        `⚔️ **3v3** — ${stats['3v3'].roomCount} rooms · **6** players each · waiting: **${stats['3v3'].current}/${stats['3v3'].total}**`
       )
     : bi('⚔️ **3v3** — 4 phòng · mỗi phòng **6** người', '⚔️ **3v3** — 4 rooms · **6** players each');
   const line5v5 = stats
     ? bi(
-        `🛡️ **5v5** — 4 phòng · mỗi phòng **10** người · đang chờ: **${stats['5v5'].current}/${stats['5v5'].total}**`,
-        `🛡️ **5v5** — 4 rooms · **10** players each · waiting: **${stats['5v5'].current}/${stats['5v5'].total}**`
+        `🛡️ **5v5** — ${stats['5v5'].roomCount} phòng · mỗi phòng **10** người · đang chờ: **${stats['5v5'].current}/${stats['5v5'].total}**`,
+        `🛡️ **5v5** — ${stats['5v5'].roomCount} rooms · **10** players each · waiting: **${stats['5v5'].current}/${stats['5v5'].total}**`
       )
     : bi('🛡️ **5v5** — 4 phòng · mỗi phòng **10** người', '🛡️ **5v5** — 4 rooms · **10** players each');
 
@@ -74,26 +74,34 @@ function mainMenuRow() {
   );
 }
 
-const NUM_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣'];
+const NUM_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
 
+// Discord giới hạn tối đa 5 nút / hàng và 5 hàng / tin nhắn. Admin có thể tạo tới
+// MAX_ROOMS_PER_MODE (10) phòng/chế độ qua /them-phong, nên phải chia thành nhiều hàng
+// thay vì nhét hết vào 1 hàng (nhét quá 5 nút vào 1 hàng sẽ làm Discord từ chối tin nhắn).
 function roomListRows(roomsOfMode) {
-  const row = new ActionRowBuilder();
-  for (const room of roomsOfMode) {
-    const full = isFull(room);
-    let style = ButtonStyle.Success;
-    if (room.status === 'revealed') style = ButtonStyle.Secondary;
-    else if (full) style = ButtonStyle.Danger;
+  const rows = [];
+  for (let i = 0; i < roomsOfMode.length; i += 5) {
+    const chunk = roomsOfMode.slice(i, i + 5);
+    const row = new ActionRowBuilder();
+    for (const room of chunk) {
+      const full = isFull(room);
+      let style = ButtonStyle.Success;
+      if (room.status === 'revealed') style = ButtonStyle.Secondary;
+      else if (full) style = ButtonStyle.Danger;
 
-    row.addComponents(
-      new ButtonBuilder()
-        .setCustomId(`openroom_${room.id}`)
-        .setLabel(`Phòng ${room.index} · ${room.players.size}/${room.capacity}`)
-        .setEmoji(NUM_EMOJI[room.index - 1] || '🔹')
-        .setStyle(style)
-        .setDisabled(full)
-    );
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`openroom_${room.id}`)
+          .setLabel(`Phòng ${room.index} · ${room.players.size}/${room.capacity}`)
+          .setEmoji(NUM_EMOJI[room.index - 1] || '🔹')
+          .setStyle(style)
+          .setDisabled(full)
+      );
+    }
+    rows.push(row);
   }
-  return [row];
+  return rows;
 }
 
 // ---------- Panel phòng ----------

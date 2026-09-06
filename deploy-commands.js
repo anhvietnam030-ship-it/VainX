@@ -27,7 +27,7 @@ const commands = [
     ),
 
   new SlashCommandBuilder()
-    .setName('set-ready')
+    .setName('ready')
     .setDescription('Ép trạng thái Sẵn sàng cho 1 người trong phòng thay họ (chỉ admin)')
     .addStringOption((opt) =>
       opt.setName('phong').setDescription('ID phòng, ví dụ: 3v3-1, 5v5-4').setRequired(true)
@@ -90,7 +90,7 @@ const commands = [
     .addUserOption((opt) => opt.setName('user').setDescription('Người cần xoá khỏi nhóm phòng ẩn').setRequired(true)),
 
   new SlashCommandBuilder()
-    .setName('tao-phong-an')
+    .setName('setup-phong-an')
     .setDescription('[ẨN] Tạo 1 phòng bí mật, không ai thấy trừ người được mời riêng (chỉ admin)')
     .addStringOption((opt) =>
       opt
@@ -115,14 +115,22 @@ const commands = [
     .addStringOption((opt) => opt.setName('phong').setDescription('ID phòng ẩn').setRequired(true)),
 
   new SlashCommandBuilder()
-    .setName('setup-phong')
-    .setDescription('Đăng thẳng 4 panel phòng của 1 chế độ vào kênh này (chỉ admin)')
+    .setName('setup')
+    .setDescription('Đăng panel phòng của 1 chế độ vào kênh này, có thể kèm tạo thêm phòng (chỉ admin)')
     .addStringOption((opt) =>
       opt
         .setName('che_do')
         .setDescription('Chế độ muốn đăng panel')
         .addChoices({ name: '3v3', value: '3v3' }, { name: '5v5', value: '5v5' })
         .setRequired(true)
+    )
+    .addIntegerOption((opt) =>
+      opt
+        .setName('so_luong')
+        .setDescription('Để trống = chỉ đăng panel. Nhập số = đảm bảo đủ số phòng đó (tự thêm nếu thiếu, tối đa 10)')
+        .setMinValue(1)
+        .setMaxValue(10)
+        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
@@ -144,7 +152,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('xoa-setup-phong')
-    .setDescription('Xóa hẳn panel phòng đã đăng (để đăng lại mới bằng /setup-phong) - chỉ admin')
+    .setDescription('Xóa hẳn panel phòng đã đăng (để đăng lại mới bằng /setup) - chỉ admin')
     .addStringOption((opt) =>
       opt
         .setName('che_do')
@@ -163,6 +171,24 @@ const commands = [
         .setMinValue(1)
         .setMaxValue(100)
         .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('xoa-tin-nhan-bot')
+    .setDescription('Xóa tin nhắn của chính Bot trong kênh này — từng phần hoặc toàn bộ (chỉ admin)')
+    .addIntegerOption((opt) =>
+      opt
+        .setName('so_luong')
+        .setDescription('Số tin nhắn của Bot muốn xóa (để trống = xóa TẤT CẢ tin nhắn của Bot trong kênh)')
+        .setMinValue(1)
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('xoa-phong-thuong')
+    .setDescription('Xóa hẳn 1 phòng thường đã tạo thêm bằng /setup (không xóa được 4 phòng gốc) - chỉ admin')
+    .addStringOption((opt) =>
+      opt.setName('phong').setDescription('ID phòng, ví dụ: 3v3-5').setRequired(true)
     ),
 
   new SlashCommandBuilder()

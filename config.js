@@ -15,6 +15,9 @@ module.exports = {
   },
 
   ROOMS_PER_MODE: 4,
+  // Số phòng thường (không tính phòng ẩn) tối đa cho MỖI chế độ, tính cả 4 phòng mặc định.
+  // Admin dùng /them-phong để tạo thêm phòng ngoài 4 phòng gốc, nhưng không được vượt số này.
+  MAX_ROOMS_PER_MODE: 10,
   DEFAULT_ROOM_TIMEOUT_MS: 60 * 60 * 1000,
   READY_COUNTDOWN_MS: 2 * 60 * 1000,
   CODE_RESET_DELAY_MS: 2 * 60 * 1000,
