@@ -97,7 +97,7 @@ async function ocrImage(imageUrl) {
     });
 
     const data = response.data;
-    console.log('📡 OCR.space response:', JSON.stringify(data, null, 2)); // LOG THÊM
+    console.log('📡 OCR.space response:', JSON.stringify(data, null, 2));
 
     if (data.IsErroredOnProcessing) {
       console.error('❌ OCR.space error:', data.ErrorMessage);
@@ -110,7 +110,7 @@ async function ocrImage(imageUrl) {
     console.error('❌ OCR.space request failed:', err.message);
     if (err.response) {
       console.error('Response status:', err.response.status);
-      console.error('Response data:', err.response.data);
+      console.error('Response data:', JSON.stringify(err.response.data, null, 2));
     }
     return '';
   }
@@ -634,13 +634,8 @@ client.on('interactionCreate', async (interaction) => {
       }, 5 * 60 * 1000);
     }
   } catch (err) {
-    console.error(err);
-    const payload = { content: '⚠️ Có lỗi xảy ra, vui lòng thử lại.', ephemeral: true };
-    if (interaction.deferred || interaction.replied) {
-      await interaction.followUp(payload).catch(() => {});
-    } else {
-      await interaction.reply(payload).catch(() => {});
-    }
+    console.error('❗ Lỗi trong interactionCreate:', err);
+    // Không cố gắng reply nữa vì có thể interaction đã hết hạn, chỉ log.
   }
 });
 
@@ -1190,42 +1185,56 @@ async function handleSlashCommand(interaction) {
 
   // ---- SUBMIT-RESULT (VỚI FILE ĐÍNH KÈM) ----
   if (commandName === 'submit-result') {
+    // LOG NGAY KHI NHẬN LỆNH
+    console.log(`✅ Nhận lệnh /submit-result từ ${interaction.user.tag}`);
+    try {
+      // Defer ngay để giữ interaction sống
+      await interaction.deferReply({ ephemeral: true });
+      console.log('✅ Defer reply thành công');
+    } catch (err) {
+      console.error('❌ Lỗi defer reply:', err);
+      // Nếu defer lỗi, không thể xử lý tiếp
+      try {
+        await interaction.reply({ content: '⚠️ Bot quá tải, vui lòng thử lại sau.', ephemeral: true });
+      } catch (_) {}
+      return;
+    }
+
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getRoom(roomId);
     if (!room || !room.isRank) {
-      return interaction.reply({ content: '❌ Phòng không tồn tại hoặc không phải rank.', ephemeral: true });
+      return interaction.editReply({ content: '❌ Phòng không tồn tại hoặc không phải rank.' });
     }
     if (room.status !== 'revealed') {
-      return interaction.reply({ content: '❌ Phòng chưa phát code hoặc đã kết thúc.', ephemeral: true });
+      return interaction.editReply({ content: '❌ Phòng chưa phát code hoặc đã kết thúc.' });
     }
     if (!room.players.has(interaction.user.id)) {
-      return interaction.reply({ content: '❌ Bạn không ở trong phòng này.', ephemeral: true });
+      return interaction.editReply({ content: '❌ Bạn không ở trong phòng này.' });
     }
     if (Date.now() > room.resultWindowEnd) {
-      return interaction.reply({ content: '❌ Đã quá hạn 45 phút.', ephemeral: true });
+      return interaction.editReply({ content: '❌ Đã quá hạn 45 phút.' });
     }
     if (room.resultMap.has(interaction.user.id)) {
-      return interaction.reply({ content: 'ℹ️ Bạn đã gửi kết quả rồi.', ephemeral: true });
+      return interaction.editReply({ content: 'ℹ️ Bạn đã gửi kết quả rồi.' });
     }
 
     const attachment = interaction.options.getAttachment('hinhanh', true);
     if (!attachment || !attachment.contentType || !attachment.contentType.startsWith('image/')) {
-      return interaction.reply({ content: '❌ File đính kèm không phải là ảnh hợp lệ.', ephemeral: true });
+      return interaction.editReply({ content: '❌ File đính kèm không phải là ảnh hợp lệ.' });
     }
 
-    await interaction.deferReply({ ephemeral: true });
+    console.log(`🔍 Bắt đầu OCR cho file: ${attachment.name} (${attachment.contentType}, ${attachment.size} bytes)`);
 
     let ocrText = '';
     try {
-      console.log(`🔍 Bắt đầu OCR cho file: ${attachment.name} (${attachment.contentType}, ${attachment.size} bytes)`);
       ocrText = await ocrImage(attachment.url);
     } catch (err) {
       console.error('❌ Lỗi khi gọi OCR:', err);
+      return interaction.editReply({ content: '❌ Lỗi khi xử lý ảnh. Vui lòng thử lại sau hoặc dùng /admin-submit-result.' });
     }
 
     if (!ocrText) {
       console.log('⚠️ OCR trả về text rỗng.');
-      // Thử fallback: yêu cầu người dùng nhập tay bằng /admin-submit-result
       return interaction.editReply({
         content: '❌ Không thể đọc được ảnh. Vui lòng chụp rõ hơn hoặc nhờ admin gửi thay (dùng /admin-submit-result).',
       });
@@ -1239,6 +1248,7 @@ async function handleSlashCommand(interaction) {
       });
     }
 
+    // Kiểm tra lại một số điều kiện (có thể thay đổi trong thời gian chờ OCR)
     if (Date.now() > room.resultWindowEnd) {
       return interaction.editReply({ content: '❌ Đã quá hạn 45 phút.' });
     }
