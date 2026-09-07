@@ -1,4 +1,3 @@
-// ui.js
 const {
   EmbedBuilder,
   ActionRowBuilder,
@@ -16,6 +15,8 @@ const COLOR = {
   revealed: 0x57f287,
 };
 
+const FLASH_COLORS = [0xffffff, 0xffd700, 0xff69b4, 0x00ffff, 0xff4500, 0x9b59b6];
+const NUM_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
 const MODE_EMOJI = { '3v3': '⚔️', '5v5': '🛡️' };
 
 function bi(vi, en) {
@@ -31,14 +32,36 @@ function unixSeconds(ms) {
   return Math.floor(ms / 1000);
 }
 
+// ---------- Bảng chọn chế độ ----------
 function mainMenuEmbed(stats) {
-  const line3v3 = stats ? bi(`⚔️ **3v3** — ${stats['3v3'].roomCount} phòng · mỗi phòng **6** người · đang chờ: **${stats['3v3'].current}/${stats['3v3'].total}**`, `⚔️ **3v3** — ${stats['3v3'].roomCount} rooms · **6** players each · waiting: **${stats['3v3'].current}/${stats['3v3'].total}**`) : bi('⚔️ **3v3** — 4 phòng · mỗi phòng **6** người', '⚔️ **3v3** — 4 rooms · **6** players each');
-  const line5v5 = stats ? bi(`🛡️ **5v5** — ${stats['5v5'].roomCount} phòng · mỗi phòng **10** người · đang chờ: **${stats['5v5'].current}/${stats['5v5'].total}**`, `🛡️ **5v5** — ${stats['5v5'].roomCount} rooms · **10** players each · waiting: **${stats['5v5'].current}/${stats['5v5'].total}**`) : bi('🛡️ **5v5** — 4 phòng · mỗi phòng **10** người', '🛡️ **5v5** — 4 rooms · **10** players each');
+  const line3v3 = stats
+    ? bi(
+        `⚔️ **3v3** — ${stats['3v3'].roomCount} phòng · mỗi phòng **6** người · đang chờ: **${stats['3v3'].current}/${stats['3v3'].total}**`,
+        `⚔️ **3v3** — ${stats['3v3'].roomCount} rooms · **6** players each · waiting: **${stats['3v3'].current}/${stats['3v3'].total}**`
+      )
+    : bi('⚔️ **3v3** — 4 phòng · mỗi phòng **6** người', '⚔️ **3v3** — 4 rooms · **6** players each');
+  const line5v5 = stats
+    ? bi(
+        `🛡️ **5v5** — ${stats['5v5'].roomCount} phòng · mỗi phòng **10** người · đang chờ: **${stats['5v5'].current}/${stats['5v5'].total}**`,
+        `🛡️ **5v5** — ${stats['5v5'].roomCount} rooms · **10** players each · waiting: **${stats['5v5'].current}/${stats['5v5'].total}**`
+      )
+    : bi('🛡️ **5v5** — 4 phòng · mỗi phòng **10** người', '🛡️ **5v5** — 4 rooms · **10** players each');
+
   return new EmbedBuilder()
     .setTitle('🎮 ✨ VAINGLORY LOBBY ✨')
-    .setDescription(bi('**Chọn chế độ bên dưới để bắt đầu ghép đội!**', '**Pick a mode below to start matchmaking!**') + '\n━━━━━━━━━━━━━━━━━━━━━━\n' + `${line3v3}\n${line5v5}\n` + '━━━━━━━━━━━━━━━━━━━━━━\n' + bi('_Mỗi người chỉ ở được 1 phòng tại một thời điểm._', '_Each person can only be in 1 room at a time._'))
+    .setDescription(
+      bi('**Chọn chế độ bên dưới để bắt đầu ghép đội!**', '**Pick a mode below to start matchmaking!**') +
+      '\n━━━━━━━━━━━━━━━━━━━━━━\n' +
+      `${line3v3}\n${line5v5}\n` +
+      '━━━━━━━━━━━━━━━━━━━━━━\n' +
+      bi('_Mỗi người chỉ ở được 1 phòng tại một thời điểm._', '_Each person can only be in 1 room at a time._')
+    )
     .setColor(0x5865f2)
-    .setFooter({ text: stats ? bi('📊 Số liệu tại thời điểm đăng · 🏆 Vào trận ngay!', '📊 Stats as of posting · 🏆 Get in a match now!') : bi('🏆 Ghép đội nhanh — Vào trận ngay!', '🏆 Fast matchmaking — Play now!') });
+    .setFooter({
+      text: stats
+        ? bi('📊 Số liệu tại thời điểm đăng · 🏆 Vào trận ngay!', '📊 Stats as of posting · 🏆 Get in a match now!')
+        : bi('🏆 Ghép đội nhanh — Vào trận ngay!', '🏆 Fast matchmaking — Play now!'),
+    });
 }
 
 function mainMenuRow() {
@@ -47,8 +70,6 @@ function mainMenuRow() {
     new ButtonBuilder().setCustomId('menu_5v5').setLabel('Chơi 5v5').setStyle(ButtonStyle.Danger).setEmoji('🛡️')
   );
 }
-
-const NUM_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
 
 function roomListRows(roomsOfMode) {
   const rows = [];
@@ -74,6 +95,7 @@ function roomListRows(roomsOfMode) {
   return rows;
 }
 
+// ---------- Panel phòng ----------
 function roomColor(room) {
   if (room.status === 'revealed') return COLOR.revealed;
   if (isFull(room)) {
@@ -87,15 +109,25 @@ function roomColor(room) {
 
 function statusText(room) {
   if (room.status === 'revealed') {
-    const deadline = room.revealedAt ? unixSeconds(room.revealedAt + (room.isRank ? config.RANK_RESULT_WINDOW_MS : config.CODE_RESET_DELAY_MS)) : null;
-    return bi('🟢 **Đã phát code — chuẩn bị vào game!**' + (deadline ? `\n♻️ Phòng tự reset ${`<t:${deadline}:R>`}` : ''),
-      '🟢 **Code revealed — get ready to play!**' + (deadline ? `\n♻️ Room auto-resets ${`<t:${deadline}:R>`}` : ''));
+    let text = bi('🟢 **Đã phát code — chuẩn bị vào game!**', '🟢 **Code revealed — get ready to play!**');
+    if (room.isRank && room.resultWindowEnd) {
+      const deadline = unixSeconds(room.resultWindowEnd);
+      text += `\n${bi(`📩 Hạn gửi kết quả: <t:${deadline}:R>`, `📩 Submit result deadline: <t:${deadline}:R>`)}`;
+    } else if (room.revealedAt) {
+      const deadline = unixSeconds(room.revealedAt + config.CODE_RESET_DELAY_MS);
+      text += `\n${bi(`♻️ Phòng tự reset ${'<t:'+deadline+':R>'}`, `♻️ Room auto-resets ${'<t:'+deadline+':R>'}`)}`;
+    }
+    return text;
   }
+
   if (isFull(room)) {
     const check = canRevealCode(room);
     const deadline = room.fullAt ? unixSeconds(room.fullAt + config.READY_COUNTDOWN_MS) : null;
     if (check.ok) {
-      return bi('🟡 **Đủ người rồi!** Đang chờ tất cả bấm Sẵn sàng để phát code...', '🟡 **Room is full!** Waiting for everyone to hit Ready so the code can be revealed...');
+      return bi(
+        '🟡 **Đủ người rồi!** Đang chờ tất cả bấm Sẵn sàng để phát code...',
+        '🟡 **Room is full!** Waiting for everyone to hit Ready so the code can be revealed...'
+      );
     }
     const linesVi = [`🟠 **Đủ người!** Hạn bấm Sẵn sàng: ${deadline ? `<t:${deadline}:R>` : '—'}`];
     linesVi.push('⚠️ Hết giờ mà chưa Sẵn sàng → **bị đá khỏi phòng**, nhường chỗ cho người khác.');
@@ -107,10 +139,13 @@ function statusText(room) {
     if (check.reason === 'team_incomplete') linesEn.push('⚖️ Someone has no Team picked — either **everyone** picks a team or **no one** does.');
     return bi(linesVi.join('\n'), linesEn.join('\n'));
   }
+
   if (room.players.size > 0) {
     const deadline = room.firstJoinAt ? unixSeconds(room.firstJoinAt + room.timeoutMs) : null;
-    return bi('🔵 Đang chờ thêm người tham gia...' + (deadline ? `\n🕐 Tự động reset nếu chưa đủ người: <t:${deadline}:R>` : ''),
-      '🔵 Waiting for more players to join...' + (deadline ? `\n🕐 Auto-resets if not full by: <t:${deadline}:R>` : ''));
+    return bi(
+      '🔵 Đang chờ thêm người tham gia...' + (deadline ? `\n🕐 Tự động reset nếu chưa đủ người: <t:${deadline}:R>` : ''),
+      '🔵 Waiting for more players to join...' + (deadline ? `\n🕐 Auto-resets if not full by: <t:${deadline}:R>` : '')
+    );
   }
   return bi('⚪ Phòng trống — hãy là người đầu tiên!', '⚪ Room is empty — be the first to join!');
 }
@@ -119,7 +154,7 @@ function playerLine(player, room) {
   let displayName = player.username;
   if (room.isRank) {
     const eloObj = getElo(player.id);
-    const rank = eloObj.rank;
+    const rank = eloObj?.rank || 'Unranked';
     displayName = `${player.username} (${rank})`;
   }
   const readyTag = player.ready ? '✅' : '⌛';
@@ -148,10 +183,17 @@ function roomEmbed(room) {
   const embed = new EmbedBuilder()
     .setColor(roomColor(room))
     .setTitle(`${modeEmoji}  ${room.label}`)
-    .setDescription(`${progressBar(room.players.size, room.capacity)}\n` + bi(`**${room.players.size} / ${room.capacity}** người`, `**${room.players.size} / ${room.capacity}** players`) + `\n${statusText(room)}`);
+    .setDescription(
+      `${progressBar(room.players.size, room.capacity)}\n` +
+      bi(`**${room.players.size} / ${room.capacity}** người`, `**${room.players.size} / ${room.capacity}** players`) +
+      `\n${statusText(room)}`
+    );
 
   if (room.players.size === 0) {
-    embed.addFields({ name: bi('👥 Người chơi', '👥 Players'), value: bi('_Chưa có ai đăng ký — bấm Gia nhập để bắt đầu!_', '_No one signed up yet — hit Join to start!_') });
+    embed.addFields({
+      name: bi('👥 Người chơi', '👥 Players'),
+      value: bi('_Chưa có ai đăng ký — bấm Gia nhập để bắt đầu!_', '_No one signed up yet — hit Join to start!_'),
+    });
   } else if (usingTeams) {
     embed.addFields(
       { name: '🔵 Team 1', value: teamFieldValue(room, 1), inline: true },
@@ -164,13 +206,24 @@ function roomEmbed(room) {
   }
 
   if (room.status === 'revealed' && room.code) {
-    embed.addFields({ name: bi('🔑 Code phòng', '🔑 Room code'), value: bi('👉 Bấm **"📋 Lấy code của tôi"** bên dưới để nhận mã riêng, dễ copy vào game.', '👉 Tap **"📋 Get my code"** below to get your own copy, easy to paste into the game.') });
+    embed.addFields({
+      name: bi('🔑 Code phòng', '🔑 Room code'),
+      value: bi(
+        '👉 Bấm **"📋 Lấy code của tôi"** bên dưới để nhận mã riêng, dễ copy vào game.',
+        '👉 Tap **"📋 Get my code"** below to get your own copy, easy to paste into the game.'
+      ),
+    });
   }
 
   const bannerUrl = config.MODE_BANNER_URL && config.MODE_BANNER_URL[room.mode];
   if (bannerUrl) embed.setImage(bannerUrl);
 
-  embed.setFooter({ text: `ID: ${room.id}  •  ${bi(`Timeout chờ đủ người: ${Math.round(room.timeoutMs / 60000)} phút`, `Fill timeout: ${Math.round(room.timeoutMs / 60000)} min`)}` }).setTimestamp();
+  embed
+    .setFooter({
+      text: `ID: ${room.id}  •  ${bi(`Timeout chờ đủ người: ${Math.round(room.timeoutMs / 60000)} phút`, `Fill timeout: ${Math.round(room.timeoutMs / 60000)} min`)}`,
+    })
+    .setTimestamp();
+
   return embed;
 }
 
@@ -181,41 +234,98 @@ function roomActionRows(room) {
   const readyEmoji = ready ? '✅' : waitingForReady ? (room._blinkOn ? '🔴' : '🟡') : '🙋';
 
   const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`join_${room.id}`).setLabel('Gia nhập').setStyle(ButtonStyle.Success).setEmoji('➕').setDisabled(full || room.status === 'revealed'),
-    new ButtonBuilder().setCustomId(`leave_${room.id}`).setLabel('Rời đi').setStyle(ButtonStyle.Secondary).setEmoji('🚪').setDisabled(room.status === 'revealed'),
-    new ButtonBuilder().setCustomId(`ready_${room.id}`).setLabel(ready ? 'Đã sẵn sàng!' : waitingForReady ? (room._blinkOn ? '🔥 SẴN SÀNG NGAY! 🔥' : '⚡ SẴN SÀNG NGAY! ⚡') : 'Sẵn sàng').setStyle(ready ? ButtonStyle.Success : waitingForReady ? ButtonStyle.Danger : ButtonStyle.Primary).setEmoji(readyEmoji).setDisabled(!full || room.status === 'revealed'),
-    new ButtonBuilder().setCustomId(`translate_${room.id}`).setLabel('English').setStyle(ButtonStyle.Secondary).setEmoji('🌐')
+    new ButtonBuilder()
+      .setCustomId(`join_${room.id}`)
+      .setLabel('Gia nhập')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('➕')
+      .setDisabled(full || room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`leave_${room.id}`)
+      .setLabel('Rời đi')
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji('🚪')
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`ready_${room.id}`)
+      .setLabel(ready ? 'Đã sẵn sàng!' : waitingForReady ? (room._blinkOn ? '🔥 SẴN SÀNG NGAY! 🔥' : '⚡ SẴN SÀNG NGAY! ⚡') : 'Sẵn sàng')
+      .setStyle(ready ? ButtonStyle.Success : waitingForReady ? ButtonStyle.Danger : ButtonStyle.Primary)
+      .setEmoji(readyEmoji)
+      .setDisabled(!full || room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`translate_${room.id}`)
+      .setLabel('English')
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji('🌐')
   );
 
   const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`team1_${room.id}`).setLabel('Team 1').setEmoji('🔵').setStyle(ButtonStyle.Primary).setDisabled(room.status === 'revealed'),
-    new ButtonBuilder().setCustomId(`team2_${room.id}`).setLabel('Team 2').setEmoji('🔴').setStyle(ButtonStyle.Danger).setDisabled(room.status === 'revealed'),
-    new ButtonBuilder().setCustomId(`teamnone_${room.id}`).setLabel('Bỏ chọn team').setEmoji('⚪').setStyle(ButtonStyle.Secondary).setDisabled(room.status === 'revealed'),
-    room.hidden ? new ButtonBuilder().setCustomId(`hiddeninvitebtn_${room.id}`).setLabel('Mời riêng').setEmoji('📨').setStyle(ButtonStyle.Success).setDisabled(room.status === 'revealed' || isFull(room)) : new ButtonBuilder().setCustomId(`invite_${room.id}`).setLabel('Mời bạn').setEmoji('📨').setStyle(ButtonStyle.Secondary).setDisabled(room.status === 'revealed' || isFull(room))
+    new ButtonBuilder()
+      .setCustomId(`team1_${room.id}`)
+      .setLabel('Team 1')
+      .setEmoji('🔵')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`team2_${room.id}`)
+      .setLabel('Team 2')
+      .setEmoji('🔴')
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`teamnone_${room.id}`)
+      .setLabel('Bỏ chọn team')
+      .setEmoji('⚪')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(room.status === 'revealed'),
+    room.hidden
+      ? new ButtonBuilder()
+          .setCustomId(`hiddeninvitebtn_${room.id}`)
+          .setLabel('Mời riêng')
+          .setEmoji('📨')
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(room.status === 'revealed' || isFull(room))
+      : new ButtonBuilder()
+          .setCustomId(`invite_${room.id}`)
+          .setLabel('Mời bạn')
+          .setEmoji('📨')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(room.status === 'revealed' || isFull(room))
   );
 
   const canPlay = room.status === 'revealed';
   const sparkle = canPlay && room._blinkOn ? ' ✨' : '';
   const row3 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setLabel(canPlay ? `🎮 Vào game ngay${sparkle}` : '🎮 Vào game').setStyle(ButtonStyle.Link).setURL(`${config.PUBLIC_BASE_URL}/play`).setDisabled(!canPlay)
+    new ButtonBuilder()
+      .setLabel(canPlay ? `🎮 Vào game ngay${sparkle}` : '🎮 Vào game')
+      .setStyle(ButtonStyle.Link)
+      .setURL(`${config.PUBLIC_BASE_URL}/play`)
+      .setDisabled(!canPlay)
   );
 
   const rows = [row1, row2, row3];
 
-  if (room.status === 'revealed') {
+  // Thêm nút "Gửi kết quả" cho phòng rank
+  if (room.isRank && room.status === 'revealed' && room.resultWindowEnd && Date.now() < room.resultWindowEnd) {
     rows.push(
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`copycode_${room.id}`).setLabel(room._blinkOn ? '✨ LẤY CODE NGAY! ✨' : 'Lấy code của tôi').setEmoji(room._blinkOn ? '🌈' : '📋').setStyle(room._blinkOn ? ButtonStyle.Danger : ButtonStyle.Success)
+        new ButtonBuilder()
+          .setCustomId(`submit_result_${room.id}`)
+          .setLabel('📩 Gửi kết quả')
+          .setStyle(ButtonStyle.Primary)
+          .setDisabled(room.resultMap.has(room.players.keys().next().value)) // chỉ disable nếu đã gửi
       )
     );
   }
 
-  // Nếu là phòng rank và đã phát code và còn thời gian gửi kết quả
-  if (room.isRank && room.status === 'revealed' && Date.now() < room.resultWindowEnd) {
-    const hasSubmitted = room.resultMap.has(room._currentUserId); // không dùng được, nhưng chúng ta sẽ bỏ qua
+  if (room.status === 'revealed') {
     rows.push(
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`submit_result_${room.id}`).setLabel('Gửi kết quả').setEmoji('📩').setStyle(ButtonStyle.Primary)
+        new ButtonBuilder()
+          .setCustomId(`copycode_${room.id}`)
+          .setLabel(room._blinkOn ? '✨ LẤY CODE NGAY! ✨' : 'Lấy code của tôi')
+          .setEmoji(room._blinkOn ? '🌈' : '📋')
+          .setStyle(room._blinkOn ? ButtonStyle.Danger : ButtonStyle.Success)
       )
     );
   }
@@ -230,38 +340,91 @@ function roomActionRowsEN(room) {
   const readyEmoji = ready ? '✅' : waitingForReady ? (room._blinkOn ? '🔴' : '🟡') : '🙋';
 
   const row1 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`join_${room.id}`).setLabel('Join').setStyle(ButtonStyle.Success).setEmoji('➕').setDisabled(full || room.status === 'revealed'),
-    new ButtonBuilder().setCustomId(`leave_${room.id}`).setLabel('Leave').setStyle(ButtonStyle.Secondary).setEmoji('🚪').setDisabled(room.status === 'revealed'),
-    new ButtonBuilder().setCustomId(`ready_${room.id}`).setLabel(ready ? 'Ready!' : waitingForReady ? (room._blinkOn ? '🔥 READY NOW! 🔥' : '⚡ READY NOW! ⚡') : 'Ready').setStyle(ready ? ButtonStyle.Success : waitingForReady ? ButtonStyle.Danger : ButtonStyle.Primary).setEmoji(readyEmoji).setDisabled(!full || room.status === 'revealed')
+    new ButtonBuilder()
+      .setCustomId(`join_${room.id}`)
+      .setLabel('Join')
+      .setStyle(ButtonStyle.Success)
+      .setEmoji('➕')
+      .setDisabled(full || room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`leave_${room.id}`)
+      .setLabel('Leave')
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji('🚪')
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`ready_${room.id}`)
+      .setLabel(ready ? 'Ready!' : waitingForReady ? (room._blinkOn ? '🔥 READY NOW! 🔥' : '⚡ READY NOW! ⚡') : 'Ready')
+      .setStyle(ready ? ButtonStyle.Success : waitingForReady ? ButtonStyle.Danger : ButtonStyle.Primary)
+      .setEmoji(readyEmoji)
+      .setDisabled(!full || room.status === 'revealed')
   );
 
   const row2 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`team1_${room.id}`).setLabel('Team 1').setEmoji('🔵').setStyle(ButtonStyle.Primary).setDisabled(room.status === 'revealed'),
-    new ButtonBuilder().setCustomId(`team2_${room.id}`).setLabel('Team 2').setEmoji('🔴').setStyle(ButtonStyle.Danger).setDisabled(room.status === 'revealed'),
-    new ButtonBuilder().setCustomId(`teamnone_${room.id}`).setLabel('Clear team').setEmoji('⚪').setStyle(ButtonStyle.Secondary).setDisabled(room.status === 'revealed'),
-    room.hidden ? new ButtonBuilder().setCustomId(`hiddeninvitebtn_${room.id}`).setLabel('Invite privately').setEmoji('📨').setStyle(ButtonStyle.Success).setDisabled(room.status === 'revealed' || isFull(room)) : new ButtonBuilder().setCustomId(`invite_${room.id}`).setLabel('Invite friend').setEmoji('📨').setStyle(ButtonStyle.Secondary).setDisabled(room.status === 'revealed' || isFull(room))
+    new ButtonBuilder()
+      .setCustomId(`team1_${room.id}`)
+      .setLabel('Team 1')
+      .setEmoji('🔵')
+      .setStyle(ButtonStyle.Primary)
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`team2_${room.id}`)
+      .setLabel('Team 2')
+      .setEmoji('🔴')
+      .setStyle(ButtonStyle.Danger)
+      .setDisabled(room.status === 'revealed'),
+    new ButtonBuilder()
+      .setCustomId(`teamnone_${room.id}`)
+      .setLabel('Clear team')
+      .setEmoji('⚪')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(room.status === 'revealed'),
+    room.hidden
+      ? new ButtonBuilder()
+          .setCustomId(`hiddeninvitebtn_${room.id}`)
+          .setLabel('Invite privately')
+          .setEmoji('📨')
+          .setStyle(ButtonStyle.Success)
+          .setDisabled(room.status === 'revealed' || isFull(room))
+      : new ButtonBuilder()
+          .setCustomId(`invite_${room.id}`)
+          .setLabel('Invite friend')
+          .setEmoji('📨')
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(room.status === 'revealed' || isFull(room))
   );
 
   const canPlay = room.status === 'revealed';
   const sparkle = canPlay && room._blinkOn ? ' ✨' : '';
   const row3 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setLabel(canPlay ? `🎮 Play now${sparkle}` : '🎮 Play game').setStyle(ButtonStyle.Link).setURL(`${config.PUBLIC_BASE_URL}/play`).setDisabled(!canPlay)
+    new ButtonBuilder()
+      .setLabel(canPlay ? `🎮 Play now${sparkle}` : '🎮 Play game')
+      .setStyle(ButtonStyle.Link)
+      .setURL(`${config.PUBLIC_BASE_URL}/play`)
+      .setDisabled(!canPlay)
   );
 
   const rows = [row1, row2, row3];
 
-  if (room.status === 'revealed') {
+  if (room.isRank && room.status === 'revealed' && room.resultWindowEnd && Date.now() < room.resultWindowEnd) {
     rows.push(
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`copycode_${room.id}`).setLabel(room._blinkOn ? '✨ GET CODE NOW! ✨' : 'Get my code').setEmoji(room._blinkOn ? '🌈' : '📋').setStyle(room._blinkOn ? ButtonStyle.Danger : ButtonStyle.Success)
+        new ButtonBuilder()
+          .setCustomId(`submit_result_${room.id}`)
+          .setLabel('📩 Submit result')
+          .setStyle(ButtonStyle.Primary)
       )
     );
   }
 
-  if (room.isRank && room.status === 'revealed' && Date.now() < room.resultWindowEnd) {
+  if (room.status === 'revealed') {
     rows.push(
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId(`submit_result_${room.id}`).setLabel('Submit result').setEmoji('📩').setStyle(ButtonStyle.Primary)
+        new ButtonBuilder()
+          .setCustomId(`copycode_${room.id}`)
+          .setLabel(room._blinkOn ? '✨ GET CODE NOW! ✨' : 'Get my code')
+          .setEmoji(room._blinkOn ? '🌈' : '📋')
+          .setStyle(room._blinkOn ? ButtonStyle.Danger : ButtonStyle.Success)
       )
     );
   }

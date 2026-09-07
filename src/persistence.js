@@ -1,4 +1,3 @@
-// persistence.js
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
@@ -21,17 +20,10 @@ function serializeRoom(room) {
     timeoutMs: room.timeoutMs,
     players: Array.from(room.players.entries()).map(([id, p]) => ({ id, ...p })),
     bannedUsers: Array.from(room.bannedUsers || []),
+    isRank: room.isRank || false,
+    resultMap: room.isRank ? Array.from(room.resultMap.entries()) : [],
+    resultWindowEnd: room.isRank ? room.resultWindowEnd : null,
   };
-  if (room.isRank) {
-    obj.isRank = true;
-    obj.resultMap = Array.from(room.resultMap.entries());
-    obj.resultWindowEnd = room.resultWindowEnd;
-  }
-  if (room.hidden) {
-    obj.hidden = true;
-    obj.panelTargets = room.panelTargets || [];
-    // lưu thêm các thuộc tính khác nếu cần
-  }
   return obj;
 }
 

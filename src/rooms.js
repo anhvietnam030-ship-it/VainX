@@ -1,9 +1,65 @@
-// rooms.js
 const config = require('../config');
 
+// roomId dạng "3v3-1", "3v3-2", ... "5v5-4"
 const rooms = new Map();
+
+// Phòng ẨN — không nằm trong danh sách công khai
 const hiddenRooms = new Map();
+
+// === ELO DATA ===
 const eloData = new Map(); // userId -> { elo, rank }
+
+function getElo(userId) {
+  if (!eloData.has(userId)) {
+    return { elo: null, rank: 'Unranked' };
+  }
+  return eloData.get(userId);
+}
+
+function getRankFromElo(elo) {
+  if (elo === null || elo === undefined) return 'Unranked';
+  for (const tier of config.RANK_TIERS) {
+    if (elo >= tier.minElo && elo < tier.maxElo) {
+      return tier.name;
+    }
+  }
+  return 'Unranked';
+}
+
+function updateElo(userId, newElo) {
+  const rank = getRankFromElo(newElo);
+  eloData.set(userId, { elo: newElo, rank });
+  return { elo: newElo, rank };
+}
+
+function calculateNewElo(userElo, opponentElos, result, kda) {
+  if (!opponentElos || opponentElos.length === 0) return userElo;
+  const currentElo = (userElo === null || userElo === undefined) ? config.RANK_DEFAULT_ELO : userElo;
+  const avgOppElo = opponentElos.reduce((a, b) => a + b, 0) / opponentElos.length;
+  const expected = 1 / (1 + Math.pow(10, (avgOppElo - currentElo) / 400));
+  const S = result === 'win' ? 1 : 0;
+  let rawChange = config.RANK_K_FACTOR * (S - expected);
+
+  // Áp dụng hệ số KDA
+  if (kda !== undefined && kda !== null) {
+    const kdaValue = Math.min(kda, 10);
+    let kdaFactor;
+    if (kdaValue >= 4) kdaFactor = 1.5;
+    else if (kdaValue >= 3) kdaFactor = 1.2;
+    else if (kdaValue >= 2) kdaFactor = 1.0;
+    else if (kdaValue >= 1) kdaFactor = 0.8;
+    else kdaFactor = 0.5;
+
+    if (S === 1) {
+      rawChange = rawChange * kdaFactor;
+    } else {
+      rawChange = rawChange * (1 / kdaFactor);
+    }
+  }
+
+  const newElo = currentElo + Math.round(rawChange);
+  return Math.max(0, newElo);
+}
 
 function buildInitialRoom(mode, index) {
   return {
@@ -26,22 +82,14 @@ function buildInitialRoom(mode, index) {
       readyCountdown: null,
       resetAfterCode: null,
       blink: null,
+      resultWindow: null,
     },
     timeoutMs: config.DEFAULT_ROOM_TIMEOUT_MS,
     _blinkOn: false,
-    _flashColor: null,
+    isRank: false,
+    resultMap: new Map(),
+    resultWindowEnd: null,
   };
-}
-
-function buildRankRoom(mode, index) {
-  const room = buildInitialRoom(mode, index);
-  room.id = `${mode}-rank-${index}`;
-  room.label = `Phòng ${mode.toUpperCase()} Rank #${index}`;
-  room.isRank = true;
-  room.resultMap = new Map(); // userId -> { result, imageUrl, submittedAt, kda, kill, death, assist }
-  room.resultWindowEnd = null;
-  room.timers.resultWindow = null;
-  return room;
 }
 
 function initRooms() {
@@ -105,7 +153,21 @@ function getRoomsByMode(mode) {
   return getAllRooms().filter(r => r.mode === mode);
 }
 
-// ---------- Phòng ẨN ----------
+// === HÀM LỌC PHÒNG THƯỜNG / RANK ===
+function getAllNormalRooms() {
+  return getAllRooms().filter(r => !r.isRank);
+}
+function getNormalRoomsByMode(mode) {
+  return getAllNormalRooms().filter(r => r.mode === mode);
+}
+function getAllRankRooms() {
+  return getAllRooms().filter(r => r.isRank);
+}
+function getRankRoomsByMode(mode) {
+  return getAllRankRooms().filter(r => r.mode === mode);
+}
+
+// === PHÒNG ẨN ===
 function createHiddenRoom(mode) {
   const room = buildInitialRoom(mode, 0);
   room.id = `${mode}-an-${Date.now()}`;
@@ -115,15 +177,12 @@ function createHiddenRoom(mode) {
   hiddenRooms.set(room.id, room);
   return room;
 }
-
 function getHiddenRoom(roomId) {
   return hiddenRooms.get(roomId);
 }
-
 function getAllHiddenRooms() {
   return Array.from(hiddenRooms.values());
 }
-
 function deleteHiddenRoom(roomId) {
   const room = hiddenRooms.get(roomId);
   if (room) clearRoomTimers(room);
@@ -131,59 +190,18 @@ function deleteHiddenRoom(roomId) {
   return !!room;
 }
 
-// ---------- Rank functions ----------
-function getElo(userId) {
-  if (!eloData.has(userId)) {
-    return { elo: null, rank: 'Unranked' };
-  }
-  return eloData.get(userId);
+// === PHÒNG RANK ===
+function buildRankRoom(mode, index) {
+  const room = buildInitialRoom(mode, index);
+  room.id = `${mode}-rank-${index}`;
+  room.label = `Phòng ${mode.toUpperCase()} Rank #${index}`;
+  room.isRank = true;
+  room.status = 'waiting';
+  room.resultMap = new Map();
+  room.resultWindowEnd = null;
+  room.timers.resultWindow = null;
+  return room;
 }
-
-function getRankFromElo(elo) {
-  for (const tier of config.RANK_TIERS) {
-    if (elo >= tier.minElo && elo < tier.maxElo) {
-      return tier.name;
-    }
-  }
-  return 'Unranked';
-}
-
-function updateElo(userId, newElo) {
-  const rank = getRankFromElo(newElo);
-  eloData.set(userId, { elo: newElo, rank });
-  return { elo: newElo, rank };
-}
-
-function calculateNewElo(userElo, opponentElos, result, kda) {
-  if (!opponentElos || opponentElos.length === 0) return userElo;
-  const currentElo = (userElo === null || userElo === undefined) ? config.RANK_DEFAULT_ELO : userElo;
-  const avgOppElo = opponentElos.reduce((a, b) => a + b, 0) / opponentElos.length;
-  const expected = 1 / (1 + Math.pow(10, (avgOppElo - currentElo) / 400));
-  const S = result === 'win' ? 1 : 0;
-  let rawChange = config.RANK_K_FACTOR * (S - expected);
-
-  // Áp dụng hệ số KDA
-  if (kda !== undefined && kda !== null) {
-    const kdaValue = Math.min(kda, 10);
-    let kdaFactor;
-    if (kdaValue >= 4) kdaFactor = 1.5;
-    else if (kdaValue >= 3) kdaFactor = 1.2;
-    else if (kdaValue >= 2) kdaFactor = 1.0;
-    else if (kdaValue >= 1) kdaFactor = 0.8;
-    else kdaFactor = 0.5;
-
-    if (S === 1) {
-      rawChange = rawChange * kdaFactor;
-    } else {
-      rawChange = rawChange * (1 / kdaFactor);
-    }
-  }
-
-  const newElo = currentElo + Math.round(rawChange);
-  return Math.max(0, newElo);
-}
-
-// ---------- Rank rooms management ----------
 function addRankRoomsToMode(mode, count) {
   const existing = getRankRoomsByMode(mode);
   const maxAllowed = config.MAX_RANK_ROOMS_PER_MODE || config.MAX_ROOMS_PER_MODE;
@@ -203,15 +221,6 @@ function addRankRoomsToMode(mode, count) {
   }
   return { created, requested: count, capped: count > toAdd, currentTotal: existing.length + created.length, maxAllowed };
 }
-
-function getRankRoomsByMode(mode) {
-  return getAllRooms().filter(r => r.isRank && r.mode === mode);
-}
-
-function getAllRankRooms() {
-  return getAllRooms().filter(r => r.isRank);
-}
-
 function removeRankRoom(roomId) {
   const room = rooms.get(roomId);
   if (!room || !room.isRank) return { ok: false, reason: 'not_found' };
@@ -220,7 +229,7 @@ function removeRankRoom(roomId) {
   return { ok: true, room };
 }
 
-// ---------- Common functions ----------
+// === UTILITY ===
 function findRoomOfUser(userId) {
   for (const room of rooms.values()) {
     if (room.players.has(userId)) return room;
@@ -230,7 +239,6 @@ function findRoomOfUser(userId) {
   }
   return null;
 }
-
 function findRoomOfUserInMode(userId, mode) {
   for (const room of rooms.values()) {
     if (room.mode === mode && room.players.has(userId)) return room;
@@ -263,7 +271,6 @@ function resetRoom(room) {
   room.firstJoinAt = null;
   room.fullAt = null;
   room._blinkOn = false;
-  room._flashColor = null;
   if (room.isRank) {
     room.resultMap.clear();
     room.resultWindowEnd = null;
@@ -273,7 +280,6 @@ function resetRoom(room) {
 function isFull(room) {
   return room.players.size >= room.capacity;
 }
-
 function allReady(room) {
   if (room.players.size === 0) return false;
   for (const p of room.players.values()) {
@@ -281,7 +287,6 @@ function allReady(room) {
   }
   return true;
 }
-
 function teamCounts(room) {
   let team1 = 0, team2 = 0, none = 0;
   for (const p of room.players.values()) {
@@ -291,7 +296,6 @@ function teamCounts(room) {
   }
   return { team1, team2, none };
 }
-
 function canRevealCode(room) {
   if (!isFull(room)) return { ok: false, reason: 'not_full' };
   if (!allReady(room)) return { ok: false, reason: 'not_all_ready' };
@@ -308,15 +312,12 @@ function banUser(room, userId) {
   room.bannedUsers.add(userId);
   room.players.delete(userId);
 }
-
 function unbanUser(room, userId) {
   room.bannedUsers.delete(userId);
 }
-
 function isBanned(room, userId) {
   return room.bannedUsers.has(userId);
 }
-
 function generateCode() {
   let code;
   do {
@@ -324,7 +325,6 @@ function generateCode() {
   } while (code === '0000');
   return code;
 }
-
 function formatPersonalCode(room, userId) {
   if (!room.code) return null;
   const player = room.players.get(userId);
@@ -337,6 +337,7 @@ function formatPersonalCode(room, userId) {
 
 module.exports = {
   rooms,
+  eloData,
   initRooms,
   getRoom,
   getAllRooms,
@@ -361,15 +362,15 @@ module.exports = {
   getHiddenRoom,
   getAllHiddenRooms,
   deleteHiddenRoom,
-
-  // Rank exports
-  eloData,
   getElo,
   getRankFromElo,
   updateElo,
   calculateNewElo,
+  buildRankRoom,
   addRankRoomsToMode,
-  getRankRoomsByMode,
-  getAllRankRooms,
   removeRankRoom,
+  getAllRankRooms,
+  getRankRoomsByMode,
+  getAllNormalRooms,
+  getNormalRoomsByMode,
 };
