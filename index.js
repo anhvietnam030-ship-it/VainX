@@ -2,6 +2,8 @@
 const dns = require('node:dns');
 dns.setDefaultResultOrder('ipv4first');
 
+const fs = require('fs');
+const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
 const {
@@ -60,6 +62,43 @@ const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows, roo
 const persistence = require('./src/persistence');
 const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 
+// ===== CONFIG LƯU ẢNH =====
+const IMAGE_HISTORY_FILE = path.join(__dirname, 'data', 'image-history.json');
+const IMAGE_RETENTION_DAYS = 90; // Lưu 90 ngày
+
+function loadImageHistory() {
+  try {
+    if (!fs.existsSync(IMAGE_HISTORY_FILE)) return [];
+    const raw = fs.readFileSync(IMAGE_HISTORY_FILE, 'utf-8');
+    return JSON.parse(raw);
+  } catch { return []; }
+}
+
+function saveImageHistory(history) {
+  const dir = path.dirname(IMAGE_HISTORY_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  // Giữ lại các mục còn trong vòng 90 ngày
+  const cutoff = Date.now() - IMAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  const filtered = history.filter(e => e.submittedAt > cutoff);
+  fs.writeFileSync(IMAGE_HISTORY_FILE, JSON.stringify(filtered, null, 2));
+}
+
+function isImageUsedRecently(url, userId) {
+  const history = loadImageHistory();
+  const cutoff = Date.now() - IMAGE_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  return history.some(entry =>
+    entry.url === url &&
+    entry.userId === userId &&
+    entry.submittedAt > cutoff
+  );
+}
+
+function addImageHistory(url, userId, roomId) {
+  const history = loadImageHistory();
+  history.push({ url, userId, roomId, submittedAt: Date.now() });
+  saveImageHistory(history);
+}
+
 // ===== OCR HELPERS (OCR.space - upload file) =====
 const OCR_API_KEY = process.env.OCR_API_KEY || config.OCR_API_KEY;
 
@@ -116,24 +155,110 @@ async function ocrImage(imageUrl) {
   }
 }
 
-function extractKDAResult(text) {
-  const kdaMatch = text.match(/(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/);
-  let kda = null;
-  let kill, death, assist;
-  if (kdaMatch) {
-    kill = parseInt(kdaMatch[1], 10);
-    death = parseInt(kdaMatch[2], 10);
-    assist = parseInt(kdaMatch[3], 10);
-    kda = death === 0 ? kill + assist : (kill + assist) / death;
+// ===== EXTRACT KDA (chỉ cho 1 người) =====
+function extractKDAResult(text, username) {
+  // Tìm tất cả KDA dạng kill/death/assist
+  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
+  const matches = [];
+  let match;
+  while ((match = kdaRegex.exec(text)) !== null) {
+    matches.push({
+      kill: parseInt(match[1], 10),
+      death: parseInt(match[2], 10),
+      assist: parseInt(match[3], 10),
+      full: match[0],
+      index: match.index,
+    });
   }
-  const resultMatch = text.match(/(VICTORY|DEFEAT|victory|defeat)/);
+
+  if (matches.length === 0) {
+    return { kda: null, kill: null, death: null, assist: null, result: null };
+  }
+
+  // Lọc KDA hợp lý
+  const validMatches = matches.filter(m => m.kill <= 30 && m.death <= 30 && m.assist <= 30);
+
+  let selected = null;
+  if (username) {
+    const nameRegex = new RegExp(username, 'i');
+    const nameMatch = text.match(nameRegex);
+    if (nameMatch) {
+      const nameIndex = nameMatch.index;
+      for (const m of validMatches) {
+        const distance = Math.abs(m.index - nameIndex);
+        if (distance < 100) {
+          selected = m;
+          break;
+        }
+      }
+    }
+  }
+
+  if (!selected) {
+    const reasonable = validMatches.filter(m => m.kill >= 2 && m.kill <= 15 && m.death <= 10);
+    if (reasonable.length > 0) selected = reasonable[0];
+    else if (validMatches.length > 0) selected = validMatches[0];
+  }
+
+  if (!selected) return { kda: null, kill: null, death: null, assist: null, result: null };
+
+  const { kill, death, assist } = selected;
+  const kda = death === 0 ? kill + assist : (kill + assist) / death;
+
   let result = null;
+  const resultMatch = text.match(/(VICTORY|DEFEAT|victory|defeat|Chiến thắng|Thất bại|CHIẾN THẮNG|THẤT BẠI)/);
   if (resultMatch) {
-    result = resultMatch[1].toLowerCase();
-    if (result === 'victory') result = 'win';
-    else if (result === 'defeat') result = 'loss';
+    const raw = resultMatch[1].toLowerCase();
+    if (raw.includes('victory') || raw.includes('chiến thắng')) result = 'win';
+    else if (raw.includes('defeat') || raw.includes('thất bại')) result = 'loss';
   }
+
   return { kda, kill, death, assist, result };
+}
+
+// ===== EXTRACT ALL KDA (cho cả phòng) =====
+function extractAllKDAResult(text, room) {
+  const players = Array.from(room.players.keys());
+  const resultMap = new Map();
+  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
+  const kdaMatches = [];
+  let match;
+  while ((match = kdaRegex.exec(text)) !== null) {
+    kdaMatches.push({
+      kill: parseInt(match[1], 10),
+      death: parseInt(match[2], 10),
+      assist: parseInt(match[3], 10),
+      index: match.index,
+    });
+  }
+
+  // Với mỗi KDA, tìm tên gần nhất
+  for (const kda of kdaMatches) {
+    const start = Math.max(0, kda.index - 60);
+    const end = Math.min(text.length, kda.index + 60);
+    const context = text.substring(start, end);
+    for (const userId of players) {
+      const username = room.players.get(userId).username;
+      if (context.includes(username)) {
+        resultMap.set(userId, {
+          kill: kda.kill,
+          death: kda.death,
+          assist: kda.assist,
+        });
+        break;
+      }
+    }
+  }
+
+  let result = null;
+  const resultMatch = text.match(/(VICTORY|DEFEAT|victory|defeat|Chiến thắng|Thất bại|CHIẾN THẮNG|THẤT BẠI)/);
+  if (resultMatch) {
+    const raw = resultMatch[1].toLowerCase();
+    if (raw.includes('victory') || raw.includes('chiến thắng')) result = 'win';
+    else if (raw.includes('defeat') || raw.includes('thất bại')) result = 'loss';
+  }
+
+  return { resultMap, result };
 }
 
 // ===== CÁC HÀM TIỆN ÍCH =====
@@ -226,6 +351,16 @@ async function logAdmin(text) {
   if (!config.LOG_CHANNEL_ID) return;
   const ch = await client.channels.fetch(config.LOG_CHANNEL_ID).catch(() => null);
   if (ch) await ch.send(text).catch(() => {});
+}
+
+async function forwardToLogChannel(content, files) {
+  if (!config.LOG_CHANNEL_ID) return;
+  try {
+    const ch = await client.channels.fetch(config.LOG_CHANNEL_ID);
+    if (ch) await ch.send({ content, files });
+  } catch (err) {
+    console.error('Không thể forward ảnh vào log channel:', err);
+  }
 }
 
 async function renderHiddenRoom(room) {
@@ -550,6 +685,9 @@ async function tryRevealCode(room, channel) {
 client.once('ready', async () => {
   console.log(`Đã đăng nhập với tên ${client.user.tag}`);
 
+  // Xóa lịch sử ảnh cũ hơn 90 ngày khi khởi động
+  saveImageHistory(loadImageHistory());
+
   for (const room of getAllRooms()) {
     if (room.players.size === 0 || !room.panelChannelId) continue;
     const channel = await client.channels.fetch(room.panelChannelId).catch(() => null);
@@ -635,7 +773,6 @@ client.on('interactionCreate', async (interaction) => {
     }
   } catch (err) {
     console.error('❗ Lỗi trong interactionCreate:', err);
-    // Không cố gắng reply nữa vì có thể interaction đã hết hạn, chỉ log.
   }
 });
 
@@ -1185,15 +1322,12 @@ async function handleSlashCommand(interaction) {
 
   // ---- SUBMIT-RESULT (VỚI FILE ĐÍNH KÈM) ----
   if (commandName === 'submit-result') {
-    // LOG NGAY KHI NHẬN LỆNH
     console.log(`✅ Nhận lệnh /submit-result từ ${interaction.user.tag}`);
     try {
-      // Defer ngay để giữ interaction sống
       await interaction.deferReply({ ephemeral: true });
       console.log('✅ Defer reply thành công');
     } catch (err) {
       console.error('❌ Lỗi defer reply:', err);
-      // Nếu defer lỗi, không thể xử lý tiếp
       try {
         await interaction.reply({ content: '⚠️ Bot quá tải, vui lòng thử lại sau.', ephemeral: true });
       } catch (_) {}
@@ -1223,11 +1357,24 @@ async function handleSlashCommand(interaction) {
       return interaction.editReply({ content: '❌ File đính kèm không phải là ảnh hợp lệ.' });
     }
 
+    const imageUrl = attachment.url;
+
+    // ===== KIỂM TRA LỊCH SỬ ẢNH =====
+    if (isImageUsedRecently(imageUrl, interaction.user.id)) {
+      return interaction.editReply({ content: `❌ Ảnh này đã được sử dụng trong vòng ${IMAGE_RETENTION_DAYS} ngày qua. Vui lòng chụp ảnh mới để tránh gian lận!` });
+    }
+
+    // ===== FORWARD ẢNH VÀO LOG CHANNEL =====
+    await forwardToLogChannel(
+      `📸 **${interaction.user.tag}** (${interaction.user.id}) gửi ảnh kết quả cho phòng **${room.id}** (${room.label}) tại <t:${Math.floor(Date.now()/1000)}>`,
+      [attachment.url]
+    );
+
     console.log(`🔍 Bắt đầu OCR cho file: ${attachment.name} (${attachment.contentType}, ${attachment.size} bytes)`);
 
     let ocrText = '';
     try {
-      ocrText = await ocrImage(attachment.url);
+      ocrText = await ocrImage(imageUrl);
     } catch (err) {
       console.error('❌ Lỗi khi gọi OCR:', err);
       return interaction.editReply({ content: '❌ Lỗi khi xử lý ảnh. Vui lòng thử lại sau hoặc dùng /admin-submit-result.' });
@@ -1240,15 +1387,45 @@ async function handleSlashCommand(interaction) {
       });
     }
 
-    const { kda, kill, death, assist, result } = extractKDAResult(ocrText);
+    // ---- THỬ PARSE CHO CẢ PHÒNG (nếu có) ----
+    const { resultMap, result } = extractAllKDAResult(ocrText, room);
+    const savedUsers = [];
+
+    if (resultMap.size > 0 && result) {
+      // Lưu KDA cho tất cả người tìm thấy
+      for (const [userId, kdaData] of resultMap) {
+        if (!room.resultMap.has(userId)) {
+          const kda = kdaData.death === 0 ? kdaData.kill + kdaData.assist : (kdaData.kill + kdaData.assist) / kdaData.death;
+          room.resultMap.set(userId, {
+            result: result,
+            kill: kdaData.kill,
+            death: kdaData.death,
+            assist: kdaData.assist,
+            kda: kda,
+            imageUrl: imageUrl,
+            submittedAt: Date.now(),
+          });
+          savedUsers.push(`<@${userId}>`);
+        }
+      }
+      persistence.saveState(rooms, eloData);
+      // Thêm vào lịch sử ảnh
+      addImageHistory(imageUrl, interaction.user.id, room.id);
+      return interaction.editReply({
+        content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}** cho ${savedUsers.length} người: ${savedUsers.join(', ')}. (OCR tự động)`,
+      });
+    }
+
+    // ---- NẾU KHÔNG PARSE ĐƯỢC CẢ PHÒNG, FALLBACK CHO NGƯỜI GỬI ----
+    const { kda, kill, death, assist } = extractKDAResult(ocrText, interaction.user.username);
     if (!kda || !result) {
-      console.log('⚠️ Không parse được KDA hoặc kết quả từ OCR text:', ocrText);
+      console.log('⚠️ Không parse được KDA hoặc kết quả từ OCR text:', ocrText.slice(0, 200));
       return interaction.editReply({
         content: '❌ Không tìm thấy KDA hoặc kết quả trong ảnh. Vui lòng kiểm tra ảnh hoặc nhờ admin gửi thay.',
       });
     }
 
-    // Kiểm tra lại một số điều kiện (có thể thay đổi trong thời gian chờ OCR)
+    // Kiểm tra lại điều kiện
     if (Date.now() > room.resultWindowEnd) {
       return interaction.editReply({ content: '❌ Đã quá hạn 45 phút.' });
     }
@@ -1258,14 +1435,15 @@ async function handleSlashCommand(interaction) {
 
     room.resultMap.set(interaction.user.id, {
       result: result,
-      imageUrl: attachment.url,
-      submittedAt: Date.now(),
-      kda: kda,
       kill: kill,
       death: death,
       assist: assist,
+      kda: kda,
+      imageUrl: imageUrl,
+      submittedAt: Date.now(),
     });
     persistence.saveState(rooms, eloData);
+    addImageHistory(imageUrl, interaction.user.id, room.id);
 
     return interaction.editReply({
       content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}**, KDA ${kill}/${death}/${assist} (${kda.toFixed(2)}) cho ${room.label}. (OCR tự động)`,
@@ -1306,10 +1484,12 @@ async function handleSlashCommand(interaction) {
 
     room.resultMap.set(targetUser.id, {
       result: result,
+      kill: kill,
+      death: death,
+      assist: assist,
+      kda: kda,
       imageUrl: imageUrl,
       submittedAt: Date.now(),
-      kda: kda,
-      kill, death, assist
     });
     persistence.saveState(rooms, eloData);
 
@@ -1850,7 +2030,7 @@ async function handleModalSubmit(interaction) {
     });
   }
 
-  const { kda, kill, death, assist, result } = extractKDAResult(ocrText);
+  const { kda, kill, death, assist, result } = extractKDAResult(ocrText, interaction.user.username);
   if (!kda || !result) {
     return interaction.editReply({
       content: '❌ Không tìm thấy KDA hoặc kết quả trong ảnh. Vui lòng kiểm tra ảnh hoặc nhờ admin gửi thay.',
@@ -1869,12 +2049,12 @@ async function handleModalSubmit(interaction) {
 
   room.resultMap.set(interaction.user.id, {
     result: result,
-    imageUrl: imageUrl,
-    submittedAt: Date.now(),
-    kda: kda,
     kill: kill,
     death: death,
     assist: assist,
+    kda: kda,
+    imageUrl: imageUrl,
+    submittedAt: Date.now(),
   });
   persistence.saveState(rooms, eloData);
 
