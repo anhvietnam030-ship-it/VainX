@@ -147,10 +147,10 @@ const commands = [
     .setDescription('Ép reset một phòng bất kỳ (thường, rank, ẩn) ngay lập tức (chỉ admin)')
     .addStringOption(opt => opt.setName('phong').setDescription('ID phòng').setRequired(true)),
 
-  // ----- TEST & TIỆN ÍCH -----
+  // ----- TEST -----
   new SlashCommandBuilder()
     .setName('test-fill')
-    .setDescription('[TEST] Tự nhét người giả vào phòng (chỉ admin)')
+    .setDescription('[TEST] Tự nhét người giả vào phòng thường (chỉ admin)')
     .addStringOption(opt => opt.setName('phong').setDescription('ID phòng').setRequired(true))
     .addIntegerOption(opt => opt.setName('so_nguoi').setDescription('Số người giả (để trống = lấp đầy)').setMinValue(1).setRequired(false)),
   new SlashCommandBuilder()
@@ -158,6 +158,13 @@ const commands = [
     .setDescription('[TEST] Giống test-fill nhưng cho phòng ẩn (chỉ admin)')
     .addStringOption(opt => opt.setName('phong').setDescription('ID phòng ẩn').setRequired(true))
     .addIntegerOption(opt => opt.setName('so_nguoi').setDescription('Số người giả').setMinValue(1).setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('test-fill-rank')
+    .setDescription('[TEST] Tự nhét người giả vào phòng Rank (chỉ admin)')
+    .addStringOption(opt => opt.setName('phong').setDescription('ID phòng rank').setRequired(true))
+    .addIntegerOption(opt => opt.setName('so_nguoi').setDescription('Số người giả (để trống = lấp đầy)').setMinValue(1).setRequired(false)),
+
+  // ----- TIỆN ÍCH -----
   new SlashCommandBuilder()
     .setName('don-rac')
     .setDescription('Xóa nhanh tin nhắn rác trong kênh (chỉ admin, không xóa panel)')
