@@ -624,12 +624,13 @@ client.on('interactionCreate', async (interaction) => {
   }
 });
 
+// ===== ADMIN COMMANDS LIST =====
 const ADMIN_ONLY_COMMANDS = new Set([
   'set-timeout', 'ready', 'gia-han-phong', 'ban-phong', 'unban-phong',
   'kick-room', 'kick-group', 'setup-phong-an', 'moi-phong-an',
   'danh-sach-phong-an', 'xoa-phong-an', 'xoa-tat-ca-phong-an',
   'setup', 'setup-rank', 'admin-submit-result',
-  'test-fill', 'test-fill-an', 'test-fill-rank',
+  'test-fill', 'test-fill-rank', 'test-fill-an',
   'xoa-setup-phong', 'don-rac', 'xoa-tin-nhan-bot',
   'xoa-phong-thuong', 'xoa-tat-ca-phong-thuong',
   'reset-tat-ca-phong', 'reset-room',
@@ -666,7 +667,7 @@ async function handleSlashCommand(interaction) {
   // ---- LOBBY ----
   if (commandName === 'lobby') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const statsFor = (mode) => {
       const list = getRoomsByMode(mode);
@@ -683,50 +684,412 @@ async function handleSlashCommand(interaction) {
 
   // ---- SET-TIMEOUT ----
   if (commandName === 'set-timeout') {
-    // ... giống như cũ (tôi rút gọn)
-    return interaction.reply({ content: '✅', ephemeral: true });
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới đổi được thời gian reset phòng.', ephemeral: true });
+    }
+    const minutes = interaction.options.getInteger('phut', true);
+    const scope = interaction.options.getString('pham_vi') || 'all';
+    const ms = minutes * 60 * 1000;
+
+    const targets = scope === 'all' ? [...getRoomsByMode('3v3'), ...getRoomsByMode('5v5')] : getRoomsByMode(scope);
+
+    for (const room of targets) {
+      room.timeoutMs = ms;
+      if (room.status === 'waiting' && room.players.size > 0 && !isFull(room) && room.panelChannelId) {
+        const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
+        if (ch) {
+          room.firstJoinAt = Date.now();
+          scheduleInactivityTimeout(room, ch);
+          await renderRoom(room, ch);
+        }
+      }
+    }
+    persistence.saveState(rooms, eloData);
+
+    return interaction.reply({
+      content: `✅ Đã đặt thời gian tự reset = **${minutes} phút** cho ${
+        scope === 'all' ? 'tất cả phòng' : `phòng ${scope}`
+      }.`,
+      ephemeral: true,
+    });
   }
 
   // ---- READY ----
-  if (commandName === 'ready') { /* ... giống cũ ... */ return; }
+  if (commandName === 'ready') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const targetUser = interaction.options.getUser('user', true);
+    const trangThai = interaction.options.getString('trang_thai', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+    const player = room.players.get(targetUser.id);
+    if (!player) {
+      return interaction.reply({
+        content: `❌ <@${targetUser.id}> hiện không ở trong **${room.label}**.`,
+        ephemeral: true,
+      });
+    }
+
+    player.ready = trangThai === 'ready';
+
+    const channel =
+      (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) ||
+      interaction.channel;
+    await renderRoom(room, channel);
+
+    if (player.ready) {
+      const check = canRevealCode(room);
+      if (check.ok) await tryRevealCode(room, channel);
+    }
+
+    persistence.saveState(rooms, eloData);
+    return interaction.reply({
+      content: `✅ Đã đặt <@${targetUser.id}> thành **${player.ready ? 'Sẵn sàng' : 'Chưa sẵn sàng'}** trong **${room.label}**.`,
+      ephemeral: true,
+    });
+  }
 
   // ---- GIA-HAN-PHONG ----
-  if (commandName === 'gia-han-phong') { /* ... giống cũ ... */ return; }
+  if (commandName === 'gia-han-phong') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const phut = interaction.options.getInteger('phut', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+    if (!room.firstJoinAt || room.status === 'revealed') {
+      return interaction.reply({
+        content: 'ℹ️ Phòng này hiện đang trống hoặc đã phát code, không có đồng hồ nào đang chạy để gia hạn.',
+        ephemeral: true,
+      });
+    }
+
+    room.timeoutMs += phut * 60 * 1000;
+    const remaining = Math.max(room.timeoutMs - (Date.now() - room.firstJoinAt), 1000);
+
+    const channel =
+      (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) ||
+      interaction.channel;
+    scheduleInactivityTimeout(room, channel, remaining);
+    await renderRoom(room, channel);
+    persistence.saveState(rooms, eloData);
+
+    return interaction.reply({
+      content: `✅ Đã gia hạn thêm **${phut} phút** cho **${room.label}** trước khi tự reset.`,
+      ephemeral: true,
+    });
+  }
 
   // ---- MOI-BAN ----
-  if (commandName === 'moi-ban') { /* ... giống cũ ... */ return; }
+  if (commandName === 'moi-ban') {
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const targetUser = interaction.options.getUser('ban', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+    if (room.status === 'revealed') {
+      return interaction.reply({ content: '❌ Phòng đã phát code, không mời thêm được nữa.', ephemeral: true });
+    }
+    if (isFull(room)) {
+      return interaction.reply({ content: '❌ Phòng đã đầy rồi.', ephemeral: true });
+    }
+    if (isBanned(room, targetUser.id)) {
+      return interaction.reply({
+        content: `❌ <@${targetUser.id}> đang bị cấm khỏi **${room.label}**, không mời được.`,
+        ephemeral: true,
+      });
+    }
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`join_${room.id}`)
+        .setLabel('Tham gia ngay')
+        .setStyle(ButtonStyle.Success)
+        .setEmoji('➕')
+    );
+
+    await interaction.channel.send({
+      content: `📨 <@${interaction.user.id}> mời <@${targetUser.id}> vào **${room.label}** (${room.players.size}/${room.capacity})!`,
+      components: [row],
+    });
+
+    return interaction.reply({ content: `✅ Đã gửi lời mời cho <@${targetUser.id}>.`, ephemeral: true });
+  }
 
   // ---- BAN-PHONG ----
-  if (commandName === 'ban-phong') { /* ... giống cũ ... */ return; }
+  if (commandName === 'ban-phong') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const targetUser = interaction.options.getUser('user', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+
+    const wasInRoom = room.players.has(targetUser.id);
+    banUser(room, targetUser.id);
+    persistence.saveState(rooms, eloData);
+
+    if (wasInRoom) {
+      const channel =
+        (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) ||
+        interaction.channel;
+      await renderRoom(room, channel);
+    }
+
+    return interaction.reply({
+      content: `✅ Đã cấm <@${targetUser.id}> tham gia **${room.label}**${
+        wasInRoom ? ' (đã bị đá khỏi phòng luôn)' : ''
+      }. Các phòng khác không bị ảnh hưởng.`,
+      ephemeral: true,
+    });
+  }
 
   // ---- UNBAN-PHONG ----
-  if (commandName === 'unban-phong') { /* ... giống cũ ... */ return; }
+  if (commandName === 'unban-phong') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const targetUser = interaction.options.getUser('user', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+
+    unbanUser(room, targetUser.id);
+    persistence.saveState(rooms, eloData);
+
+    return interaction.reply({
+      content: `✅ Đã bỏ cấm <@${targetUser.id}> khỏi **${room.label}**.`,
+      ephemeral: true,
+    });
+  }
 
   // ---- KICK-ROOM ----
-  if (commandName === 'kick-room') { /* ... giống cũ ... */ return; }
+  if (commandName === 'kick-room') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const targetUser = interaction.options.getUser('user', true);
+    const room = getRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    }
+    if (!room.players.has(targetUser.id)) {
+      return interaction.reply({
+        content: `ℹ️ <@${targetUser.id}> hiện không ở trong **${room.label}** (có thể đã rời trước đó).`,
+        ephemeral: true,
+      });
+    }
+
+    room.players.delete(targetUser.id);
+    persistence.saveState(rooms, eloData);
+
+    const channel =
+      (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) ||
+      interaction.channel;
+    await renderRoom(room, channel);
+
+    if (room.hidden) {
+      client.users
+        .fetch(targetUser.id)
+        .then((user) => user.send(`⚠️ Bạn đã bị admin đá khỏi trận đang diễn ra tại **${room.label}**. Bạn vẫn có thể bấm **Gia nhập** lại trên panel để tham gia trận sau.`))
+        .catch(() => {});
+    }
+
+    return interaction.reply({
+      content: `✅ Đã đá <@${targetUser.id}> khỏi trận tại **${room.label}** (chưa cấm — họ vào lại được).`,
+      ephemeral: true,
+    });
+  }
 
   // ---- KICK-GROUP ----
-  if (commandName === 'kick-group') { /* ... giống cũ ... */ return; }
+  if (commandName === 'kick-group') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const targetUser = interaction.options.getUser('user', true);
+    const room = getHiddenRoom(roomId);
+    if (!room) {
+      return interaction.reply({
+        content: `❌ Không tìm thấy phòng ẩn "${roomId}" (lệnh này chỉ dùng cho phòng ẩn — xem ID đúng bằng \`/danh-sach-phong-an\`).`,
+        ephemeral: true,
+      });
+    }
+
+    room.players.delete(targetUser.id);
+
+    const targetIdx = room.panelTargets.findIndex((t) => t.userId === targetUser.id);
+    if (targetIdx === -1) {
+      return interaction.reply({
+        content: `ℹ️ <@${targetUser.id}> chưa từng được mời vào **${room.label}**, không có gì để xoá.`,
+        ephemeral: true,
+      });
+    }
+    const [target] = room.panelTargets.splice(targetIdx, 1);
+
+    try {
+      const ch = await client.channels.fetch(target.channelId).catch(() => null);
+      if (ch && target.messageId) {
+        const msg = await ch.messages.fetch(target.messageId).catch(() => null);
+        if (msg) await msg.delete().catch(() => {});
+      }
+    } catch (err) {
+      console.error(`Không xoá được tin nhắn panel phòng ẩn cho ${targetUser.id}:`, err);
+    }
+
+    client.users
+      .fetch(targetUser.id)
+      .then((user) => user.send(`🚫 Bạn đã bị admin xoá khỏi nhóm phòng ẩn **${room.label}** — không còn quyền xem/tham gia phòng này nữa.`))
+      .catch(() => {});
+
+    await renderRoom(room, interaction.channel);
+
+    return interaction.reply({
+      content: `✅ Đã xoá <@${targetUser.id}> khỏi nhóm **${room.label}** (đã xoá luôn panel DM của họ).`,
+      ephemeral: true,
+    });
+  }
 
   // ---- SETUP-PHONG-AN ----
-  if (commandName === 'setup-phong-an') { /* ... giống cũ ... */ return; }
+  if (commandName === 'setup-phong-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const mode = interaction.options.getString('che_do', true);
+    const room = createHiddenRoom(mode);
+
+    let dmNote = '';
+    try {
+      await sendHiddenRoomDM(room, interaction.user, `👑 Bạn (admin) vừa tạo phòng ẩn: **${room.label}**.`);
+    } catch (err) {
+      console.error('Không DM được panel phòng ẩn cho admin:', err);
+      dmNote = '\n⚠️ Không DM được panel cho bạn (có thể bạn đang tắt DM từ thành viên server) — bật lên rồi thử lại.';
+    }
+
+    return interaction.reply({
+      content:
+        `✅ Đã tạo **${room.label}** (ID: \`${room.id}\`) và gửi panel vào DM của bạn.\n` +
+        `Dùng \`/moi-phong-an phong:${room.id}\` để mời thêm người khác (họ sẽ nhận panel qua DM riêng, không ai khác thấy).` +
+        dmNote,
+      ephemeral: true,
+    });
+  }
 
   // ---- MOI-PHONG-AN ----
-  if (commandName === 'moi-phong-an') { /* ... giống cũ ... */ return; }
+  if (commandName === 'moi-phong-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    if (!interaction.guild) {
+      return interaction.reply({
+        content: '⚠️ Lệnh này phải chạy trong 1 kênh của server (không dùng được từ DM), vì DM không hiện đủ danh sách thành viên để chọn.',
+        ephemeral: true,
+      });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const room = getHiddenRoom(roomId);
+    if (!room) {
+      return interaction.reply({
+        content: `❌ Không tìm thấy phòng ẩn "${roomId}" — dùng \`/danh-sach-phong-an\` để xem ID chính xác.`,
+        ephemeral: true,
+      });
+    }
+
+    const select = new UserSelectMenuBuilder()
+      .setCustomId(`hiddeninvite_${room.id}`)
+      .setPlaceholder(`Chọn người muốn mời vào ${room.label}`)
+      .setMinValues(1)
+      .setMaxValues(25);
+
+    return interaction.reply({
+      content: `📨 Chọn (nhiều) người muốn mời riêng vào **${room.label}** (tối đa 25 người/lần — chạy lại lệnh này nếu cần mời thêm):`,
+      components: [new ActionRowBuilder().addComponents(select)],
+      ephemeral: true,
+    });
+  }
 
   // ---- DANH-SACH-PHONG-AN ----
-  if (commandName === 'danh-sach-phong-an') { /* ... giống cũ ... */ return; }
+  if (commandName === 'danh-sach-phong-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const list = getAllHiddenRooms();
+    if (list.length === 0) {
+      return interaction.reply({ content: 'ℹ️ Hiện chưa có phòng ẩn nào.', ephemeral: true });
+    }
+    const lines = list.map(
+      (r) => `• \`${r.id}\` — ${r.label} — ${r.players.size}/${r.capacity} người — đã mời ${r.panelTargets.length} người`
+    );
+    return interaction.reply({ content: `📋 Danh sách phòng ẩn:\n${lines.join('\n')}`, ephemeral: true });
+  }
 
   // ---- XOA-PHONG-AN ----
-  if (commandName === 'xoa-phong-an') { /* ... giống cũ ... */ return; }
+  if (commandName === 'xoa-phong-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const room = getHiddenRoom(roomId);
+    if (!room) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng ẩn "${roomId}".`, ephemeral: true });
+    }
+
+    for (const target of room.panelTargets) {
+      const ch = await client.channels.fetch(target.channelId).catch(() => null);
+      if (ch) {
+        const msg = target.messageId ? await ch.messages.fetch(target.messageId).catch(() => null) : null;
+        if (msg) await msg.edit({ content: `🚫 **${room.label}** đã bị admin đóng.`, embeds: [], components: [] }).catch(() => {});
+      }
+    }
+
+    deleteHiddenRoom(roomId);
+    return interaction.reply({ content: `✅ Đã xóa **${room.label}**.`, ephemeral: true });
+  }
 
   // ---- XOA-TAT-CA-PHONG-AN ----
-  if (commandName === 'xoa-tat-ca-phong-an') { /* ... giống cũ ... */ return; }
+  if (commandName === 'xoa-tat-ca-phong-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const allHidden = getAllHiddenRooms();
+    if (allHidden.length === 0) {
+      return interaction.reply({ content: 'ℹ️ Hiện không có phòng ẩn nào để xóa.', ephemeral: true });
+    }
+
+    await interaction.reply({ content: `🗑️ Đang xóa toàn bộ **${allHidden.length}** phòng ẩn...`, ephemeral: true });
+
+    for (const room of allHidden) {
+      for (const target of room.panelTargets) {
+        const ch = await client.channels.fetch(target.channelId).catch(() => null);
+        if (ch) {
+          const msg = target.messageId ? await ch.messages.fetch(target.messageId).catch(() => null) : null;
+          if (msg) await msg.edit({ content: `🚫 **${room.label}** đã bị admin đóng.`, embeds: [], components: [] }).catch(() => {});
+        }
+      }
+      deleteHiddenRoom(room.id);
+    }
+
+    return interaction.followUp({ content: `✅ Đã xóa toàn bộ **${allHidden.length}** phòng ẩn.`, ephemeral: true });
+  }
 
   // ---- SETUP (phòng thường) ----
   if (commandName === 'setup') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const mode = interaction.options.getString('che_do', true);
     const soLuong = interaction.options.getInteger('so_luong');
@@ -735,7 +1098,7 @@ async function handleSlashCommand(interaction) {
     if (soLuong) {
       const { created, capped, currentTotal, maxAllowed } = addRoomsToMode(mode, soLuong);
       if (created.length > 0) {
-        note += `\n✅ Đã tạo thêm **${created.length}** phòng mới: ${created.map(r => `\`${r.id}\``).join(', ')} (tổng hiện tại: **${currentTotal}/${maxAllowed}** phòng).`;
+        note += `\n✅ Đã tạo thêm **${created.length}** phòng mới: ${created.map((r) => `\`${r.id}\``).join(', ')} (tổng hiện tại: **${currentTotal}/${maxAllowed}** phòng).`;
       }
       if (capped) {
         note += `\n⚠️ Bạn xin thêm ${soLuong} phòng nhưng chỉ tạo được ${created.length} vì đã chạm giới hạn tối đa ${maxAllowed} phòng/chế độ.`;
@@ -743,9 +1106,10 @@ async function handleSlashCommand(interaction) {
     }
 
     const roomsOfMode = getRoomsByMode(mode);
+
     if (roomsOfMode.length === 0) {
       return interaction.reply({
-        content: `❌ Chế độ **${mode.toUpperCase()}** hiện chưa có phòng nào. Gõ \`/setup che_do:${mode} so_luong:<số phòng>\` để tạo.`,
+        content: `❌ Chế độ **${mode.toUpperCase()}** hiện chưa có phòng nào. Gõ \`/setup che_do:${mode} so_luong:<số phòng muốn tạo>\` để tạo phòng trước.`,
         ephemeral: true,
       });
     }
@@ -940,43 +1304,169 @@ async function handleSlashCommand(interaction) {
     return interaction.followUp({ content: `✅ Đã xóa ${targetRooms.length} phòng rank.`, ephemeral: true });
   }
 
-  // ---- TEST-FILL (phòng thường) ----
+  // ---- TEST-FILL ----
   if (commandName === 'test-fill') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng lệnh test này.', ephemeral: true });
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getRoom(roomId);
-    if (!room || room.isRank || room.hidden) {
-      return interaction.reply({ content: `❌ Không tìm thấy phòng thường "${roomId}".`, ephemeral: true });
-    }
-    return fillRoom(interaction, room);
-  }
-
-  // ---- TEST-FILL-AN (phòng ẩn) ----
-  if (commandName === 'test-fill-an') {
-    if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
-    }
-    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
-    const room = getHiddenRoom(roomId);
     if (!room) {
-      return interaction.reply({ content: `❌ Không tìm thấy phòng ẩn "${roomId}".`, ephemeral: true });
+      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
     }
-    return fillRoom(interaction, room);
+    if (room.status === 'revealed') {
+      return interaction.reply({
+        content: '❌ Phòng đang ở trạng thái đã phát code. Dùng /reset-room trước rồi thử lại.',
+        ephemeral: true,
+      });
+    }
+
+    const soNguoiInput = interaction.options.getInteger('so_nguoi');
+    const cho_trong = room.capacity - room.players.size;
+    const needed = Math.max(0, Math.min(soNguoiInput ?? cho_trong, cho_trong));
+
+    if (needed <= 0) {
+      return interaction.reply({ content: 'ℹ️ Phòng đã đủ người rồi (hoặc bạn xin thêm 0 người).', ephemeral: true });
+    }
+
+    const wasEmpty = room.players.size === 0;
+
+    for (let i = 1; i <= needed; i++) {
+      const fakeId = `9${Date.now()}${i}`.slice(0, 18);
+      room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true });
+    }
+
+    const channel = interaction.channel;
+    if (wasEmpty) {
+      room.firstJoinAt = Date.now();
+      scheduleInactivityTimeout(room, channel);
+    }
+
+    await renderRoom(room, channel);
+
+    if (isFull(room)) {
+      await announceRoomFull(room, channel);
+      scheduleReadyCountdown(room, channel);
+      await tryRevealCode(room, channel);
+    }
+
+    return interaction.reply({
+      content:
+        `✅ Đã thêm **${needed}** người giả (auto Sẵn sàng) vào **${room.label}**.\n` +
+        `Giờ bạn chỉ cần tự bấm **Gia nhập** (nếu chưa) và **Sẵn sàng** phần của mình để phòng tự phát code.`,
+      ephemeral: true,
+    });
   }
 
-  // ---- TEST-FILL-RANK (phòng rank) ----
+  // ---- TEST-FILL-RANK ----
   if (commandName === 'test-fill-rank') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng lệnh test này.', ephemeral: true });
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getRoom(roomId);
     if (!room || !room.isRank) {
       return interaction.reply({ content: `❌ Không tìm thấy phòng rank "${roomId}".`, ephemeral: true });
     }
-    return fillRoom(interaction, room);
+    if (room.status === 'revealed') {
+      return interaction.reply({
+        content: '❌ Phòng đang ở trạng thái đã phát code. Dùng /reset-room trước rồi thử lại.',
+        ephemeral: true,
+      });
+    }
+
+    const soNguoiInput = interaction.options.getInteger('so_nguoi');
+    const cho_trong = room.capacity - room.players.size;
+    const needed = Math.max(0, Math.min(soNguoiInput ?? cho_trong, cho_trong));
+
+    if (needed <= 0) {
+      return interaction.reply({ content: 'ℹ️ Phòng đã đủ người rồi (hoặc bạn xin thêm 0 người).', ephemeral: true });
+    }
+
+    const wasEmpty = room.players.size === 0;
+
+    for (let i = 1; i <= needed; i++) {
+      const fakeId = `9${Date.now()}${i}`.slice(0, 18);
+      room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true });
+    }
+
+    const channel = interaction.channel;
+    if (wasEmpty) {
+      room.firstJoinAt = Date.now();
+      scheduleInactivityTimeout(room, channel);
+    }
+
+    await renderRoom(room, channel);
+
+    if (isFull(room)) {
+      await announceRoomFull(room, channel);
+      scheduleReadyCountdown(room, channel);
+      await tryRevealCode(room, channel);
+    }
+
+    return interaction.reply({
+      content:
+        `✅ Đã thêm **${needed}** người giả (auto Sẵn sàng) vào **${room.label}** (phòng rank).\n` +
+        `Giờ bạn chỉ cần tự bấm **Gia nhập** (nếu chưa) và **Sẵn sàng** phần của mình để phòng tự phát code.`,
+      ephemeral: true,
+    });
+  }
+
+  // ---- TEST-FILL-AN ----
+  if (commandName === 'test-fill-an') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng lệnh test này.', ephemeral: true });
+    }
+    const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
+    const room = getHiddenRoom(roomId);
+    if (!room) {
+      return interaction.reply({
+        content: `❌ Không tìm thấy phòng ẩn "${roomId}" — dùng \`/danh-sach-phong-an\` để xem ID chính xác.`,
+        ephemeral: true,
+      });
+    }
+    if (room.status === 'revealed') {
+      return interaction.reply({
+        content: '❌ Phòng đang ở trạng thái đã phát code. Dùng /reset-room trước rồi thử lại.',
+        ephemeral: true,
+      });
+    }
+
+    const soNguoiInput = interaction.options.getInteger('so_nguoi');
+    const cho_trong = room.capacity - room.players.size;
+    const needed = Math.max(0, Math.min(soNguoiInput ?? cho_trong, cho_trong));
+
+    if (needed <= 0) {
+      return interaction.reply({ content: 'ℹ️ Phòng đã đủ người rồi (hoặc bạn xin thêm 0 người).', ephemeral: true });
+    }
+
+    const wasEmpty = room.players.size === 0;
+
+    for (let i = 1; i <= needed; i++) {
+      const fakeId = `9${Date.now()}${i}`.slice(0, 18);
+      room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true });
+    }
+
+    const channel = interaction.channel;
+    if (wasEmpty) {
+      room.firstJoinAt = Date.now();
+      scheduleInactivityTimeout(room, channel);
+    }
+
+    await renderRoom(room, channel);
+
+    if (isFull(room)) {
+      await announceRoomFull(room, channel);
+      scheduleReadyCountdown(room, channel);
+      await tryRevealCode(room, channel);
+    }
+
+    return interaction.reply({
+      content:
+        `✅ Đã thêm **${needed}** người giả (auto Sẵn sàng) vào **${room.label}** (phòng ẩn).\n` +
+        `Giờ bạn chỉ cần tự bấm **Gia nhập** (nếu chưa) và **Sẵn sàng** phần của mình để phòng tự phát code.`,
+      ephemeral: true,
+    });
   }
 
   // ---- XOA-SETUP-PHONG ----
@@ -1156,7 +1646,7 @@ async function handleSlashCommand(interaction) {
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getRoom(roomId);
-    if (!room || room.hidden || room.isRank) {
+    if (!room || room.hidden) {
       return interaction.reply({
         content: `❌ Không tìm thấy phòng thường "${roomId}".`,
         ephemeral: true,
@@ -1327,51 +1817,6 @@ async function handleModalSubmit(interaction) {
   });
 }
 
-// ===== HÀM FILL ROOM (dùng cho test-fill, test-fill-an, test-fill-rank) =====
-async function fillRoom(interaction, room) {
-  const soNguoiInput = interaction.options.getInteger('so_nguoi');
-  const cho_trong = room.capacity - room.players.size;
-  const needed = Math.max(0, Math.min(soNguoiInput ?? cho_trong, cho_trong));
-
-  if (needed <= 0) {
-    return interaction.reply({ content: 'ℹ️ Phòng đã đủ người rồi (hoặc bạn xin thêm 0 người).', ephemeral: true });
-  }
-  if (room.status === 'revealed') {
-    return interaction.reply({
-      content: '❌ Phòng đang ở trạng thái đã phát code. Dùng /reset-room trước rồi thử lại.',
-      ephemeral: true,
-    });
-  }
-
-  const wasEmpty = room.players.size === 0;
-
-  for (let i = 1; i <= needed; i++) {
-    const fakeId = `9${Date.now()}${i}`.slice(0, 18);
-    room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true });
-  }
-
-  const channel = interaction.channel;
-  if (wasEmpty) {
-    room.firstJoinAt = Date.now();
-    scheduleInactivityTimeout(room, channel);
-  }
-
-  await renderRoom(room, channel);
-
-  if (isFull(room)) {
-    await announceRoomFull(room, channel);
-    scheduleReadyCountdown(room, channel);
-    await tryRevealCode(room, channel);
-  }
-
-  return interaction.reply({
-    content:
-      `✅ Đã thêm **${needed}** người giả (auto Sẵn sàng) vào **${room.label}**.\n` +
-      `Giờ bạn chỉ cần tự bấm **Gia nhập** (nếu chưa) và **Sẵn sàng** phần của mình để phòng tự phát code.`,
-    ephemeral: true,
-  });
-}
-
 // ===== BUTTON =====
 async function handleButton(interaction) {
   const { customId } = interaction;
@@ -1479,7 +1924,6 @@ async function handleButton(interaction) {
     });
   }
 
-  // Nút "Gửi kết quả" trên panel rank
   if (customId.startsWith('submit_result_')) {
     const roomId = customId.replace('submit_result_', '');
     const room = getRoom(roomId);

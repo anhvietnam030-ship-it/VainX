@@ -147,22 +147,24 @@ const commands = [
     .setDescription('Ép reset một phòng bất kỳ (thường, rank, ẩn) ngay lập tức (chỉ admin)')
     .addStringOption(opt => opt.setName('phong').setDescription('ID phòng').setRequired(true)),
 
-  // ----- TEST -----
+  // ----- TEST LỆNH -----
   new SlashCommandBuilder()
     .setName('test-fill')
-    .setDescription('[TEST] Tự nhét người giả vào phòng thường (chỉ admin)')
-    .addStringOption(opt => opt.setName('phong').setDescription('ID phòng').setRequired(true))
+    .setDescription('[TEST] Tự nhét người giả vào phòng THƯỜNG (chỉ admin)')
+    .addStringOption(opt => opt.setName('phong').setDescription('ID phòng thường').setRequired(true))
     .addIntegerOption(opt => opt.setName('so_nguoi').setDescription('Số người giả (để trống = lấp đầy)').setMinValue(1).setRequired(false)),
+
+  new SlashCommandBuilder()
+    .setName('test-fill-rank')
+    .setDescription('[TEST] Tự nhét người giả vào phòng RANK (chỉ admin)')
+    .addStringOption(opt => opt.setName('phong').setDescription('ID phòng rank (ví dụ: 3v3-rank-1)').setRequired(true))
+    .addIntegerOption(opt => opt.setName('so_nguoi').setDescription('Số người giả (để trống = lấp đầy)').setMinValue(1).setRequired(false)),
+
   new SlashCommandBuilder()
     .setName('test-fill-an')
     .setDescription('[TEST] Giống test-fill nhưng cho phòng ẩn (chỉ admin)')
     .addStringOption(opt => opt.setName('phong').setDescription('ID phòng ẩn').setRequired(true))
     .addIntegerOption(opt => opt.setName('so_nguoi').setDescription('Số người giả').setMinValue(1).setRequired(false)),
-  new SlashCommandBuilder()
-    .setName('test-fill-rank')
-    .setDescription('[TEST] Tự nhét người giả vào phòng Rank (chỉ admin)')
-    .addStringOption(opt => opt.setName('phong').setDescription('ID phòng rank').setRequired(true))
-    .addIntegerOption(opt => opt.setName('so_nguoi').setDescription('Số người giả (để trống = lấp đầy)').setMinValue(1).setRequired(false)),
 
   // ----- TIỆN ÍCH -----
   new SlashCommandBuilder()
