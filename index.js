@@ -60,16 +60,17 @@ const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows, roo
 const persistence = require('./src/persistence');
 const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 
-// ===== OCR HELPERS (OCR.space) =====
+// ===== OCR HELPERS (OCR.space - upload file) =====
 const OCR_API_KEY = process.env.OCR_API_KEY || config.OCR_API_KEY;
 
 async function ocrImage(imageUrl) {
   if (!OCR_API_KEY) {
-    console.error('❌ OCR_API_KEY chưa được cấu hình');
+    console.error('❌ OCR_API_KEY chưa được cấu hình trong .env hoặc config.js');
     return '';
   }
   try {
     // Bước 1: Tải ảnh từ Discord về dưới dạng buffer
+    console.log(`📥 Đang tải ảnh từ: ${imageUrl}`);
     const imageResponse = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
       headers: {
@@ -78,6 +79,7 @@ async function ocrImage(imageUrl) {
       timeout: 15000,
     });
     const imageBuffer = Buffer.from(imageResponse.data, 'binary');
+    console.log(`✅ Đã tải ảnh thành công (${imageBuffer.length} bytes)`);
 
     // Bước 2: Gửi lên OCR.space dưới dạng file upload
     const formData = new FormData();
@@ -88,6 +90,7 @@ async function ocrImage(imageUrl) {
     formData.append('detectOrientation', 'true');
     formData.append('scale', 'true');
 
+    console.log('📤 Đang gửi lên OCR.space...');
     const response = await axios.post('https://api.ocr.space/parse/image', formData, {
       headers: {
         ...formData.getHeaders(),
@@ -97,12 +100,14 @@ async function ocrImage(imageUrl) {
 
     const data = response.data;
     if (data.IsErroredOnProcessing) {
-      console.error('OCR.space error:', data.ErrorMessage);
+      console.error('❌ OCR.space error:', data.ErrorMessage);
       return '';
     }
-    return data.ParsedResults?.[0]?.ParsedText || '';
+    const text = data.ParsedResults?.[0]?.ParsedText || '';
+    console.log(`✅ OCR thành công, nhận được ${text.length} ký tự`);
+    return text;
   } catch (err) {
-    console.error('OCR.space request failed:', err.message);
+    console.error('❌ OCR.space request failed:', err.message);
     if (err.response) {
       console.error('Response status:', err.response.status);
       console.error('Response data:', err.response.data);
@@ -683,7 +688,7 @@ async function handleSlashCommand(interaction) {
   // ---- LOBBY ----
   if (commandName === 'lobby') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const statsFor = (mode) => {
       const list = getRoomsByMode(mode);
@@ -733,7 +738,7 @@ async function handleSlashCommand(interaction) {
   // ---- READY ----
   if (commandName === 'ready') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const targetUser = interaction.options.getUser('user', true);
@@ -772,7 +777,7 @@ async function handleSlashCommand(interaction) {
   // ---- GIA-HAN-PHONG ----
   if (commandName === 'gia-han-phong') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const phut = interaction.options.getInteger('phut', true);
@@ -843,7 +848,7 @@ async function handleSlashCommand(interaction) {
   // ---- BAN-PHONG ----
   if (commandName === 'ban-phong') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const targetUser = interaction.options.getUser('user', true);
@@ -874,7 +879,7 @@ async function handleSlashCommand(interaction) {
   // ---- UNBAN-PHONG ----
   if (commandName === 'unban-phong') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const targetUser = interaction.options.getUser('user', true);
@@ -895,7 +900,7 @@ async function handleSlashCommand(interaction) {
   // ---- KICK-ROOM ----
   if (commandName === 'kick-room') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const targetUser = interaction.options.getUser('user', true);
@@ -934,7 +939,7 @@ async function handleSlashCommand(interaction) {
   // ---- KICK-GROUP ----
   if (commandName === 'kick-group') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const targetUser = interaction.options.getUser('user', true);
@@ -983,7 +988,7 @@ async function handleSlashCommand(interaction) {
   // ---- SETUP-PHONG-AN ----
   if (commandName === 'setup-phong-an') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const mode = interaction.options.getString('che_do', true);
     const room = createHiddenRoom(mode);
@@ -1008,7 +1013,7 @@ async function handleSlashCommand(interaction) {
   // ---- MOI-PHONG-AN ----
   if (commandName === 'moi-phong-an') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     if (!interaction.guild) {
       return interaction.reply({
@@ -1041,7 +1046,7 @@ async function handleSlashCommand(interaction) {
   // ---- DANH-SACH-PHONG-AN ----
   if (commandName === 'danh-sach-phong-an') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const list = getAllHiddenRooms();
     if (list.length === 0) {
@@ -1056,7 +1061,7 @@ async function handleSlashCommand(interaction) {
   // ---- XOA-PHONG-AN ----
   if (commandName === 'xoa-phong-an') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getHiddenRoom(roomId);
@@ -1079,7 +1084,7 @@ async function handleSlashCommand(interaction) {
   // ---- XOA-TAT-CA-PHONG-AN ----
   if (commandName === 'xoa-tat-ca-phong-an') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const allHidden = getAllHiddenRooms();
     if (allHidden.length === 0) {
@@ -1105,7 +1110,7 @@ async function handleSlashCommand(interaction) {
   // ---- SETUP (phòng thường) ----
   if (commandName === 'setup') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const mode = interaction.options.getString('che_do', true);
     const soLuong = interaction.options.getInteger('so_luong');
@@ -1214,7 +1219,7 @@ async function handleSlashCommand(interaction) {
       .setLabel('Link ảnh chụp kết quả (VICTORY/DEFEAT + KDA)')
       .setStyle(TextInputStyle.Short)
       .setRequired(true)
-      .setPlaceholder('https://i.imgur.com/xxx.png');
+      .setPlaceholder('https://cdn.discordapp.com/attachments/.../image.png');
 
     const row = new ActionRowBuilder().addComponents(imageInput);
     modal.addComponents(row);
@@ -1320,15 +1325,15 @@ async function handleSlashCommand(interaction) {
     return interaction.followUp({ content: `✅ Đã xóa ${targetRooms.length} phòng rank.`, ephemeral: true });
   }
 
-  // ---- TEST-FILL ----
+  // ---- TEST-FILL (phòng thường) ----
   if (commandName === 'test-fill') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng lệnh test này.', ephemeral: true });
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getRoom(roomId);
-    if (!room) {
-      return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
+    if (!room || room.isRank) {
+      return interaction.reply({ content: `❌ Không tìm thấy phòng thường "${roomId}".`, ephemeral: true });
     }
     if (room.status === 'revealed') {
       return interaction.reply({
@@ -1431,7 +1436,7 @@ async function handleSlashCommand(interaction) {
   // ---- TEST-FILL-AN ----
   if (commandName === 'test-fill-an') {
     if (!isAdmin(interaction)) {
-      return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng lệnh test này.', ephemeral: true });
     }
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getHiddenRoom(roomId);
@@ -1491,7 +1496,7 @@ async function handleSlashCommand(interaction) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
     }
     const mode = interaction.options.getString('che_do');
-    const targetRooms = mode ? getNormalRoomsByMode(mode) : getAllNormalRooms(); // CHỈ PHÒNG THƯỜNG
+    const targetRooms = mode ? getNormalRoomsByMode(mode) : getAllNormalRooms();
 
     await interaction.reply({
       content: `🗑️ Đang xóa panel của ${targetRooms.length} phòng thường...`,
@@ -1698,7 +1703,7 @@ async function handleSlashCommand(interaction) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
     }
     const mode = interaction.options.getString('che_do');
-    const targetRooms = mode ? getNormalRoomsByMode(mode) : getAllNormalRooms(); // CHỈ PHÒNG THƯỜNG
+    const targetRooms = mode ? getNormalRoomsByMode(mode) : getAllNormalRooms();
     if (targetRooms.length === 0) {
       return interaction.reply({
         content: mode ? `ℹ️ Chế độ **${mode.toUpperCase()}** hiện không có phòng thường nào.` : 'ℹ️ Hiện không có phòng thường nào để xóa.',
@@ -1735,7 +1740,7 @@ async function handleSlashCommand(interaction) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
     }
 
-    const allRoomsNow = getAllNormalRooms(); // CHỈ PHÒNG THƯỜNG
+    const allRoomsNow = getAllNormalRooms();
     await interaction.reply({ content: `♻️ Đang reset toàn bộ ${allRoomsNow.length} phòng thường...`, ephemeral: true });
 
     for (const room of allRoomsNow) {
@@ -1969,7 +1974,7 @@ async function handleButton(interaction) {
       .setLabel('Link ảnh chụp kết quả (VICTORY/DEFEAT + KDA)')
       .setStyle(TextInputStyle.Short)
       .setRequired(true)
-      .setPlaceholder('https://i.imgur.com/xxx.png');
+      .setPlaceholder('https://cdn.discordapp.com/attachments/.../image.png');
 
     const row = new ActionRowBuilder().addComponents(imageInput);
     modal.addComponents(row);
