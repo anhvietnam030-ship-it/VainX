@@ -1,42 +1,47 @@
+// rooms.js
 const config = require('../config');
 
-// roomId dạng "3v3-1", "3v3-2", ... "5v5-4"
 const rooms = new Map();
-
-// Phòng ẨN — không nằm trong danh sách công khai, không hiện trong /setup-phong,
-// không tính vào thống kê bảng chính. Chỉ admin tạo được, không lưu qua restart.
 const hiddenRooms = new Map();
+const eloData = new Map(); // userId -> { elo, rank }
 
 function buildInitialRoom(mode, index) {
   return {
     id: `${mode}-${index}`,
-    mode, // '3v3' | '5v5'
-    index, // 1..4
+    mode,
+    index,
     label: `Phòng ${mode.toUpperCase()} #${index}`,
     capacity: config.CAPACITY[mode],
-    // players: Map<userId, { username, team: 1|2|null, ready: boolean }>
     players: new Map(),
-    // Danh sách userId bị cấm tham gia RIÊNG phòng này (không ảnh hưởng phòng khác)
     bannedUsers: new Set(),
-    status: 'waiting', // waiting | revealed
-    code: null, // mã 4 số của phòng (chung), không phải 0000
+    status: 'waiting',
+    code: null,
     revealedAt: null,
-    firstJoinAt: null, // mốc thời gian người đầu tiên vào -> tính đồng hồ 30 phút
-    fullAt: null, // mốc thời gian phòng vừa đủ người -> tính đếm ngược 2 phút sẵn sàng
-    // Tham chiếu tin nhắn panel để bot tự edit lại
+    firstJoinAt: null,
+    fullAt: null,
     panelChannelId: null,
     panelMessageId: null,
-    // Các timer đang chạy cho phòng này
     timers: {
-      inactivity: null, // setTimeout 30' (đổi được)
-      readyCountdown: null, // setTimeout 2' chờ mọi người sẵn sàng khi phòng đủ người
-      resetAfterCode: null, // setTimeout 2' sau khi phát code
-      blink: null, // setInterval nhấp nháy nút play
+      inactivity: null,
+      readyCountdown: null,
+      resetAfterCode: null,
+      blink: null,
     },
-    // Thời gian timeout hiện tại của phòng (có thể admin chỉnh riêng)
     timeoutMs: config.DEFAULT_ROOM_TIMEOUT_MS,
     _blinkOn: false,
+    _flashColor: null,
   };
+}
+
+function buildRankRoom(mode, index) {
+  const room = buildInitialRoom(mode, index);
+  room.id = `${mode}-rank-${index}`;
+  room.label = `Phòng ${mode.toUpperCase()} Rank #${index}`;
+  room.isRank = true;
+  room.resultMap = new Map(); // userId -> { result, imageUrl, submittedAt, kda, kill, death, assist }
+  room.resultWindowEnd = null;
+  room.timers.resultWindow = null;
+  return room;
 }
 
 function initRooms() {
@@ -53,9 +58,6 @@ function getRoom(roomId) {
   return rooms.get(roomId) || hiddenRooms.get(roomId);
 }
 
-// Dùng khi nạp lại state đã lưu lúc khởi động: nếu id không nằm trong 4 phòng mặc định
-// (vì admin đã /them-phong trước khi bot restart) thì tạo lại đúng slot đó trước khi
-// gán dữ liệu đã lưu vào, tránh mất phòng admin đã thêm.
 function ensureRoom(mode, index) {
   const id = `${mode}-${index}`;
   let room = rooms.get(id);
@@ -66,19 +68,12 @@ function ensureRoom(mode, index) {
   return room;
 }
 
-// Admin thêm thêm (nhiều) phòng thường cho 1 chế độ, tối đa config.MAX_ROOMS_PER_MODE
-// phòng/chế độ (tính cả 4 phòng mặc định). Trả về những phòng vừa tạo được (có thể ít hơn
-// số xin nếu đụng trần).
 function addRoomsToMode(mode, count) {
   const existing = getRoomsByMode(mode);
   const maxAllowed = config.MAX_ROOMS_PER_MODE;
-  const usedIndices = new Set(existing.map((r) => r.index));
+  const usedIndices = new Set(existing.map(r => r.index));
   const canAdd = Math.max(0, maxAllowed - existing.length);
   const toAdd = Math.min(count, canAdd);
-
-  // Lấp đầy số thứ tự còn TRỐNG (do trước đó admin đã /xoa-phong-thuong 1 phòng ở giữa) trước,
-  // rồi mới tạo số mới tiếp theo — đảm bảo luôn ra dãy liền mạch (VD: đang có phòng #1, thêm 9
-  // phòng thì phải ra đúng #2,#3,...,#10, không nhảy số hay để trống ở giữa).
   const created = [];
   let idx = 1;
   while (created.length < toAdd && idx <= maxAllowed) {
@@ -90,13 +85,9 @@ function addRoomsToMode(mode, count) {
     }
     idx++;
   }
-
   return { created, requested: count, capped: count > toAdd, currentTotal: existing.length + created.length, maxAllowed };
 }
 
-// Admin xóa 1 phòng thường đã tạo thêm ngoài số phòng mặc định (index > ROOMS_PER_MODE).
-// Không cho xóa phòng ẩn qua đây, và không cho xóa 4 phòng gốc (dùng /xoa-setup-phong hoặc
-// /reset-room nếu muốn reset chúng thay vì xóa hẳn).
 function removeExtraRoom(roomId) {
   const room = rooms.get(roomId);
   if (!room) return { ok: false, reason: 'not_found' };
@@ -111,17 +102,16 @@ function getAllRooms() {
 }
 
 function getRoomsByMode(mode) {
-  return getAllRooms().filter((r) => r.mode === mode);
+  return getAllRooms().filter(r => r.mode === mode);
 }
 
 // ---------- Phòng ẨN ----------
-
 function createHiddenRoom(mode) {
   const room = buildInitialRoom(mode, 0);
   room.id = `${mode}-an-${Date.now()}`;
   room.hidden = true;
   room.label = `Phòng ${mode.toUpperCase()} (Ẩn) #${room.id.slice(-4)}`;
-  room.panelTargets = []; // [{ channelId, messageId }] - mỗi người được mời có 1 bản DM riêng
+  room.panelTargets = [];
   hiddenRooms.set(room.id, room);
   return room;
 }
@@ -141,7 +131,96 @@ function deleteHiddenRoom(roomId) {
   return !!room;
 }
 
-// Tìm xem 1 user đang ở phòng nào trong TẤT CẢ các phòng (mọi chế độ, kể cả phòng ẩn)
+// ---------- Rank functions ----------
+function getElo(userId) {
+  if (!eloData.has(userId)) {
+    return { elo: null, rank: 'Unranked' };
+  }
+  return eloData.get(userId);
+}
+
+function getRankFromElo(elo) {
+  for (const tier of config.RANK_TIERS) {
+    if (elo >= tier.minElo && elo < tier.maxElo) {
+      return tier.name;
+    }
+  }
+  return 'Unranked';
+}
+
+function updateElo(userId, newElo) {
+  const rank = getRankFromElo(newElo);
+  eloData.set(userId, { elo: newElo, rank });
+  return { elo: newElo, rank };
+}
+
+function calculateNewElo(userElo, opponentElos, result, kda) {
+  if (!opponentElos || opponentElos.length === 0) return userElo;
+  const currentElo = (userElo === null || userElo === undefined) ? config.RANK_DEFAULT_ELO : userElo;
+  const avgOppElo = opponentElos.reduce((a, b) => a + b, 0) / opponentElos.length;
+  const expected = 1 / (1 + Math.pow(10, (avgOppElo - currentElo) / 400));
+  const S = result === 'win' ? 1 : 0;
+  let rawChange = config.RANK_K_FACTOR * (S - expected);
+
+  // Áp dụng hệ số KDA
+  if (kda !== undefined && kda !== null) {
+    const kdaValue = Math.min(kda, 10);
+    let kdaFactor;
+    if (kdaValue >= 4) kdaFactor = 1.5;
+    else if (kdaValue >= 3) kdaFactor = 1.2;
+    else if (kdaValue >= 2) kdaFactor = 1.0;
+    else if (kdaValue >= 1) kdaFactor = 0.8;
+    else kdaFactor = 0.5;
+
+    if (S === 1) {
+      rawChange = rawChange * kdaFactor;
+    } else {
+      rawChange = rawChange * (1 / kdaFactor);
+    }
+  }
+
+  const newElo = currentElo + Math.round(rawChange);
+  return Math.max(0, newElo);
+}
+
+// ---------- Rank rooms management ----------
+function addRankRoomsToMode(mode, count) {
+  const existing = getRankRoomsByMode(mode);
+  const maxAllowed = config.MAX_RANK_ROOMS_PER_MODE || config.MAX_ROOMS_PER_MODE;
+  const usedIndices = new Set(existing.map(r => r.index));
+  const canAdd = Math.max(0, maxAllowed - existing.length);
+  const toAdd = Math.min(count, canAdd);
+  const created = [];
+  let idx = 1;
+  while (created.length < toAdd && idx <= maxAllowed) {
+    if (!usedIndices.has(idx)) {
+      const room = buildRankRoom(mode, idx);
+      rooms.set(room.id, room);
+      created.push(room);
+      usedIndices.add(idx);
+    }
+    idx++;
+  }
+  return { created, requested: count, capped: count > toAdd, currentTotal: existing.length + created.length, maxAllowed };
+}
+
+function getRankRoomsByMode(mode) {
+  return getAllRooms().filter(r => r.isRank && r.mode === mode);
+}
+
+function getAllRankRooms() {
+  return getAllRooms().filter(r => r.isRank);
+}
+
+function removeRankRoom(roomId) {
+  const room = rooms.get(roomId);
+  if (!room || !room.isRank) return { ok: false, reason: 'not_found' };
+  clearRoomTimers(room);
+  rooms.delete(roomId);
+  return { ok: true, room };
+}
+
+// ---------- Common functions ----------
 function findRoomOfUser(userId) {
   for (const room of rooms.values()) {
     if (room.players.has(userId)) return room;
@@ -152,8 +231,6 @@ function findRoomOfUser(userId) {
   return null;
 }
 
-// Mỗi người được ở tối đa 1 phòng 3v3 VÀ 1 phòng 5v5 CÙNG LÚC (không được 2 phòng cùng chế độ,
-// tính cả phòng ẩn)
 function findRoomOfUserInMode(userId, mode) {
   for (const room of rooms.values()) {
     if (room.mode === mode && room.players.has(userId)) return room;
@@ -169,10 +246,12 @@ function clearRoomTimers(room) {
   if (room.timers.readyCountdown) clearTimeout(room.timers.readyCountdown);
   if (room.timers.resetAfterCode) clearTimeout(room.timers.resetAfterCode);
   if (room.timers.blink) clearInterval(room.timers.blink);
+  if (room.timers.resultWindow) clearTimeout(room.timers.resultWindow);
   room.timers.inactivity = null;
   room.timers.readyCountdown = null;
   room.timers.resetAfterCode = null;
   room.timers.blink = null;
+  room.timers.resultWindow = null;
 }
 
 function resetRoom(room) {
@@ -184,6 +263,11 @@ function resetRoom(room) {
   room.firstJoinAt = null;
   room.fullAt = null;
   room._blinkOn = false;
+  room._flashColor = null;
+  if (room.isRank) {
+    room.resultMap.clear();
+    room.resultWindowEnd = null;
+  }
 }
 
 function isFull(room) {
@@ -198,11 +282,8 @@ function allReady(room) {
   return true;
 }
 
-// (Phương án 3) Đếm số người mỗi team
 function teamCounts(room) {
-  let team1 = 0;
-  let team2 = 0;
-  let none = 0;
+  let team1 = 0, team2 = 0, none = 0;
   for (const p of room.players.values()) {
     if (p.team === 1) team1++;
     else if (p.team === 2) team2++;
@@ -211,22 +292,18 @@ function teamCounts(room) {
   return { team1, team2, none };
 }
 
-// Kiểm tra phòng có đủ điều kiện phát code không (đủ người, sẵn sàng hết, và
-// nếu bật ENFORCE_TEAM_BALANCE thì team phải cân bằng hoặc không ai chọn team)
 function canRevealCode(room) {
   if (!isFull(room)) return { ok: false, reason: 'not_full' };
   if (!allReady(room)) return { ok: false, reason: 'not_all_ready' };
   if (!config.ENFORCE_TEAM_BALANCE) return { ok: true };
-
   const { team1, team2, none } = teamCounts(room);
-  if (none === room.players.size) return { ok: true }; // không ai chọn team -> bỏ qua kiểm tra
-  if (none > 0) return { ok: false, reason: 'team_incomplete' }; // có người chọn, có người chưa chọn
+  if (none === room.players.size) return { ok: true };
+  if (none > 0) return { ok: false, reason: 'team_incomplete' };
   const half = room.capacity / 2;
   if (team1 !== half || team2 !== half) return { ok: false, reason: 'team_unbalanced' };
   return { ok: true };
 }
 
-// (Cấm theo phòng) Cấm 1 user khỏi 1 phòng cụ thể — tự đá luôn nếu đang ở trong phòng đó
 function banUser(room, userId) {
   room.bannedUsers.add(userId);
   room.players.delete(userId);
@@ -240,7 +317,6 @@ function isBanned(room, userId) {
   return room.bannedUsers.has(userId);
 }
 
-// Sinh mã 4 số ngẫu nhiên, không được là "0000"
 function generateCode() {
   let code;
   do {
@@ -249,9 +325,6 @@ function generateCode() {
   return code;
 }
 
-// Định dạng code hiển thị riêng cho từng người theo team họ chọn
-// Không chọn team -> "<code>-<username>"
-// Chọn team 1/2   -> "<code>-<team>_<username>"
 function formatPersonalCode(room, userId) {
   if (!room.code) return null;
   const player = room.players.get(userId);
@@ -288,4 +361,15 @@ module.exports = {
   getHiddenRoom,
   getAllHiddenRooms,
   deleteHiddenRoom,
+
+  // Rank exports
+  eloData,
+  getElo,
+  getRankFromElo,
+  updateElo,
+  calculateNewElo,
+  addRankRoomsToMode,
+  getRankRoomsByMode,
+  getAllRankRooms,
+  removeRankRoom,
 };

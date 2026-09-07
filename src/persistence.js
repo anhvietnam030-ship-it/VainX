@@ -1,3 +1,4 @@
+// persistence.js
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
@@ -7,9 +8,8 @@ function ensureDataDir() {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
-// Chuyển 1 room (object có Map + timer) thành dữ liệu thuần để ghi ra JSON
 function serializeRoom(room) {
-  return {
+  const obj = {
     id: room.id,
     status: room.status,
     code: room.code,
@@ -22,29 +22,44 @@ function serializeRoom(room) {
     players: Array.from(room.players.entries()).map(([id, p]) => ({ id, ...p })),
     bannedUsers: Array.from(room.bannedUsers || []),
   };
+  if (room.isRank) {
+    obj.isRank = true;
+    obj.resultMap = Array.from(room.resultMap.entries());
+    obj.resultWindowEnd = room.resultWindowEnd;
+  }
+  if (room.hidden) {
+    obj.hidden = true;
+    obj.panelTargets = room.panelTargets || [];
+    // lưu thêm các thuộc tính khác nếu cần
+  }
+  return obj;
 }
 
-// Lưu toàn bộ rooms Map xuống file (bỏ qua timer vì không serialize được)
-function saveState(rooms) {
+function saveState(rooms, eloData) {
   try {
     ensureDataDir();
-    const data = Array.from(rooms.values()).map(serializeRoom);
-    fs.writeFileSync(config.STATE_FILE, JSON.stringify(data, null, 2), 'utf-8');
+    const roomData = Array.from(rooms.values()).map(serializeRoom);
+    const eloDataObj = Object.fromEntries(
+      Array.from(eloData.entries()).map(([userId, data]) => [userId, data])
+    );
+    const payload = { rooms: roomData, eloData: eloDataObj };
+    fs.writeFileSync(config.STATE_FILE, JSON.stringify(payload, null, 2), 'utf-8');
   } catch (err) {
-    console.error('Không lưu được trạng thái phòng:', err);
+    console.error('Không lưu được trạng thái:', err);
   }
 }
 
-// Đọc file JSON, trả về Map<roomId, dữ liệu đã lưu> hoặc Map rỗng nếu chưa có file / lỗi
 function loadState() {
   try {
-    if (!fs.existsSync(config.STATE_FILE)) return new Map();
+    if (!fs.existsSync(config.STATE_FILE)) return { rooms: new Map(), eloData: new Map() };
     const raw = fs.readFileSync(config.STATE_FILE, 'utf-8');
-    const arr = JSON.parse(raw);
-    return new Map(arr.map((r) => [r.id, r]));
+    const parsed = JSON.parse(raw);
+    const roomsMap = new Map(parsed.rooms.map(r => [r.id, r]));
+    const eloMap = new Map(Object.entries(parsed.eloData || {}).map(([id, data]) => [id, data]));
+    return { rooms: roomsMap, eloData: eloMap };
   } catch (err) {
-    console.error('Không đọc được trạng thái phòng đã lưu, bỏ qua:', err);
-    return new Map();
+    console.error('Không đọc được state, bỏ qua:', err);
+    return { rooms: new Map(), eloData: new Map() };
   }
 }
 

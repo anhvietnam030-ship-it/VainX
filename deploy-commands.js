@@ -137,6 +137,92 @@ const commands = [
         .setRequired(false)
     ),
 
+  // ===== LỆNH RANK MỚI =====
+  new SlashCommandBuilder()
+    .setName('setup-rank')
+    .setDescription('Đăng panel phòng Rank của 1 chế độ, có thể tạo thêm phòng (chỉ admin)')
+    .addStringOption((opt) =>
+      opt
+        .setName('che_do')
+        .setDescription('Chế độ muốn đăng panel')
+        .addChoices({ name: '3v3', value: '3v3' }, { name: '5v5', value: '5v5' })
+        .setRequired(true)
+    )
+    .addIntegerOption((opt) =>
+      opt
+        .setName('so_luong')
+        .setDescription('Để trống = chỉ đăng panel. Nhập số = tạo thêm số đó phòng mới (tối đa 10/chế độ)')
+        .setMinValue(1)
+        .setMaxValue(10)
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('submit-result')
+    .setDescription('Gửi kết quả trận đấu cho phòng Rank (chỉ người trong phòng)')
+    .addStringOption((opt) =>
+      opt
+        .setName('phong')
+        .setDescription('ID phòng rank, ví dụ: 3v3-rank-1')
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('admin-submit-result')
+    .setDescription('[ADMIN] Gửi kết quả thay cho người chơi trong phòng Rank')
+    .addStringOption((opt) =>
+      opt
+        .setName('phong')
+        .setDescription('ID phòng rank')
+        .setRequired(true)
+    )
+    .addUserOption((opt) =>
+      opt
+        .setName('user')
+        .setDescription('Người chơi')
+        .setRequired(true)
+    )
+    .addStringOption((opt) =>
+      opt
+        .setName('ketqua')
+        .setDescription('Thắng hay thua')
+        .addChoices({ name: 'Thắng', value: 'win' }, { name: 'Thua', value: 'loss' })
+        .setRequired(true)
+    )
+    .addStringOption((opt) =>
+      opt
+        .setName('kda')
+        .setDescription('KDA (kill/death/assist), ví dụ: 5/2/8')
+        .setRequired(true)
+    )
+    .addStringOption((opt) =>
+      opt
+        .setName('hinhanh')
+        .setDescription('Link ảnh (không bắt buộc)')
+        .setRequired(false)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('xoa-phong-rank')
+    .setDescription('Xóa hẳn 1 phòng Rank (chỉ admin)')
+    .addStringOption((opt) =>
+      opt
+        .setName('phong')
+        .setDescription('ID phòng rank, ví dụ: 3v3-rank-1')
+        .setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('xoa-tat-ca-phong-rank')
+    .setDescription('Xóa hẳn TOÀN BỘ phòng Rank (chỉ admin)')
+    .addStringOption((opt) =>
+      opt
+        .setName('che_do')
+        .setDescription('Để trống = xóa cả 2 chế độ. Chọn 1 chế độ = chỉ xóa chế độ đó')
+        .addChoices({ name: '3v3', value: '3v3' }, { name: '5v5', value: '5v5' })
+        .setRequired(false)
+    ),
+
   new SlashCommandBuilder()
     .setName('test-fill')
     .setDescription('[TEST] Tự nhét người chơi giả (đã sẵn sàng) vào phòng để test 1 mình (chỉ admin)')
@@ -228,9 +314,6 @@ const commands = [
 ].map((c) => c.toJSON());
 
 // /xoa-tin-nhan-bot đăng ký RIÊNG dưới dạng lệnh TOÀN CỤC (global) kèm quyền dùng trong DM
-// (.setDMPermission(true)) — để admin xóa được tin nhắn Bot ngay trong DM riêng với Bot,
-// nơi các panel phòng ẩn được gửi tới. Lệnh đăng ký theo guild (như mọi lệnh phía trên)
-// KHÔNG BAO GIỜ hiện được trong DM — đây là giới hạn của Discord, không phải bug.
 const dmCommands = [
   new SlashCommandBuilder()
     .setName('xoa-tin-nhan-bot')
@@ -252,13 +335,9 @@ const rest = new REST({ version: '10' }).setToken(config.TOKEN);
     if (!config.CLIENT_ID) throw new Error('Thiếu CLIENT_ID trong .env');
 
     if (config.GUILD_ID) {
-      // Lệnh server-only đăng theo guild (cập nhật gần như ngay lập tức, tiện lúc test).
       await rest.put(Routes.applicationGuildCommands(config.CLIENT_ID, config.GUILD_ID), { body: commands });
-      // Lệnh dùng được cả trong DM PHẢI đăng ký toàn cục — dù có GUILD_ID hay không.
       await rest.put(Routes.applicationCommands(config.CLIENT_ID), { body: dmCommands });
     } else {
-      // Không có GUILD_ID -> mọi lệnh đều phải đăng cùng 1 lần lên endpoint toàn cục
-      // (PUT sẽ ghi đè toàn bộ danh sách ở endpoint đó, gộp chung tránh bị mất lệnh).
       await rest.put(Routes.applicationCommands(config.CLIENT_ID), { body: [...commands, ...dmCommands] });
     }
 

@@ -1,3 +1,4 @@
+// config.js
 require('dotenv').config();
 
 module.exports = {
@@ -14,12 +15,7 @@ module.exports = {
     '5v5': 10,
   },
 
-  // Không còn tạo phòng mặc định lúc khởi động nữa — admin phải tự dùng /setup che_do so_luong
-  // để tạo phòng. Giữ biến này = 0 để rooms.js/index.js hiểu là "không có phòng gốc nào được
-  // bảo vệ", tức mọi phòng đều do admin tạo (và admin xóa được) qua /setup + /xoa-phong-thuong.
   ROOMS_PER_MODE: 0,
-  // Số phòng thường (không tính phòng ẩn) tối đa cho MỖI chế độ, tính cả 4 phòng mặc định.
-  // Admin dùng /them-phong để tạo thêm phòng ngoài 4 phòng gốc, nhưng không được vượt số này.
   MAX_ROOMS_PER_MODE: 10,
   DEFAULT_ROOM_TIMEOUT_MS: 60 * 60 * 1000,
   READY_COUNTDOWN_MS: 2 * 60 * 1000,
@@ -40,4 +36,22 @@ module.exports = {
     '3v3': process.env.BANNER_3V3_URL || null,
     '5v5': process.env.BANNER_5V5_URL || null,
   },
+
+  // ===== RANK SETTINGS =====
+  RANK_TIERS: [
+    { name: 'Unranked', minElo: 0, maxElo: 999 },
+    { name: 'Working on It', minElo: 1000, maxElo: 1099 },
+    { name: 'Getting There', minElo: 1100, maxElo: 1199 },
+    { name: 'Not Bad', minElo: 1200, maxElo: 1299 },
+    { name: 'Decent-ish', minElo: 1300, maxElo: 1399 },
+    { name: 'Pretty Good', minElo: 1400, maxElo: 1499 },
+    { name: 'The Hotness', minElo: 1500, maxElo: 1599 },
+    { name: 'Simply Amazing', minElo: 1600, maxElo: 1699 },
+    { name: 'Pinnacle of Awesome', minElo: 1700, maxElo: 1899 },
+    { name: 'Vainglorious', minElo: 1900, maxElo: Infinity },
+  ],
+  RANK_K_FACTOR: 32,
+  RANK_DEFAULT_ELO: 900,
+  RANK_RESULT_WINDOW_MS: 45 * 60 * 1000, // 45 phút
+  MAX_RANK_ROOMS_PER_MODE: 10,
 };
