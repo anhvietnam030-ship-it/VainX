@@ -546,6 +546,7 @@ const ADMIN_ONLY_COMMANDS = new Set([
   'don-rac',
   'xoa-tin-nhan-bot',
   'xoa-phong-thuong',
+  'xoa-tat-ca-phong-thuong',
   'reset-tat-ca-phong',
   'reset-room',
 ]);
@@ -1200,12 +1201,37 @@ async function handleSlashCommand(interaction) {
     const soLuong = interaction.options.getInteger('so_luong') || 50;
     const channel = interaction.channel;
 
-    await interaction.reply({ content: `🧹 Đang dọn ${soLuong} tin nhắn gần nhất...`, ephemeral: true });
+    await interaction.reply({
+      content: `🧹 Đang dọn tối đa ${soLuong} tin nhắn gần nhất (tự bỏ qua panel phòng đang hoạt động trong kênh này)...`,
+      ephemeral: true,
+    });
 
     try {
-      const deleted = await channel.bulkDelete(soLuong, true);
+      // Không bao giờ xóa panel phòng (thường) đang hoạt động trong CHÍNH kênh này, để tránh
+      // mất panel oan như đã gặp — chỉ xóa các tin nhắn "rác" khác.
+      const protectedPanelIds = new Set(
+        getAllRooms()
+          .filter((r) => r.panelChannelId === channel.id && r.panelMessageId)
+          .map((r) => r.panelMessageId)
+      );
+
+      const batch = await channel.messages.fetch({ limit: soLuong });
+      const toDelete = batch.filter((m) => !protectedPanelIds.has(m.id));
+      const skippedPanels = batch.size - toDelete.size;
+
+      let deletedCount = 0;
+      if (toDelete.size === 1) {
+        await toDelete.first().delete().catch(() => {});
+        deletedCount = 1;
+      } else if (toDelete.size > 1) {
+        const deleted = await channel.bulkDelete(toDelete, true);
+        deletedCount = deleted.size;
+      }
+
       return interaction.followUp({
-        content: `✅ Đã xóa **${deleted.size}** tin nhắn (Discord chỉ cho xóa hàng loạt tin nhắn dưới 14 ngày tuổi, tin cũ hơn sẽ bị bỏ qua).`,
+        content:
+          `✅ Đã xóa **${deletedCount}** tin nhắn (Discord chỉ cho xóa hàng loạt tin nhắn dưới 14 ngày tuổi, tin cũ hơn sẽ bị bỏ qua).` +
+          (skippedPanels > 0 ? `\n🛡️ Đã bỏ qua **${skippedPanels}** panel phòng đang hoạt động để không bị mất.` : ''),
         ephemeral: true,
       });
     } catch (err) {
@@ -1233,6 +1259,17 @@ async function handleSlashCommand(interaction) {
     const noiChung = isDM ? 'trong DM này' : 'trong kênh này';
     const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
+    // Không bao giờ xóa panel phòng (thường) đang hoạt động trong kênh này, kể cả khi lệnh
+    // này chỉ nhắm vào tin nhắn của chính Bot — tránh mất panel oan như đã gặp với /don-rac.
+    const protectedPanelIds = isDM
+      ? new Set()
+      : new Set(
+          getAllRooms()
+            .filter((r) => r.panelChannelId === channel.id && r.panelMessageId)
+            .map((r) => r.panelMessageId)
+        );
+    let skippedPanels = 0;
+
     await interaction.reply({
       content: soLuong
         ? `🧹 Đang xóa tối đa **${soLuong}** tin nhắn của Bot ${noiChung}...`
@@ -1251,6 +1288,9 @@ async function handleSlashCommand(interaction) {
         lastId = batch.last().id;
 
         let botMsgs = Array.from(batch.filter((m) => m.author.id === client.user.id).values());
+        const beforePanelFilter = botMsgs.length;
+        botMsgs = botMsgs.filter((m) => !protectedPanelIds.has(m.id));
+        skippedPanels += beforePanelFilter - botMsgs.length;
         if (soLuong && botMsgs.length > soLuong - totalDeleted) {
           botMsgs = botMsgs.slice(0, soLuong - totalDeleted);
         }
@@ -1292,9 +1332,7 @@ async function handleSlashCommand(interaction) {
     return interaction.followUp({
       content:
         `✅ Đã xóa **${totalDeleted}** tin nhắn của Bot ${noiChung}.` +
-        (totalDeleted > 0 && !isDM
-          ? '\n⚠️ Nếu vừa xóa trúng panel phòng đang hoạt động, dùng lại `/setup` để đăng panel mới.'
-          : ''),
+        (skippedPanels > 0 ? `\n🛡️ Đã bỏ qua **${skippedPanels}** panel phòng đang hoạt động để không bị mất.` : ''),
       ephemeral: true,
     });
   }
@@ -1334,6 +1372,44 @@ async function handleSlashCommand(interaction) {
 
     persistence.saveState(rooms);
     return interaction.reply({ content: `✅ Đã xóa hẳn **${result.room.label}** (\`${result.room.id}\`).`, ephemeral: true });
+  }
+
+  if (commandName === 'xoa-tat-ca-phong-thuong') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const mode = interaction.options.getString('che_do'); // optional: để trống = cả 2 chế độ
+    const targetRooms = mode ? getRoomsByMode(mode) : getAllRooms();
+
+    if (targetRooms.length === 0) {
+      return interaction.reply({
+        content: mode ? `ℹ️ Chế độ **${mode.toUpperCase()}** hiện không có phòng nào.` : 'ℹ️ Hiện không có phòng thường nào để xóa.',
+        ephemeral: true,
+      });
+    }
+
+    await interaction.reply({ content: `🗑️ Đang xóa toàn bộ **${targetRooms.length}** phòng thường...`, ephemeral: true });
+
+    let deletedCount = 0;
+    for (const room of targetRooms) {
+      // Xóa panel cũ trên Discord trước khi xóa phòng khỏi bộ nhớ, tránh để lại panel "mồ côi".
+      if (room.panelChannelId && room.panelMessageId) {
+        const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
+        if (ch) {
+          const msg = await ch.messages.fetch(room.panelMessageId).catch(() => null);
+          if (msg) await msg.delete().catch(() => {});
+        }
+      }
+      clearRoomTimers(room);
+      rooms.delete(room.id);
+      deletedCount += 1;
+    }
+
+    persistence.saveState(rooms);
+    return interaction.followUp({
+      content: `✅ Đã xóa hẳn **${deletedCount}** phòng thường${mode ? ` (chế độ ${mode.toUpperCase()})` : ' (cả 3v3 lẫn 5v5)'}. Dùng \`/setup\` để tạo phòng mới khi cần.`,
+      ephemeral: true,
+    });
   }
 
   if (commandName === 'reset-tat-ca-phong') {

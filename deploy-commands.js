@@ -196,9 +196,20 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('xoa-phong-thuong')
-    .setDescription('Xóa hẳn 1 phòng thường đã tạo thêm bằng /setup (không xóa được 4 phòng gốc) - chỉ admin')
+    .setDescription('Xóa hẳn 1 phòng thường cụ thể đã tạo bằng /setup (chỉ admin)')
     .addStringOption((opt) =>
       opt.setName('phong').setDescription('ID phòng, ví dụ: 3v3-5').setRequired(true)
+    ),
+
+  new SlashCommandBuilder()
+    .setName('xoa-tat-ca-phong-thuong')
+    .setDescription('Xóa hẳn TOÀN BỘ phòng thường cùng lúc (chỉ admin)')
+    .addStringOption((opt) =>
+      opt
+        .setName('che_do')
+        .setDescription('Để trống = xóa cả 3v3 lẫn 5v5. Chọn 1 chế độ = chỉ xóa chế độ đó')
+        .addChoices({ name: '3v3', value: '3v3' }, { name: '5v5', value: '5v5' })
+        .setRequired(false)
     ),
 
   new SlashCommandBuilder()
