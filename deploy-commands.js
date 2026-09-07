@@ -119,7 +119,12 @@ const commands = [
   new SlashCommandBuilder()
     .setName('submit-result')
     .setDescription('Gửi kết quả trận đấu cho phòng Rank (chỉ người trong phòng)')
-    .addStringOption(opt => opt.setName('phong').setDescription('ID phòng rank').setRequired(true)),
+    .addStringOption(opt => opt.setName('phong').setDescription('ID phòng rank').setRequired(true))
+    .addAttachmentOption(opt =>
+      opt.setName('hinhanh')
+         .setDescription('Ảnh chụp kết quả (VICTORY/DEFEAT + KDA)')
+         .setRequired(true)
+    ),
   new SlashCommandBuilder()
     .setName('admin-submit-result')
     .setDescription('[ADMIN] Gửi kết quả thay cho người chơi trong phòng Rank')
