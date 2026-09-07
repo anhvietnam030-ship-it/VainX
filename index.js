@@ -69,7 +69,6 @@ async function ocrImage(imageUrl) {
     return '';
   }
   try {
-    // Bước 1: Tải ảnh từ Discord về dưới dạng buffer
     console.log(`📥 Đang tải ảnh từ: ${imageUrl}`);
     const imageResponse = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
@@ -81,7 +80,6 @@ async function ocrImage(imageUrl) {
     const imageBuffer = Buffer.from(imageResponse.data, 'binary');
     console.log(`✅ Đã tải ảnh thành công (${imageBuffer.length} bytes)`);
 
-    // Bước 2: Gửi lên OCR.space dưới dạng file upload
     const formData = new FormData();
     formData.append('apikey', OCR_API_KEY);
     formData.append('file', imageBuffer, { filename: 'screenshot.png' });
@@ -99,6 +97,8 @@ async function ocrImage(imageUrl) {
     });
 
     const data = response.data;
+    console.log('📡 OCR.space response:', JSON.stringify(data, null, 2)); // LOG THÊM
+
     if (data.IsErroredOnProcessing) {
       console.error('❌ OCR.space error:', data.ErrorMessage);
       return '';
@@ -117,7 +117,6 @@ async function ocrImage(imageUrl) {
 }
 
 function extractKDAResult(text) {
-  // Tìm KDA dạng kill/death/assist
   const kdaMatch = text.match(/(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/);
   let kda = null;
   let kill, death, assist;
@@ -127,7 +126,6 @@ function extractKDAResult(text) {
     assist = parseInt(kdaMatch[3], 10);
     kda = death === 0 ? kill + assist : (kill + assist) / death;
   }
-  // Tìm kết quả: VICTORY / DEFEAT
   const resultMatch = text.match(/(VICTORY|DEFEAT|victory|defeat)/);
   let result = null;
   if (resultMatch) {
@@ -1190,7 +1188,7 @@ async function handleSlashCommand(interaction) {
     return;
   }
 
-  // ---- SUBMIT-RESULT ----
+  // ---- SUBMIT-RESULT (VỚI FILE ĐÍNH KÈM) ----
   if (commandName === 'submit-result') {
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getRoom(roomId);
@@ -1219,12 +1217,15 @@ async function handleSlashCommand(interaction) {
 
     let ocrText = '';
     try {
+      console.log(`🔍 Bắt đầu OCR cho file: ${attachment.name} (${attachment.contentType}, ${attachment.size} bytes)`);
       ocrText = await ocrImage(attachment.url);
     } catch (err) {
-      console.error('OCR error:', err);
+      console.error('❌ Lỗi khi gọi OCR:', err);
     }
 
     if (!ocrText) {
+      console.log('⚠️ OCR trả về text rỗng.');
+      // Thử fallback: yêu cầu người dùng nhập tay bằng /admin-submit-result
       return interaction.editReply({
         content: '❌ Không thể đọc được ảnh. Vui lòng chụp rõ hơn hoặc nhờ admin gửi thay (dùng /admin-submit-result).',
       });
@@ -1232,6 +1233,7 @@ async function handleSlashCommand(interaction) {
 
     const { kda, kill, death, assist, result } = extractKDAResult(ocrText);
     if (!kda || !result) {
+      console.log('⚠️ Không parse được KDA hoặc kết quả từ OCR text:', ocrText);
       return interaction.editReply({
         content: '❌ Không tìm thấy KDA hoặc kết quả trong ảnh. Vui lòng kiểm tra ảnh hoặc nhờ admin gửi thay.',
       });
@@ -1808,7 +1810,7 @@ async function handleSlashCommand(interaction) {
   }
 }
 
-// ===== MODAL SUBMIT (OCR) =====
+// ===== MODAL SUBMIT (OCR) - (vẫn giữ để dùng nếu cần) =====
 async function handleModalSubmit(interaction) {
   if (!interaction.customId.startsWith('submitresult_')) return;
 
@@ -1978,7 +1980,7 @@ async function handleButton(interaction) {
     });
   }
 
-  // Nút "Gửi kết quả" trên panel rank
+  // Nút "Gửi kết quả" trên panel rank – hướng dẫn dùng lệnh với file đính kèm
   if (customId.startsWith('submit_result_')) {
     const roomId = customId.replace('submit_result_', '');
     const room = getRoom(roomId);
