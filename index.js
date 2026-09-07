@@ -69,7 +69,6 @@ async function ocrImage(imageUrl) {
     return '';
   }
   try {
-    // Bước 1: Tải ảnh từ Discord về dưới dạng buffer
     console.log(`📥 Đang tải ảnh từ: ${imageUrl}`);
     const imageResponse = await axios.get(imageUrl, {
       responseType: 'arraybuffer',
@@ -81,7 +80,6 @@ async function ocrImage(imageUrl) {
     const imageBuffer = Buffer.from(imageResponse.data, 'binary');
     console.log(`✅ Đã tải ảnh thành công (${imageBuffer.length} bytes)`);
 
-    // Bước 2: Gửi lên OCR.space dưới dạng file upload
     const formData = new FormData();
     formData.append('apikey', OCR_API_KEY);
     formData.append('file', imageBuffer, { filename: 'screenshot.png' });
@@ -117,7 +115,6 @@ async function ocrImage(imageUrl) {
 }
 
 function extractKDAResult(text) {
-  // Tìm KDA dạng kill/death/assist
   const kdaMatch = text.match(/(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/);
   let kda = null;
   let kill, death, assist;
@@ -127,7 +124,6 @@ function extractKDAResult(text) {
     assist = parseInt(kdaMatch[3], 10);
     kda = death === 0 ? kill + assist : (kill + assist) / death;
   }
-  // Tìm kết quả: VICTORY / DEFEAT
   const resultMatch = text.match(/(VICTORY|DEFEAT|victory|defeat)/);
   let result = null;
   if (resultMatch) {
@@ -1775,9 +1771,11 @@ async function handleSlashCommand(interaction) {
   }
 }
 
-// ===== MODAL SUBMIT (OCR) =====
+// ===== MODAL SUBMIT (OCR) - SỬA LỖI DEFER & LOG =====
 async function handleModalSubmit(interaction) {
   if (!interaction.customId.startsWith('submitresult_')) return;
+
+  console.log('🔍 Modal submit received for room:', interaction.customId);
 
   const roomId = interaction.customId.replace('submitresult_', '');
   const room = getRoom(roomId);
@@ -1790,36 +1788,61 @@ async function handleModalSubmit(interaction) {
     return interaction.reply({ content: '❌ Bạn chưa nhập link ảnh.', ephemeral: true });
   }
 
-  await interaction.deferReply({ ephemeral: true });
+  // Thử defer, nếu lỗi thì báo luôn
+  try {
+    await interaction.deferReply({ ephemeral: true });
+    console.log('✅ Defer thành công, bắt đầu OCR...');
+  } catch (err) {
+    console.error('❌ Defer reply lỗi:', err);
+    // Nếu không defer được, thử reply trực tiếp (nếu còn)
+    try {
+      await interaction.reply({ content: '⚠️ Bot đã quá thời gian xử lý. Vui lòng thử lại ngay.', ephemeral: true });
+    } catch (e2) {
+      console.error('❌ Không thể gửi phản hồi:', e2);
+    }
+    return;
+  }
 
+  // Bắt đầu OCR
   let ocrText = '';
   try {
+    console.log('📥 Gọi OCR.space...');
     ocrText = await ocrImage(imageUrl);
+    console.log('✅ OCR nhận được text dài:', ocrText.length);
   } catch (err) {
-    console.error('OCR error:', err);
+    console.error('❌ OCR error:', err);
+    await interaction.editReply({
+      content: '❌ Lỗi khi xử lý ảnh. Vui lòng thử lại hoặc dùng /admin-submit-result.'
+    });
+    return;
   }
 
   if (!ocrText) {
-    return interaction.editReply({
-      content: '❌ Không thể đọc được ảnh. Vui lòng kiểm tra link ảnh hoặc nhờ admin gửi thay (dùng /admin-submit-result).',
+    await interaction.editReply({
+      content: '❌ Không thể đọc được ảnh. Vui lòng kiểm tra link ảnh (phải là link trực tiếp, ví dụ: https://i.postimg.cc/xxx/... ) hoặc nhờ admin gửi thay (dùng /admin-submit-result).'
     });
+    return;
   }
 
   const { kda, kill, death, assist, result } = extractKDAResult(ocrText);
   if (!kda || !result) {
-    return interaction.editReply({
-      content: '❌ Không tìm thấy KDA hoặc kết quả trong ảnh. Vui lòng kiểm tra ảnh hoặc nhờ admin gửi thay.',
+    await interaction.editReply({
+      content: '❌ Không tìm thấy KDA hoặc kết quả trong ảnh. Vui lòng kiểm tra ảnh hoặc dùng /admin-submit-result nhập thủ công.'
     });
+    return;
   }
 
   if (!room.players.has(interaction.user.id)) {
-    return interaction.editReply({ content: '❌ Bạn không ở trong phòng này.' });
+    await interaction.editReply({ content: '❌ Bạn không ở trong phòng này.' });
+    return;
   }
   if (Date.now() > room.resultWindowEnd) {
-    return interaction.editReply({ content: '❌ Đã quá hạn 45 phút.' });
+    await interaction.editReply({ content: '❌ Đã quá hạn 45 phút gửi kết quả.' });
+    return;
   }
   if (room.resultMap.has(interaction.user.id)) {
-    return interaction.editReply({ content: 'ℹ️ Bạn đã gửi kết quả rồi.' });
+    await interaction.editReply({ content: 'ℹ️ Bạn đã gửi kết quả rồi.' });
+    return;
   }
 
   room.resultMap.set(interaction.user.id, {
@@ -1834,8 +1857,9 @@ async function handleModalSubmit(interaction) {
   persistence.saveState(rooms, eloData);
 
   await interaction.editReply({
-    content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}**, KDA ${kill}/${death}/${assist} (${kda.toFixed(2)}) cho ${room.label}. (OCR tự động)`,
+    content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}**, KDA ${kill}/${death}/${assist} (${kda.toFixed(2)}) cho ${room.label}. (OCR tự động)`
   });
+  console.log('✅ Kết quả đã lưu cho user', interaction.user.id);
 }
 
 // ===== BUTTON =====
