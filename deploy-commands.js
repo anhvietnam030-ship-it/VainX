@@ -158,13 +158,11 @@ const commands = [
     .setDescription('[TEST] Tự nhét người giả vào phòng THƯỜNG (chỉ admin)')
     .addStringOption(opt => opt.setName('phong').setDescription('ID phòng thường').setRequired(true))
     .addIntegerOption(opt => opt.setName('so_nguoi').setDescription('Số người giả (để trống = lấp đầy)').setMinValue(1).setRequired(false)),
-
   new SlashCommandBuilder()
     .setName('test-fill-rank')
     .setDescription('[TEST] Tự nhét người giả vào phòng RANK (chỉ admin)')
     .addStringOption(opt => opt.setName('phong').setDescription('ID phòng rank (ví dụ: 3v3-rank-1)').setRequired(true))
     .addIntegerOption(opt => opt.setName('so_nguoi').setDescription('Số người giả (để trống = lấp đầy)').setMinValue(1).setRequired(false)),
-
   new SlashCommandBuilder()
     .setName('test-fill-an')
     .setDescription('[TEST] Giống test-fill nhưng cho phòng ẩn (chỉ admin)')

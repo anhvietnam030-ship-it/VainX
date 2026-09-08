@@ -15,7 +15,6 @@ const COLOR = {
   revealed: 0x57f287,
 };
 
-const FLASH_COLORS = [0xffffff, 0xffd700, 0xff69b4, 0x00ffff, 0xff4500, 0x9b59b6];
 const NUM_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟'];
 const MODE_EMOJI = { '3v3': '⚔️', '5v5': '🛡️' };
 
@@ -115,7 +114,7 @@ function statusText(room) {
       text += `\n${bi(`📩 Hạn gửi kết quả: <t:${deadline}:R>`, `📩 Submit result deadline: <t:${deadline}:R>`)}`;
     } else if (room.revealedAt) {
       const deadline = unixSeconds(room.revealedAt + config.CODE_RESET_DELAY_MS);
-      text += `\n${bi(`♻️ Phòng tự reset ${'<t:'+deadline+':R>'}`, `♻️ Room auto-resets ${'<t:'+deadline+':R>'}`)}`;
+      text += `\n${bi(`♻️ Phòng tự reset <t:${deadline}:R>`, `♻️ Room auto-resets <t:${deadline}:R>`)}`;
     }
     return text;
   }
@@ -126,36 +125,40 @@ function statusText(room) {
     if (check.ok) {
       return bi(
         '🟡 **Đủ người rồi!** Đang chờ tất cả bấm Sẵn sàng để phát code...',
-        '🟡 **Room is full!** Waiting for everyone to hit Ready so the code can be revealed...'
+        '🟡 **Room is full!** Waiting for everyone to hit Ready...'
       );
     }
     const linesVi = [`🟠 **Đủ người!** Hạn bấm Sẵn sàng: ${deadline ? `<t:${deadline}:R>` : '—'}`];
-    linesVi.push('⚠️ Hết giờ mà chưa Sẵn sàng → **bị đá khỏi phòng**, nhường chỗ cho người khác.');
-    if (check.reason === 'team_unbalanced') linesVi.push('⚖️ Team đang **chưa cân bằng** — code sẽ không phát cho tới khi đều nhau.');
-    if (check.reason === 'team_incomplete') linesVi.push('⚖️ Có người chưa chọn Team — cần **tất cả cùng chọn** hoặc **không ai chọn** team.');
+    linesVi.push('⚠️ Hết giờ mà chưa Sẵn sàng → **bị đá khỏi phòng**');
+    if (check.reason === 'team_unbalanced') linesVi.push('⚖️ Team đang **chưa cân bằng**');
+    if (check.reason === 'team_incomplete') linesVi.push('⚖️ Có người chưa chọn Team');
     const linesEn = [`🟠 **Room full!** Ready deadline: ${deadline ? `<t:${deadline}:R>` : '—'}`];
-    linesEn.push("⚠️ Not Ready in time → you'll be **kicked from the room** to free up your spot.");
-    if (check.reason === 'team_unbalanced') linesEn.push("⚖️ Teams are **unbalanced** — the code won't be revealed until they're even.");
-    if (check.reason === 'team_incomplete') linesEn.push('⚖️ Someone has no Team picked — either **everyone** picks a team or **no one** does.');
+    linesEn.push("⚠️ Not Ready in time → you'll be **kicked**");
+    if (check.reason === 'team_unbalanced') linesEn.push("⚖️ Teams are **unbalanced**");
+    if (check.reason === 'team_incomplete') linesEn.push('⚖️ Someone has no Team picked');
     return bi(linesVi.join('\n'), linesEn.join('\n'));
   }
 
   if (room.players.size > 0) {
     const deadline = room.firstJoinAt ? unixSeconds(room.firstJoinAt + room.timeoutMs) : null;
     return bi(
-      '🔵 Đang chờ thêm người tham gia...' + (deadline ? `\n🕐 Tự động reset nếu chưa đủ người: <t:${deadline}:R>` : ''),
-      '🔵 Waiting for more players to join...' + (deadline ? `\n🕐 Auto-resets if not full by: <t:${deadline}:R>` : '')
+      '🔵 Đang chờ thêm người...' + (deadline ? `\n🕐 Tự reset: <t:${deadline}:R>` : ''),
+      '🔵 Waiting for more players...' + (deadline ? `\n🕐 Auto-resets: <t:${deadline}:R>` : '')
     );
   }
-  return bi('⚪ Phòng trống — hãy là người đầu tiên!', '⚪ Room is empty — be the first to join!');
+  return bi('⚪ Phòng trống — hãy là người đầu tiên!', '⚪ Room is empty — be the first!');
 }
 
 function playerLine(player, room) {
   let displayName = player.username;
   if (room.isRank) {
     const eloObj = getElo(player.id);
+    const elo = eloObj?.elo ?? 0;
     const rank = eloObj?.rank || 'Unranked';
-    displayName = `${player.username} (${rank})`;
+    // Bậc (đồng, bạc, vàng) dựa trên Elo % 300
+    const medalIndex = Math.floor((elo % 300) / 100);
+    const medalEmoji = config.RANK_MEDALS[medalIndex] || '';
+    displayName = `${medalEmoji} ${player.username} (${rank}) [${elo} Elo]`;
   }
   const readyTag = player.ready ? '✅' : '⌛';
   return `${readyTag} ${displayName}`;
@@ -209,8 +212,8 @@ function roomEmbed(room) {
     embed.addFields({
       name: bi('🔑 Code phòng', '🔑 Room code'),
       value: bi(
-        '👉 Bấm **"📋 Lấy code của tôi"** bên dưới để nhận mã riêng, dễ copy vào game.',
-        '👉 Tap **"📋 Get my code"** below to get your own copy, easy to paste into the game.'
+        '👉 Bấm **"📋 Lấy code của tôi"** bên dưới',
+        '👉 Tap **"📋 Get my code"** below'
       ),
     });
   }
@@ -220,7 +223,7 @@ function roomEmbed(room) {
 
   embed
     .setFooter({
-      text: `ID: ${room.id}  •  ${bi(`Timeout chờ đủ người: ${Math.round(room.timeoutMs / 60000)} phút`, `Fill timeout: ${Math.round(room.timeoutMs / 60000)} min`)}`,
+      text: `ID: ${room.id}  •  ${bi(`Timeout: ${Math.round(room.timeoutMs / 60000)} phút`, `Timeout: ${Math.round(room.timeoutMs / 60000)} min`)}`,
     })
     .setTimestamp();
 
@@ -305,7 +308,7 @@ function roomActionRows(room) {
 
   const rows = [row1, row2, row3];
 
-  // Thêm nút "Gửi kết quả" cho phòng rank
+  // Nút "Gửi kết quả" cho phòng rank
   if (room.isRank && room.status === 'revealed' && room.resultWindowEnd && Date.now() < room.resultWindowEnd) {
     rows.push(
       new ActionRowBuilder().addComponents(
@@ -313,7 +316,6 @@ function roomActionRows(room) {
           .setCustomId(`submit_result_${room.id}`)
           .setLabel('📩 Gửi kết quả')
           .setStyle(ButtonStyle.Primary)
-          .setDisabled(room.resultMap.has(room.players.keys().next().value)) // chỉ disable nếu đã gửi
       )
     );
   }

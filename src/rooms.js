@@ -11,9 +11,17 @@ const eloData = new Map(); // userId -> { elo, rank }
 
 function getElo(userId) {
   if (!eloData.has(userId)) {
-    return { elo: null, rank: 'Unranked' };
+    return { elo: null, rank: 'Unranked', rankIndex: 0 };
   }
-  return eloData.get(userId);
+  const data = eloData.get(userId);
+  let rankIndex = 0;
+  for (let i = 0; i < config.RANK_TIERS.length; i++) {
+    if (data.elo >= config.RANK_TIERS[i].minElo && data.elo <= config.RANK_TIERS[i].maxElo) {
+      rankIndex = i;
+      break;
+    }
+  }
+  return { ...data, rankIndex };
 }
 
 function getRankFromElo(elo) {
@@ -32,15 +40,16 @@ function updateElo(userId, newElo) {
   return { elo: newElo, rank };
 }
 
-function calculateNewElo(userElo, opponentElos, result, kda) {
+function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
   if (!opponentElos || opponentElos.length === 0) return userElo;
   const currentElo = (userElo === null || userElo === undefined) ? config.RANK_DEFAULT_ELO : userElo;
   const avgOppElo = opponentElos.reduce((a, b) => a + b, 0) / opponentElos.length;
   const expected = 1 / (1 + Math.pow(10, (avgOppElo - currentElo) / 400));
   const S = result === 'win' ? 1 : 0;
-  let rawChange = config.RANK_K_FACTOR * (S - expected);
+  
+  const K = config.RANK_K_FACTORS[userRankIndex] || 32;
+  let rawChange = K * (S - expected);
 
-  // Áp dụng hệ số KDA
   if (kda !== undefined && kda !== null) {
     const kdaValue = Math.min(kda, 10);
     let kdaFactor;
@@ -58,7 +67,7 @@ function calculateNewElo(userElo, opponentElos, result, kda) {
   }
 
   const newElo = currentElo + Math.round(rawChange);
-  return Math.max(0, newElo);
+  return Math.max(0, Math.min(3000, newElo));
 }
 
 function buildInitialRoom(mode, index) {
@@ -153,7 +162,7 @@ function getRoomsByMode(mode) {
   return getAllRooms().filter(r => r.mode === mode);
 }
 
-// === HÀM LỌC PHÒNG THƯỜNG / RANK ===
+// === HÀM LỌC PHÒNG ===
 function getAllNormalRooms() {
   return getAllRooms().filter(r => !r.isRank);
 }
@@ -239,6 +248,7 @@ function findRoomOfUser(userId) {
   }
   return null;
 }
+
 function findRoomOfUserInMode(userId, mode) {
   for (const room of rooms.values()) {
     if (room.mode === mode && room.players.has(userId)) return room;
@@ -362,6 +372,7 @@ module.exports = {
   getHiddenRoom,
   getAllHiddenRooms,
   deleteHiddenRoom,
+  // Rank exports
   getElo,
   getRankFromElo,
   updateElo,
@@ -371,6 +382,7 @@ module.exports = {
   removeRankRoom,
   getAllRankRooms,
   getRankRoomsByMode,
+  // Filter
   getAllNormalRooms,
   getNormalRoomsByMode,
 };
