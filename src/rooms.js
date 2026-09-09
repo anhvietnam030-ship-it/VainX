@@ -357,7 +357,7 @@ function formatPersonalCode(room, userId) {
 }
 
 // ============================================================
-// ===== HÀM BỌC OCR SANG TXT & SCAN DỌC ĐA DÒNG BÁT KDA =====
+// ===== HÀM MAP KDA DỰA TRÊN TỌA ĐỘ Y CỦA OCR BOUNDING BOX =====
 // ============================================================
 function extractAllKDAResult(rawText, room, ocrOverlay = null) {
   const resultMap = new Map();
@@ -377,112 +377,92 @@ function extractAllKDAResult(rawText, room, ocrOverlay = null) {
     };
   }
 
-  // 1. Chuyển OCR thành danh sách dòng text chuẩn
-  let formattedTxtLines = [];
-
+  // 1. Xử lý chính: Dùng Bounding Box từ OCR Overlay để so khớp theo hàng ngang (Tọa độ Y)
   if (Array.isArray(ocrOverlay?.Lines) && ocrOverlay.Lines.length > 0) {
-    let allWords = [];
+    const detectedNames = [];
+    const detectedKDAs = [];
+
     for (const line of ocrOverlay.Lines) {
+      const lineText = String(line.LineText || '').trim();
       const words = Array.isArray(line.Words) ? line.Words : [];
+      if (words.length === 0) continue;
+
+      const topY = Number(words[0].Top) || 0;
+      const height = Number(words[0].Height) || 0;
+      const centerY = topY + height / 2;
+
+      // Quét nếu dòng có định dạng KDA (ví dụ 7/1/6)
+      const kdaMatch = parseKDA(lineText);
+      if (kdaMatch) {
+        detectedKDAs.push({ kda: kdaMatch, centerY, text: lineText });
+      }
+
+      // Trích xuất các từ làm Tên hiển thị
       for (const w of words) {
-        const text = String(w.WordText || w.Text || '').trim();
-        if (!text) continue;
-        allWords.push({
-          text,
-          left: Number(w.Left) || 0,
-          top: Number(w.Top) || 0,
-          width: Number(w.Width) || 0,
-          height: Number(w.Height) || 0,
-          centerY: (Number(w.Top) || 0) + (Number(w.Height) || 0) / 2,
-        });
-      }
-    }
-
-    // Nhóm các từ nằm trên cùng hàng ngang
-    const rows = [];
-    allWords.sort((a, b) => a.top - b.top);
-
-    for (const word of allWords) {
-      let matchedRow = rows.find(
-        (r) => Math.abs(r.centerY - word.centerY) <= Math.max(word.height, 15) / 2
-      );
-
-      if (matchedRow) {
-        matchedRow.words.push(word);
-        matchedRow.centerY =
-          matchedRow.words.reduce((sum, w) => sum + w.centerY, 0) / matchedRow.words.length;
-      } else {
-        rows.push({ centerY: word.centerY, words: [word] });
-      }
-    }
-
-    formattedTxtLines = rows
-      .sort((a, b) => a.centerY - b.centerY)
-      .map((r) =>
-        r.words
-          .sort((a, b) => a.left - b.left)
-          .map((w) => w.text)
-          .join(' ')
-      );
-  } else {
-    formattedTxtLines = String(rawText || '')
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-  }
-
-  console.log('📄 [Dữ liệu OCR TXT theo hàng dọc]:\n' + formattedTxtLines.join('\n'));
-
-  // 2. Duyệt tìm tên và quét KDA (kể cả khi KDA bị đẩy xuống các dòng phía dưới)
-  for (const [userId, playerData] of players) {
-    const eloObj = getElo(userId);
-    const searchName = String(eloObj.ign || playerData.username || '').trim();
-
-    if (!searchName) continue;
-
-    const escapedName = searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const nameRegex = new RegExp(escapedName, 'i');
-
-    let foundKDA = null;
-
-    for (let lineIndex = 0; lineIndex < formattedTxtLines.length; lineIndex++) {
-      const lineText = formattedTxtLines[lineIndex];
-
-      if (nameRegex.test(lineText)) {
-        // [Cách A] Tìm KDA ở cùng dòng
-        const matchName = lineText.match(nameRegex);
-        const afterNameText = lineText.slice(matchName.index + matchName[0].length);
-        const sameLineKDA = parseKDA(afterNameText);
-
-        if (sameLineKDA) {
-          foundKDA = sameLineKDA;
-          console.log(`✅ [Cùng dòng] KDA cho ${searchName}: ${foundKDA.kill}/${foundKDA.death}/${foundKDA.assist}`);
-          break;
+        const wordText = String(w.WordText || w.Text || '').trim();
+        if (wordText) {
+          detectedNames.push({
+            text: wordText,
+            centerY: (Number(w.Top) || 0) + (Number(w.Height) || 0) / 2,
+          });
         }
+      }
+    }
 
-        // [Cách B] Quét xuống 6 dòng tiếp theo để tìm chỉ số KDA
-        for (let lookAhead = 1; lookAhead <= 6; lookAhead++) {
-          const nextLineIndex = lineIndex + lookAhead;
-          if (nextLineIndex >= formattedTxtLines.length) break;
+    // Ghép từng Player với KDA có khoảng cách Y nhỏ nhất (nằm trên cùng hàng ngang)
+    for (const [userId, playerData] of players) {
+      const eloObj = getElo(userId);
+      const searchName = String(eloObj.ign || playerData.username || '').trim();
+      if (!searchName) continue;
 
-          const nextLineText = formattedTxtLines[nextLineIndex];
-          const belowLineKDA = parseKDA(nextLineText);
+      const escapedName = searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const nameRegex = new RegExp(escapedName, 'i');
 
-          if (belowLineKDA) {
-            foundKDA = belowLineKDA;
-            console.log(`✅ [Dòng +${lookAhead}] KDA cho ${searchName}: ${foundKDA.kill}/${foundKDA.death}/${foundKDA.assist}`);
-            break;
+      const matchedNameObj = detectedNames.find((n) => nameRegex.test(n.text));
+
+      if (matchedNameObj && detectedKDAs.length > 0) {
+        let closestKDA = null;
+        let minDiffY = Infinity;
+
+        // Tìm KDA có độ chênh lệch Y nhỏ nhất đối với Tên người chơi
+        for (const kItem of detectedKDAs) {
+          const diffY = Math.abs(kItem.centerY - matchedNameObj.centerY);
+          if (diffY < minDiffY && diffY <= 60) { // Sai số Y tối đa cho phép 60px
+            minDiffY = diffY;
+            closestKDA = kItem.kda;
           }
         }
 
-        if (foundKDA) break;
+        if (closestKDA) {
+          resultMap.set(userId, closestKDA);
+          console.log(`✅ [Tọa độ Y] Map thành công cho ${searchName}: ${closestKDA.kill}/${closestKDA.death}/${closestKDA.assist}`);
+          continue;
+        }
       }
     }
+  }
 
-    if (foundKDA) {
-      resultMap.set(userId, foundKDA);
-    } else {
-      console.warn(`⚠️ Không quét thấy KDA hợp lệ cho IGN: "${searchName}"`);
+  // 2. Dự phòng: Quét dòng TXT thô nếu ocrOverlay không khả dụng
+  if (resultMap.size === 0) {
+    const lines = String(rawText || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    
+    for (const [userId, playerData] of players) {
+      const eloObj = getElo(userId);
+      const searchName = String(eloObj.ign || playerData.username || '').trim();
+      if (!searchName) continue;
+
+      const escapedName = searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const nameRegex = new RegExp(escapedName, 'i');
+
+      for (let i = 0; i < lines.length; i++) {
+        if (nameRegex.test(lines[i])) {
+          const sameLine = parseKDA(lines[i]);
+          if (sameLine) {
+            resultMap.set(userId, sameLine);
+            break;
+          }
+        }
+      }
     }
   }
 
