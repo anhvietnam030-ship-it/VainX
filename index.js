@@ -2768,4 +2768,66 @@ async function setTeam(interaction, roomId, team) {
   await renderRoom(room, channel);
   await tryRevealCode(room, channel);
 
-  return
+  return interaction.reply({
+    content: team
+      ? t(interaction, `✅ Bạn đã chọn **Team ${team}**.`, `✅ You picked **Team ${team}**.`)
+      : t(interaction, '✅ Bạn chọn không phân team.', "✅ You cleared your team selection."),
+    ephemeral: true,
+  });
+}
+
+async function giveCode(interaction, roomId) {
+  const room = getRoom(roomId);
+  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
+  if (room.status !== 'revealed' || !room.code) {
+    return interaction.reply({ content: t(interaction, 'ℹ️ Phòng chưa có code.', "ℹ️ This room doesn't have a code yet."), ephemeral: true });
+  }
+  const personal = formatPersonalCode(room, interaction.user.id);
+  if (!personal) {
+    return interaction.reply({ content: t(interaction, '⚠️ Bạn không nằm trong phòng này.', '⚠️ You are not in this room.'), ephemeral: true });
+  }
+  await interaction.reply({
+    content: t(interaction,
+      '🔑 Code của bạn (tin nhắn ngay bên dưới, bấm giữ để copy):',
+      '🔑 Your code (message right below, tap and hold to copy):'
+    ),
+    ephemeral: true,
+  });
+  return interaction.followUp({
+    content: personal,
+    ephemeral: true,
+  });
+}
+
+// ===== KEEP-ALIVE HTTP SERVER =====
+startKeepAliveServer();
+startSelfPing();
+
+// ===== KHỞI TẠO PHÒNG + KHÔI PHỤC ELO TỪ SUPABASE =====
+async function bootstrap() {
+  initRooms();
+  const rankDefault = config.DEFAULT_RANK_ROOMS_PER_MODE || 0;
+  if (rankDefault > 0) {
+    for (const mode of Object.keys(config.CAPACITY)) {
+      addRankRoomsToMode(mode, rankDefault);
+    }
+  }
+  console.log(`ℹ️ Đã khởi tạo ${rooms.size} phòng (${rankDefault > 0 ? 'gồm cả rank' : 'chỉ phòng thường'}).`);
+
+  const eloMap = await eloStore.loadAllElo();
+  if (eloStore.isEnabled()) {
+    console.log(`✅ Đã kết nối Supabase (${eloMap.size} người chơi có ELO đã lưu).`);
+    if (eloMap.size > 0) restoreEloData(eloMap);
+  } else {
+    console.warn('⚠️ Supabase chưa được cấu hình — ELO sẽ KHÔNG được lưu bền vững qua deploy.');
+  }
+
+  await client.login(config.TOKEN);
+  console.log(`=== BOT DISCORD ĐÃ ONLINE THÀNH CÔNG: ${client.user.tag} ===`);
+}
+
+bootstrap().catch((err) => console.error('=== LỖI KHỞI ĐỘNG BOT ===', err));
+
+process.on('unhandledRejection', (err) => {
+  console.error('=== UNHANDLED REJECTION ===', err);
+});
