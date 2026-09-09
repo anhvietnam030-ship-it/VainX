@@ -21,15 +21,6 @@ const {
 } = require('discord.js');
 
 const config = require('./config');
-// ===== COOLDOWN CHO NÚT BẤM =====
-const cooldowns = new Map();
-function checkCooldown(userId) {
-  const now = Date.now();
-  const last = cooldowns.get(userId) || 0;
-  if (now - last < config.ACTION_COOLDOWN_MS) return false;
-  cooldowns.set(userId, now);
-  return true;
-}
 const {
   rooms,
   initRooms,
@@ -77,6 +68,17 @@ const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows, roo
 const persistence = require('./src/persistence');
 const eloStore = require('./src/eloStore');
 const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
+const rankSessions = require('./src/rankSessions'); // <-- THÊM DÒNG NÀY
+
+// ===== COOLDOWN CHO NÚT BẤM =====
+const cooldowns = new Map();
+function checkCooldown(userId) {
+  const now = Date.now();
+  const last = cooldowns.get(userId) || 0;
+  if (now - last < config.ACTION_COOLDOWN_MS) return false;
+  cooldowns.set(userId, now);
+  return true;
+}
 
 // ===== KHỞI TẠO CLIENT =====
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
@@ -477,59 +479,10 @@ async function handleReadyCountdownExpire(room, channel) {
   await renderRoom(room, channel);
 }
 
-// ===== XỬ LÝ KẾT THÚC CỬA SỔ 45 PHÚT (RANK) =====
+// ===== XỬ LÝ KẾT THÚC CỬA SỔ 45 PHÚT (RANK) - KHÔNG CÒN DÙNG NỮA, GIỮ ĐỂ THAM KHẢO =====
 async function handleResultWindowEnd(room) {
-  if (!room.isRank) return;
-  if (room.status !== 'revealed') return;
-
-  const channel = (room.panelChannelId && await client.channels.fetch(room.panelChannelId).catch(() => null)) || null;
-  const players = Array.from(room.players.keys());
-  const results = room.resultMap;
-
-  const eloUpdates = [];
-  for (const userId of players) {
-    const resultData = results.get(userId);
-    if (!resultData) continue;
-
-    const userEloObj = getElo(userId);
-    const userElo = userEloObj.elo;
-    const userRankIndex = userEloObj.rankIndex || 0;
-    const opponentIds = players.filter(id => id !== userId);
-    const opponentElos = opponentIds.map(id => {
-      const e = getElo(id).elo;
-      return e === null ? config.RANK_DEFAULT_ELO : e;
-    });
-    const kda = resultData.kda || ((resultData.kill + resultData.assist) / (resultData.death || 1));
-    const newElo = calculateNewElo(userElo, opponentElos, resultData.result, kda, userRankIndex);
-    updateElo(userId, newElo);
-    eloStore.upsertElo(userId, getElo(userId)).catch(() => {});
-    eloUpdates.push({
-      userId,
-      oldElo: userElo === null ? config.RANK_DEFAULT_ELO : userElo,
-      newElo,
-      result: resultData.result,
-      kda: kda,
-    });
-  }
-
-  persistence.saveState(rooms, eloData);
-
-  if (channel) {
-    let msg = `📊 **${room.label}** đã kết thúc! Kết quả Elo (có điều chỉnh KDA):\n`;
-    for (const upd of eloUpdates) {
-      const rank = getElo(upd.userId).rank;
-      msg += `<@${upd.userId}>: ${upd.oldElo} → ${upd.newElo} (${upd.result}) | KDA: ${upd.kda.toFixed(2)} | Rank: ${rank}\n`;
-    }
-    if (eloUpdates.length === 0) msg += 'Không có kết quả nào được gửi.';
-    await channel.send(msg).catch(() => {});
-  }
-
-  resetRoom(room);
-  if (channel) {
-    await renderRoom(room, channel);
-    await channel.send(`♻️ **${room.label}** đã được reset, mời mọi người đăng ký lại.`).catch(() => {});
-  }
-  persistence.saveState(rooms, eloData);
+  // Hàm này đã bị vô hiệu hóa vì rank dùng session
+  console.warn('handleResultWindowEnd đã bị thay thế bằng rankSessions, không sử dụng nữa.');
 }
 
 // ===== PHÁT CODE =====
@@ -580,11 +533,40 @@ async function tryRevealCode(room, channel) {
     renderRoom(room, channel).catch(() => {});
   }, config.BLINK_INTERVAL_MS);
 
+  // ===== XỬ LÝ RANK: TẠO SESSION VÀ RESET PHÒNG NGAY =====
   if (room.isRank) {
-    room.resultWindowEnd = Date.now() + config.RANK_RESULT_WINDOW_MS;
-    persistence.saveState(rooms, eloData);
-    room.timers.resultWindow = setTimeout(() => handleResultWindowEnd(room), config.RANK_RESULT_WINDOW_MS);
+    // Lưu danh sách người chơi hiện tại
+    const playersSnapshot = new Map(room.players);
+    
+    // Tạo session
+    const sessionId = rankSessions.createSession(room.id, playersSnapshot, room.mode);
+    console.log(`📝 Đã tạo session ${sessionId} cho ${room.label}`);
+
+    // Reset phòng ngay lập tức (xóa hết người chơi, về trạng thái waiting)
+    resetRoom(room);
+    await renderRoom(room, channel);
+
+    // Gửi thông báo vào kênh kết quả nếu đã cấu hình
+    const resultChannelId = process.env.RANK_RESULT_CHANNEL_ID;
+    if (resultChannelId) {
+      const resultChannel = await client.channels.fetch(resultChannelId).catch(() => null);
+      if (resultChannel) {
+        const playerMentions = Array.from(playersSnapshot.keys()).map(id => `<@${id}>`).join(' ');
+        await resultChannel.send({
+          content: `🎮 **${room.label}** đã bắt đầu!\n` +
+                   `Người chơi: ${playerMentions}\n` +
+                   `Sau khi chơi xong, hãy gửi ảnh kết quả (VICTORY/DEFEAT + KDA) qua lệnh \`/submit-result phong:${room.id}\` (hoặc nút trên panel).\n` +
+                   `⏰ Hạn gửi kết quả: 45 phút.`
+        });
+      } else {
+        console.warn('⚠️ Không tìm thấy kênh RANK_RESULT_CHANNEL_ID, kết quả sẽ không được thu thập.');
+      }
+    }
+
+    // KHÔNG đặt timer 45 phút nữa (đã có session tự động hết hạn)
+
   } else {
+    // Phòng thường: giữ nguyên timer reset sau 2 phút
     room.timers.resetAfterCode = setTimeout(async () => {
       clearRoomTimers(room);
       resetRoom(room);
@@ -601,7 +583,7 @@ async function tryRevealCode(room, channel) {
   }
 }
 
-// ===== TỰ ĐỘNG DỌN PANEL CŨ & ĐĂNG LẠI PANEL MỚI (thay cho việc admin phải gõ /setup tay) =====
+// ===== TỰ ĐỘNG DỌN PANEL CŨ & ĐĂNG LẠI PANEL MỚI =====
 async function repostPanelsForChannel(channelId, roomList) {
   if (!channelId || roomList.length === 0) return;
   const channel = await client.channels.fetch(channelId).catch(() => null);
@@ -610,13 +592,11 @@ async function repostPanelsForChannel(channelId, roomList) {
     return;
   }
 
-  // Xóa panel cũ (tin nhắn của chính bot) trong kênh — panel cũ không còn hiệu lực sau khi restart.
   try {
     const messages = await channel.messages.fetch({ limit: 50 });
     const botMessages = messages.filter((m) => m.author.id === client.user.id);
     if (botMessages.size > 0) {
       await channel.bulkDelete(botMessages, true).catch(async () => {
-        // bulkDelete lỗi nếu có tin nhắn quá 14 ngày -> xóa từng cái
         for (const msg of botMessages.values()) {
           await msg.delete().catch(() => {});
         }
@@ -626,7 +606,6 @@ async function repostPanelsForChannel(channelId, roomList) {
     console.error(`⚠️ Không dọn được panel cũ trong kênh ${channelId}:`, err.message);
   }
 
-  // Đăng panel mới cho từng phòng
   for (const room of roomList) {
     room.panelChannelId = null;
     room.panelMessageId = null;
@@ -649,7 +628,6 @@ client.once('ready', async () => {
 
   await autoHealPanels();
 
-  // Khôi phục state cho các phòng đang có
   for (const room of getAllRooms()) {
     if (room.players.size === 0 || !room.panelChannelId) continue;
     const channel = await client.channels.fetch(room.panelChannelId).catch(() => null);
@@ -657,17 +635,8 @@ client.once('ready', async () => {
 
     if (room.status === 'revealed' && room.revealedAt) {
       if (room.isRank) {
-        const remaining = config.RANK_RESULT_WINDOW_MS - (Date.now() - room.revealedAt);
-        if (remaining <= 0) {
-          await handleResultWindowEnd(room);
-        } else {
-          room._blinkOn = true;
-          room.timers.blink = setInterval(() => {
-            room._blinkOn = !room._blinkOn;
-            renderRoom(room, channel).catch(() => {});
-          }, config.BLINK_INTERVAL_MS);
-          room.timers.resultWindow = setTimeout(() => handleResultWindowEnd(room), remaining);
-        }
+        // Rank cũ – nếu có timer cũ thì không dùng nữa, reset luôn
+        resetRoom(room);
       } else {
         const remaining = config.CODE_RESET_DELAY_MS - (Date.now() - room.revealedAt);
         if (remaining <= 0) {
@@ -714,11 +683,10 @@ client.once('ready', async () => {
     await renderRoom(room, channel);
   }
 
-  // ===== BẮT ĐẦU TỰ ĐỘNG THÔNG BÁO THEO GIỜ =====
   await sendScheduledAnnounce();
   scheduledInterval = setInterval(async () => {
     await sendScheduledAnnounce();
-  }, 60 * 1000); // Mỗi phút kiểm tra 1 lần
+  }, 60 * 1000);
   console.log('✅ Đã bật thông báo tự động từ 20:00 đến 22:00, mỗi 30 phút.');
 });
 
@@ -1307,7 +1275,7 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã đăng ký IGN thành công: **${ign}**\nBot sẽ dùng IGN này để tìm KDA của bạn trong ảnh.`, ephemeral: true });
   }
 
-  // ---- SET-ELO (admin: đặt ELO chính xác cho 1 người, dùng để test) ----
+  // ---- SET-ELO ----
   if (commandName === 'set-elo') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
@@ -1324,7 +1292,7 @@ async function handleSlashCommand(interaction) {
     });
   }
 
-  // ---- THEM-ELO (admin: cộng hoặc trừ điểm — dùng số âm để trừ) ----
+  // ---- THEM-ELO ----
   if (commandName === 'them-elo') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
@@ -1342,7 +1310,7 @@ async function handleSlashCommand(interaction) {
     });
   }
 
-  // ---- XOA-ELO (admin: xóa hẳn ELO của 1 người, đưa về Unranked) ----
+  // ---- XOA-ELO ----
   if (commandName === 'xoa-elo') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
@@ -1377,14 +1345,18 @@ async function handleSlashCommand(interaction) {
     if (!room || !room.isRank) {
       return interaction.editReply({ content: '❌ Phòng không tồn tại hoặc không phải rank.' });
     }
-    if (room.status !== 'revealed') {
-      return interaction.editReply({ content: '❌ Phòng chưa phát code hoặc đã kết thúc.' });
+
+    // Dùng session để kiểm tra thay vì room.status
+    const session = rankSessions.getActiveSessionByRoomId(roomId);
+    if (!session) {
+      return interaction.editReply({ content: '❌ Phiên chơi này đã hết hạn hoặc không tồn tại. Vui lòng kiểm tra lại ID phòng.' });
     }
-    if (!room.players.has(interaction.user.id)) {
-      return interaction.editReply({ content: '❌ Bạn không ở trong phòng này.' });
+    // Kiểm tra user có trong session không
+    if (!session.players.some(([id]) => id === interaction.user.id)) {
+      return interaction.editReply({ content: '❌ Bạn không có trong phiên chơi này.' });
     }
-    if (Date.now() > room.resultWindowEnd) {
-      return interaction.editReply({ content: '❌ Đã quá hạn 45 phút.' });
+    if (session.resultMap.has(interaction.user.id)) {
+      return interaction.editReply({ content: 'ℹ️ Bạn đã gửi kết quả rồi.' });
     }
 
     const attachment = interaction.options.getAttachment('hinhanh', true);
@@ -1392,14 +1364,12 @@ async function handleSlashCommand(interaction) {
       return interaction.editReply({ content: '❌ File đính kèm không phải là ảnh hợp lệ.' });
     }
 
-    // === KIỂM TRA ẢNH ĐÃ DÙNG CHƯA ===
     if (isImageUsedRecently(attachment.url, interaction.user.id)) {
       return interaction.editReply({
         content: '❌ Ảnh này đã được sử dụng trong vòng 90 ngày qua. Vui lòng chụp ảnh mới!'
       });
     }
 
-    // === FORWARD ẢNH VÀO KÊNH LOG ===
     if (config.LOG_CHANNEL_ID) {
       try {
         const logChannel = await client.channels.fetch(config.LOG_CHANNEL_ID);
@@ -1415,7 +1385,6 @@ async function handleSlashCommand(interaction) {
       }
     }
 
-    // === LƯU LỊCH SỬ ẢNH ===
     addImageHistory(attachment.url, interaction.user.id, room.id);
 
     console.log(`🔍 Bắt đầu OCR cho file: ${attachment.name} (${attachment.contentType}, ${attachment.size} bytes)`);
@@ -1438,7 +1407,6 @@ async function handleSlashCommand(interaction) {
       });
     }
 
-    // === PARSE KDA CHO TẤT CẢ NGƯỜI CHƠI ===
     const kdaMap = extractAllKDAResult(ocrText, room);
 
     if (kdaMap.size === 0) {
@@ -1447,7 +1415,6 @@ async function handleSlashCommand(interaction) {
       });
     }
 
-    // Tìm kết quả trận đấu
     let result = null;
     const resultMatch = ocrText.match(/(VICTORY|DEFEAT|victory|defeat|Chiến thắng|Thất bại|CHIẾN THẮNG|THẤT BẠI|WIN|LOSE)/);
     if (resultMatch) {
@@ -1461,34 +1428,76 @@ async function handleSlashCommand(interaction) {
       });
     }
 
-    // Lưu KDA cho tất cả người chơi khớp
-    let savedCount = 0;
-    for (const [userId, kda] of kdaMap) {
-      if (!room.resultMap.has(userId)) {
-        room.resultMap.set(userId, {
-          result: result,
-          imageUrl: attachment.url,
-          submittedAt: Date.now(),
-          kill: kda.kill,
-          death: kda.death,
-          assist: kda.assist,
-        });
-        savedCount++;
-      }
+    const senderId = interaction.user.id;
+    const senderKDA = kdaMap.get(senderId);
+    if (!senderKDA) {
+      return interaction.editReply({
+        content: `⚠️ Không tìm thấy IGN của bạn (${interaction.user.username}) trong ảnh. Vui lòng kiểm tra IGN đã đăng ký khớp với tên trong ảnh chưa.\nĐể đăng ký IGN, dùng \`/register-ign <tên_game>\`.`,
+      });
     }
 
-    // Kiểm tra xem người gửi có được lưu không
-    const senderId = interaction.user.id;
-    if (!kdaMap.has(senderId)) {
-      return interaction.editReply({
-        content: `⚠️ Không tìm thấy IGN của bạn (${interaction.user.username}) trong ảnh. Đã lưu KDA cho ${savedCount} người khác. Vui lòng kiểm tra IGN đã đăng ký khớp với tên trong ảnh chưa.\nĐể đăng ký IGN, dùng \`/register-ign <tên_game>\`.`,
-      });
+    // Lưu kết quả vào session
+    const saved = rankSessions.addResult(session.id, senderId, {
+      result,
+      kill: senderKDA.kill,
+      death: senderKDA.death,
+      assist: senderKDA.assist,
+      kda: senderKDA.death === 0 ? senderKDA.kill + senderKDA.assist : (senderKDA.kill + senderKDA.assist) / senderKDA.death,
+      imageUrl: attachment.url,
+    });
+    if (!saved) {
+      return interaction.editReply({ content: '❌ Không thể lưu kết quả (session có thể đã hết hạn).' });
+    }
+
+    // Kiểm tra nếu tất cả đã gửi kết quả
+    const allPlayers = session.players.map(([id]) => id);
+    const submittedUsers = Array.from(session.resultMap.keys());
+    if (allPlayers.every(id => submittedUsers.includes(id))) {
+      // Tất cả đã gửi -> tính Elo và thông báo
+      const finalSession = rankSessions.finalizeSession(session.id);
+      if (finalSession) {
+        const eloUpdates = [];
+        for (const [userId, resultData] of finalSession.resultMap) {
+          const userEloObj = getElo(userId);
+          const userElo = userEloObj.elo ?? config.RANK_DEFAULT_ELO;
+          const opponentIds = allPlayers.filter(id => id !== userId);
+          const opponentElos = opponentIds.map(id => {
+            const e = getElo(id).elo;
+            return e === null ? config.RANK_DEFAULT_ELO : e;
+          });
+          const userRankIndex = userEloObj.rankIndex || 0;
+          const newElo = calculateNewElo(userElo, opponentElos, resultData.result, resultData.kda, userRankIndex);
+          updateElo(userId, newElo);
+          eloStore.upsertElo(userId, getElo(userId)).catch(() => {});
+          eloUpdates.push({
+            userId,
+            oldElo: userElo,
+            newElo,
+            result: resultData.result,
+            kda: resultData.kda,
+          });
+        }
+        persistence.saveState(rooms, eloData);
+
+        const resultChannelId = process.env.RANK_RESULT_CHANNEL_ID;
+        if (resultChannelId) {
+          const resultChannel = await client.channels.fetch(resultChannelId).catch(() => null);
+          if (resultChannel) {
+            let msg = `📊 **${room.label} (${roomId})** - KẾT QUẢ ELO (đã điều chỉnh KDA):\n`;
+            for (const upd of eloUpdates) {
+              const rank = getElo(upd.userId).rank;
+              msg += `<@${upd.userId}>: ${upd.oldElo} → ${upd.newElo} (${upd.result}) | KDA: ${upd.kda.toFixed(2)} | Rank: ${rank}\n`;
+            }
+            await resultChannel.send(msg).catch(() => {});
+          }
+        }
+      }
     }
 
     persistence.saveState(rooms, eloData);
 
     return interaction.editReply({
-      content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}** cho **${savedCount}** người chơi trong phòng (bao gồm bạn).`,
+      content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}** cho bạn.`,
     });
   }
 
@@ -1507,14 +1516,13 @@ async function handleSlashCommand(interaction) {
     if (!room || !room.isRank) {
       return interaction.reply({ content: '❌ Phòng không tồn tại hoặc không phải rank.', ephemeral: true });
     }
-    if (room.status !== 'revealed') {
-      return interaction.reply({ content: '❌ Phòng chưa phát code hoặc đã kết thúc.', ephemeral: true });
+
+    const session = rankSessions.getActiveSessionByRoomId(roomId);
+    if (!session) {
+      return interaction.reply({ content: '❌ Phiên chơi này đã hết hạn hoặc không tồn tại.', ephemeral: true });
     }
-    if (!room.players.has(targetUser.id)) {
-      return interaction.reply({ content: `❌ <@${targetUser.id}> không ở trong phòng này.`, ephemeral: true });
-    }
-    if (Date.now() > room.resultWindowEnd) {
-      return interaction.reply({ content: '❌ Đã quá hạn 45 phút.', ephemeral: true });
+    if (!session.players.some(([id]) => id === targetUser.id)) {
+      return interaction.reply({ content: `❌ <@${targetUser.id}> không có trong phiên chơi này.`, ephemeral: true });
     }
 
     const parts = kdaStr.split('/').map(s => parseInt(s.trim(), 10));
@@ -1524,14 +1532,61 @@ async function handleSlashCommand(interaction) {
     const [kill, death, assist] = parts;
     const kda = death === 0 ? kill + assist : (kill + assist) / death;
 
-    room.resultMap.set(targetUser.id, {
-      result: result,
-      imageUrl: imageUrl,
-      submittedAt: Date.now(),
-      kda: kda,
-      kill, death, assist
+    const saved = rankSessions.addResult(session.id, targetUser.id, {
+      result,
+      kill,
+      death,
+      assist,
+      kda,
+      imageUrl,
     });
-    persistence.saveState(rooms, eloData);
+    if (!saved) {
+      return interaction.reply({ content: '❌ Không thể lưu kết quả (session có thể đã hết hạn).', ephemeral: true });
+    }
+
+    // Kiểm tra nếu tất cả đã gửi -> tự tính ELO
+    const allPlayers = session.players.map(([id]) => id);
+    const submittedUsers = Array.from(session.resultMap.keys());
+    if (allPlayers.every(id => submittedUsers.includes(id))) {
+      const finalSession = rankSessions.finalizeSession(session.id);
+      if (finalSession) {
+        const eloUpdates = [];
+        for (const [userId, resultData] of finalSession.resultMap) {
+          const userEloObj = getElo(userId);
+          const userElo = userEloObj.elo ?? config.RANK_DEFAULT_ELO;
+          const opponentIds = allPlayers.filter(id => id !== userId);
+          const opponentElos = opponentIds.map(id => {
+            const e = getElo(id).elo;
+            return e === null ? config.RANK_DEFAULT_ELO : e;
+          });
+          const userRankIndex = userEloObj.rankIndex || 0;
+          const newElo = calculateNewElo(userElo, opponentElos, resultData.result, resultData.kda, userRankIndex);
+          updateElo(userId, newElo);
+          eloStore.upsertElo(userId, getElo(userId)).catch(() => {});
+          eloUpdates.push({
+            userId,
+            oldElo: userElo,
+            newElo,
+            result: resultData.result,
+            kda: resultData.kda,
+          });
+        }
+        persistence.saveState(rooms, eloData);
+
+        const resultChannelId = process.env.RANK_RESULT_CHANNEL_ID;
+        if (resultChannelId) {
+          const resultChannel = await client.channels.fetch(resultChannelId).catch(() => null);
+          if (resultChannel) {
+            let msg = `📊 **${room.label} (${roomId})** - KẾT QUẢ ELO (đã điều chỉnh KDA):\n`;
+            for (const upd of eloUpdates) {
+              const rank = getElo(upd.userId).rank;
+              msg += `<@${upd.userId}>: ${upd.oldElo} → ${upd.newElo} (${upd.result}) | KDA: ${upd.kda.toFixed(2)} | Rank: ${rank}\n`;
+            }
+            await resultChannel.send(msg).catch(() => {});
+          }
+        }
+      }
+    }
 
     return interaction.reply({
       content: `✅ Admin đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}**, KDA ${kill}/${death}/${assist} (${kda.toFixed(2)}) cho <@${targetUser.id}> trong ${room.label}.`,
@@ -1590,7 +1645,7 @@ async function handleSlashCommand(interaction) {
     return interaction.followUp({ content: `✅ Đã xóa ${targetRooms.length} phòng rank.`, ephemeral: true });
   }
 
-  // ---- TEST-FILL (phòng thường) ----
+  // ---- TEST-FILL ----
   if (commandName === 'test-fill') {
     if (!isAdmin(interaction)) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng lệnh test này.', ephemeral: true });
@@ -2040,7 +2095,7 @@ async function handleSlashCommand(interaction) {
   }
 }
 
-// ===== MODAL SUBMIT (OCR) =====
+// ===== MODAL SUBMIT =====
 async function handleModalSubmit(interaction) {
   if (!interaction.customId.startsWith('submitresult_')) return;
 
@@ -2067,7 +2122,6 @@ async function handleModalSubmit(interaction) {
     }
   }
 
-  // Kiểm tra lịch sử
   if (isImageUsedRecently(imageUrl, interaction.user.id)) {
     return interaction.reply({
       content: '❌ Ảnh này đã được sử dụng trong vòng 90 ngày qua. Vui lòng chụp ảnh mới!',
@@ -2091,7 +2145,6 @@ async function handleModalSubmit(interaction) {
     return;
   }
 
-  // Forward ảnh vào kênh log
   if (config.LOG_CHANNEL_ID) {
     try {
       const logChannel = await client.channels.fetch(config.LOG_CHANNEL_ID);
@@ -2150,32 +2203,79 @@ async function handleModalSubmit(interaction) {
     });
   }
 
-  let savedCount = 0;
-  for (const [userId, kda] of kdaMap) {
-    if (!room.resultMap.has(userId)) {
-      room.resultMap.set(userId, {
-        result: result,
-        imageUrl: imageUrl,
-        submittedAt: Date.now(),
-        kill: kda.kill,
-        death: kda.death,
-        assist: kda.assist,
-      });
-      savedCount++;
-    }
+  const senderId = interaction.user.id;
+  const senderKDA = kdaMap.get(senderId);
+  if (!senderKDA) {
+    return interaction.editReply({
+      content: `⚠️ Không tìm thấy IGN của bạn (${interaction.user.username}) trong ảnh. Đã lưu KDA cho người khác. Vui lòng kiểm tra IGN đã đăng ký khớp với tên trong ảnh chưa.\nĐể đăng ký IGN, dùng \`/register-ign <tên_game>\`.`,
+    });
   }
 
-  const senderId = interaction.user.id;
-  if (!kdaMap.has(senderId)) {
-    return interaction.editReply({
-      content: `⚠️ Không tìm thấy IGN của bạn (${interaction.user.username}) trong ảnh. Đã lưu KDA cho ${savedCount} người khác. Vui lòng kiểm tra IGN đã đăng ký khớp với tên trong ảnh chưa.\nĐể đăng ký IGN, dùng \`/register-ign <tên_game>\`.`,
-    });
+  // Lưu vào session
+  const session = rankSessions.getActiveSessionByRoomId(roomId);
+  if (!session) {
+    return interaction.editReply({ content: '❌ Phiên chơi này đã hết hạn hoặc không tồn tại.' });
+  }
+  const saved = rankSessions.addResult(session.id, senderId, {
+    result,
+    kill: senderKDA.kill,
+    death: senderKDA.death,
+    assist: senderKDA.assist,
+    kda: senderKDA.death === 0 ? senderKDA.kill + senderKDA.assist : (senderKDA.kill + senderKDA.assist) / senderKDA.death,
+    imageUrl,
+  });
+  if (!saved) {
+    return interaction.editReply({ content: '❌ Không thể lưu kết quả (session có thể đã hết hạn).' });
+  }
+
+  // Kiểm tra tất cả đã gửi -> tính ELO
+  const allPlayers = session.players.map(([id]) => id);
+  const submittedUsers = Array.from(session.resultMap.keys());
+  if (allPlayers.every(id => submittedUsers.includes(id))) {
+    const finalSession = rankSessions.finalizeSession(session.id);
+    if (finalSession) {
+      const eloUpdates = [];
+      for (const [userId, resultData] of finalSession.resultMap) {
+        const userEloObj = getElo(userId);
+        const userElo = userEloObj.elo ?? config.RANK_DEFAULT_ELO;
+        const opponentIds = allPlayers.filter(id => id !== userId);
+        const opponentElos = opponentIds.map(id => {
+          const e = getElo(id).elo;
+          return e === null ? config.RANK_DEFAULT_ELO : e;
+        });
+        const userRankIndex = userEloObj.rankIndex || 0;
+        const newElo = calculateNewElo(userElo, opponentElos, resultData.result, resultData.kda, userRankIndex);
+        updateElo(userId, newElo);
+        eloStore.upsertElo(userId, getElo(userId)).catch(() => {});
+        eloUpdates.push({
+          userId,
+          oldElo: userElo,
+          newElo,
+          result: resultData.result,
+          kda: resultData.kda,
+        });
+      }
+      persistence.saveState(rooms, eloData);
+
+      const resultChannelId = process.env.RANK_RESULT_CHANNEL_ID;
+      if (resultChannelId) {
+        const resultChannel = await client.channels.fetch(resultChannelId).catch(() => null);
+        if (resultChannel) {
+          let msg = `📊 **${room.label} (${roomId})** - KẾT QUẢ ELO (đã điều chỉnh KDA):\n`;
+          for (const upd of eloUpdates) {
+            const rank = getElo(upd.userId).rank;
+            msg += `<@${upd.userId}>: ${upd.oldElo} → ${upd.newElo} (${upd.result}) | KDA: ${upd.kda.toFixed(2)} | Rank: ${rank}\n`;
+          }
+          await resultChannel.send(msg).catch(() => {});
+        }
+      }
+    }
   }
 
   persistence.saveState(rooms, eloData);
 
   await interaction.editReply({
-    content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}** cho **${savedCount}** người chơi trong phòng (bao gồm bạn).`,
+    content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}** cho bạn.`,
   });
   console.log('✅ Kết quả đã lưu cho user', interaction.user.id);
 }
@@ -2287,23 +2387,20 @@ async function handleButton(interaction) {
     });
   }
 
-  // Nút "Gửi kết quả" trên panel rank – hướng dẫn dùng lệnh với file đính kèm
   if (customId.startsWith('submit_result_')) {
     const roomId = customId.replace('submit_result_', '');
     const room = getRoom(roomId);
     if (!room || !room.isRank) {
       return interaction.reply({ content: '❌ Phòng không tồn tại hoặc không phải rank.', ephemeral: true });
     }
-    if (room.status !== 'revealed') {
-      return interaction.reply({ content: '❌ Phòng chưa phát code hoặc đã kết thúc.', ephemeral: true });
+    const session = rankSessions.getActiveSessionByRoomId(roomId);
+    if (!session) {
+      return interaction.reply({ content: '❌ Phiên chơi này đã hết hạn hoặc không tồn tại.', ephemeral: true });
     }
-    if (!room.players.has(interaction.user.id)) {
-      return interaction.reply({ content: '❌ Bạn không ở trong phòng này.', ephemeral: true });
+    if (!session.players.some(([id]) => id === interaction.user.id)) {
+      return interaction.reply({ content: '❌ Bạn không có trong phiên chơi này.', ephemeral: true });
     }
-    if (Date.now() > room.resultWindowEnd) {
-      return interaction.reply({ content: '❌ Đã quá hạn 45 phút.', ephemeral: true });
-    }
-    if (room.resultMap.has(interaction.user.id)) {
+    if (session.resultMap.has(interaction.user.id)) {
       return interaction.reply({ content: 'ℹ️ Bạn đã gửi kết quả rồi.', ephemeral: true });
     }
 
@@ -2514,7 +2611,6 @@ async function joinRoom(interaction, roomId) {
 
   await renderRoom(room, channel);
 
-  // === BẮT ĐẦU THÔNG BÁO KHI CÓ NGƯỜI JOIN ===
   if (['3v3', '5v5'].includes(room.mode)) {
     startAnnouncement(room);
   }
@@ -2560,7 +2656,6 @@ async function leaveRoom(interaction, roomId) {
     }
   }
 
-  // === DỪNG THÔNG BÁO NẾU PHÒNG TRỐNG ===
   if (room.players.size === 0) {
     stopAnnouncement(room);
     resetRoom(room);
@@ -2683,11 +2778,11 @@ async function giveCode(interaction, roomId) {
   });
 }
 
-// ===== KEEP-ALIVE HTTP SERVER (để Render nhận diện port đang mở) =====
+// ===== KEEP-ALIVE HTTP SERVER =====
 startKeepAliveServer();
 startSelfPing();
 
-// ===== KHỞI TẠO PHÒNG + KHÔI PHỤC ELO TỪ SUPABASE (bền vững qua mọi lần deploy) =====
+// ===== KHỞI TẠO PHÒNG + KHÔI PHỤC ELO TỪ SUPABASE =====
 async function bootstrap() {
   initRooms();
   const rankDefault = config.DEFAULT_RANK_ROOMS_PER_MODE || 0;
@@ -2712,4 +2807,4 @@ async function bootstrap() {
 
 bootstrap().catch((err) => console.error('=== LỖI KHỞI ĐỘNG BOT ===', err));
 
-process.on('unhandledRejection', (err) => console.error('=== UNHANDLED REJECTION ===', err));
+process.on('unhandledRejection', (err) => console.error('=== UNHANDLED REJECTION
