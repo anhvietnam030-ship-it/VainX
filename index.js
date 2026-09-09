@@ -68,10 +68,6 @@ const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 // ===== KHỞI TẠO CLIENT =====
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// ===== GỌI KEEPALIVE =====
-startKeepAliveServer();
-startSelfPing();
-
 // ===== IMAGE HISTORY =====
 const HISTORY_FILE = path.join(__dirname, 'data', 'image-history.json');
 
@@ -172,7 +168,7 @@ function bi(vi, en) {
   return `${vi}\n🌐 ${en}`;
 }
 
-// ===== ANNOUNCEMENT FUNCTIONS (khi có người join phòng) =====
+// ===== ANNOUNCEMENT FUNCTIONS =====
 const ANNOUNCE_CHANNEL_ID = config.ANNOUNCE_CHANNEL_ID;
 
 async function startAnnouncement(room) {
@@ -209,7 +205,7 @@ function stopAnnouncement(room) {
   }
 }
 
-// ===== TỰ ĐỘNG THÔNG BÁO THEO GIỜ (20:00-22:00, mỗi 30 phút) =====
+// ===== TỰ ĐỘNG THÔNG BÁO THEO GIỜ =====
 let lastScheduledAnnounce = 0;
 let scheduledInterval = null;
 
@@ -595,7 +591,7 @@ async function tryRevealCode(room, channel) {
 client.once('ready', async () => {
   console.log(`Đã đăng nhập với tên ${client.user.tag}`);
 
-  // Khôi phục state và timer cho các phòng đang có
+  // 1. Khôi phục timer cho các phòng đang có
   for (const room of getAllRooms()) {
     if (room.players.size === 0 || !room.panelChannelId) continue;
     const channel = await client.channels.fetch(room.panelChannelId).catch(() => null);
@@ -660,14 +656,17 @@ client.once('ready', async () => {
     await renderRoom(room, channel);
   }
 
-  // ===== TỰ ĐỘNG TẠO LẠI PANEL CHO TẤT CẢ PHÒNG (SAU KHI DEPLOY) =====
+  // ===== 2. TỰ ĐỘNG TẠO LẠI PANEL CHO TẤT CẢ PHÒNG (SAU KHI DEPLOY) =====
   console.log('🔄 Đang tạo lại panel cho tất cả phòng đang hoạt động...');
 
   for (const room of getAllRooms()) {
-    if (room.hidden) continue; // bỏ qua phòng ẩn
-    if (room.players.size === 0 && room.status === 'waiting') continue; // bỏ qua phòng trống chưa có ai
+    // Bỏ qua phòng trống và phòng ẩn
+    if (room.hidden) continue;
+    if (room.players.size === 0 && room.status === 'waiting') continue;
 
-    const channel = room.panelChannelId ? await client.channels.fetch(room.panelChannelId).catch(() => null) : null;
+    // Tìm kênh cũ (nếu có) hoặc dùng kênh mặc định?
+    let channel = room.panelChannelId ? await client.channels.fetch(room.panelChannelId).catch(() => null) : null;
+    // Nếu không có kênh cũ, bỏ qua (không tự tạo mới ở đâu cả)
     if (!channel) continue;
 
     // Xóa panel cũ nếu có
@@ -691,7 +690,7 @@ client.once('ready', async () => {
   }
   console.log('✅ Hoàn tất tạo lại panel.');
 
-  // ===== BẮT ĐẦU TỰ ĐỘNG THÔNG BÁO THEO GIỜ =====
+  // ===== 3. BẮT ĐẦU TỰ ĐỘNG THÔNG BÁO THEO GIỜ =====
   await sendScheduledAnnounce();
   scheduledInterval = setInterval(async () => {
     await sendScheduledAnnounce();
@@ -2213,7 +2212,7 @@ async function handleButton(interaction) {
     });
   }
 
-  // Nút "Gửi kết quả" trên panel rank – hướng dẫn dùng lệnh với file đính kèm
+  // Nút "Gửi kết quả" trên panel rank
   if (customId.startsWith('submit_result_')) {
     const roomId = customId.replace('submit_result_', '');
     const room = getRoom(roomId);
