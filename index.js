@@ -2807,4 +2807,4 @@ async function bootstrap() {
 
 bootstrap().catch((err) => console.error('=== LỖI KHỞI ĐỘNG BOT ===', err));
 
-process.on('unhandledRejection', (err) => console.error('=== UNHANDLED REJECTION
+process.on('unhandledRejection', (err) => console.error('=== UNHANDLED REJECTION ===', err));
