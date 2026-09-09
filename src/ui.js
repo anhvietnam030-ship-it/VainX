@@ -31,7 +31,19 @@ function unixSeconds(ms) {
   return Math.floor(ms / 1000);
 }
 
-// ---------- Bảng chọn chế độ ----------
+// ===== HÀM LẤY ICON TRẠNG THÁI PHÒNG =====
+function getRoomStatusIcon(room) {
+  if (room.status === 'revealed') return '🟣'; // Tím - đã phát code
+  if (isFull(room)) {
+    const check = canRevealCode(room);
+    if (check.ok) return '🟡'; // Vàng - đủ người, chờ sẵn sàng
+    return '🔴'; // Đỏ - đủ nhưng kẹt (team lệch)
+  }
+  if (room.players.size > 0) return '🟢'; // Xanh - có người
+  return '⚪'; // Trắng - trống
+}
+
+// ===== Bảng chọn chế độ =====
 function mainMenuEmbed(stats) {
   const line3v3 = stats
     ? bi(
@@ -155,7 +167,6 @@ function playerLine(player, room) {
     const eloObj = getElo(player.id);
     const elo = eloObj?.elo ?? 0;
     const rank = eloObj?.rank || 'Unranked';
-    // Bậc (đồng, bạc, vàng) dựa trên Elo % 300
     const medalIndex = Math.floor((elo % 300) / 100);
     const medalEmoji = config.RANK_MEDALS[medalIndex] || '';
     displayName = `${medalEmoji} ${player.username} (${rank}) [${elo} Elo]`;
@@ -180,12 +191,14 @@ function noneTeamFieldValue(room) {
 
 function roomEmbed(room) {
   const modeEmoji = MODE_EMOJI[room.mode] || '🎮';
+  const statusIcon = getRoomStatusIcon(room); // <-- THÊM ICON TRẠNG THÁI
+  
   const { team1, team2, none } = teamCounts(room);
   const usingTeams = team1 > 0 || team2 > 0;
 
   const embed = new EmbedBuilder()
     .setColor(roomColor(room))
-    .setTitle(`${modeEmoji}  ${room.label}`)
+    .setTitle(`${statusIcon} ${modeEmoji} ${room.label}`) // <-- THÊM ICON VÀO TIÊU ĐỀ
     .setDescription(
       `${progressBar(room.players.size, room.capacity)}\n` +
       bi(`**${room.players.size} / ${room.capacity}** người`, `**${room.players.size} / ${room.capacity}** players`) +
@@ -308,7 +321,6 @@ function roomActionRows(room) {
 
   const rows = [row1, row2, row3];
 
-  // Nút "Gửi kết quả" cho phòng rank
   if (room.isRank && room.status === 'revealed' && room.resultWindowEnd && Date.now() < room.resultWindowEnd) {
     rows.push(
       new ActionRowBuilder().addComponents(
