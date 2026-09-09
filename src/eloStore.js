@@ -22,6 +22,7 @@ function isEnabled() {
 async function loadAllElo() {
   if (!supabase) return new Map();
   try {
+    // ✅ Đúng tên cột: "Ign" viết hoa
     const { data, error } = await supabase.from(TABLE).select('user_id, elo, rank, Ign');
     if (error) {
       console.error('❌ Lỗi tải ELO từ Supabase:', error.message);
@@ -32,9 +33,10 @@ async function loadAllElo() {
       map.set(row.user_id, {
         elo: row.elo,
         rank: row.rank,
-        ...(row.Ign ? { ign: row.Ign } : {}),
+        ign: row.Ign || null,   // lấy từ cột "Ign"
       });
     }
+    console.log(`✅ Đã tải ELO của ${map.size} người chơi từ Supabase.`);
     return map;
   } catch (err) {
     console.error('❌ Lỗi tải ELO từ Supabase:', err.message);
@@ -48,12 +50,13 @@ async function upsertElo(userId, data) {
     return;
   }
   try {
+    // ✅ Đúng tên cột: "Ign" viết hoa
     const { error } = await supabase.from(TABLE).upsert(
       {
         user_id: userId,
         elo: data.elo ?? null,
         rank: data.rank || 'Unranked',
-        Ign: data.ign || null,   // ✅ Đúng tên cột trong Supabase
+        Ign: data.ign || null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'user_id' }
