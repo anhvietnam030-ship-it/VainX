@@ -357,7 +357,7 @@ function formatPersonalCode(room, userId) {
 }
 
 // ============================================================
-// ===== HÀM CHUYỂN OCR SANG DẠNG TXT & QUÉT TỪ TRÊN XUỐNG =====
+// ===== HÀM BỌC OCR SANG TXT & SCAN DỌC ĐA DÒNG BÁT KDA =====
 // ============================================================
 function extractAllKDAResult(rawText, room, ocrOverlay = null) {
   const resultMap = new Map();
@@ -377,7 +377,7 @@ function extractAllKDAResult(rawText, room, ocrOverlay = null) {
     };
   }
 
-  // Bước 1: Chuẩn hóa OCR thành các dòng văn bản dạng TXT (sắp xếp Y từ trên xuống dưới)
+  // 1. Chuyển OCR thành danh sách dòng text chuẩn
   let formattedTxtLines = [];
 
   if (Array.isArray(ocrOverlay?.Lines) && ocrOverlay.Lines.length > 0) {
@@ -398,7 +398,7 @@ function extractAllKDAResult(rawText, room, ocrOverlay = null) {
       }
     }
 
-    // Nhóm các từ có cùng trục Y ngang hàng
+    // Nhóm các từ nằm trên cùng hàng ngang
     const rows = [];
     allWords.sort((a, b) => a.top - b.top);
 
@@ -416,7 +416,6 @@ function extractAllKDAResult(rawText, room, ocrOverlay = null) {
       }
     }
 
-    // Ghép từng dòng từ trái sang phải
     formattedTxtLines = rows
       .sort((a, b) => a.centerY - b.centerY)
       .map((r) =>
@@ -426,18 +425,15 @@ function extractAllKDAResult(rawText, room, ocrOverlay = null) {
           .join(' ')
       );
   } else {
-    // Nếu không có Overlay, dùng xâu text thô phân tách dòng theo `\n`
     formattedTxtLines = String(rawText || '')
       .split(/\r?\n/)
       .map((l) => l.trim())
       .filter((l) => l.length > 0);
   }
 
-  // Xuất cấu trúc chuỗi TXT ra Log để kiểm tra
-  const generatedTxtContent = formattedTxtLines.join('\n');
-  console.log('📄 [Dữ liệu OCR chuyển sang TXT theo hàng dọc]:\n' + generatedTxtContent);
+  console.log('📄 [Dữ liệu OCR TXT theo hàng dọc]:\n' + formattedTxtLines.join('\n'));
 
-  // Bước 2: Đọc file TXT ảo từ trên xuống dưới (đọc từng dòng) để xác định KDA
+  // 2. Duyệt tìm tên và quét KDA (kể cả khi KDA bị đẩy xuống các dòng phía dưới)
   for (const [userId, playerData] of players) {
     const eloObj = getElo(userId);
     const searchName = String(eloObj.ign || playerData.username || '').trim();
@@ -449,31 +445,44 @@ function extractAllKDAResult(rawText, room, ocrOverlay = null) {
 
     let foundKDA = null;
 
-    // Duyệt dọc từng dòng từ top -> bottom
     for (let lineIndex = 0; lineIndex < formattedTxtLines.length; lineIndex++) {
       const lineText = formattedTxtLines[lineIndex];
 
-      // Tìm tên người chơi trên dòng hiện tại
-      const matchName = lineText.match(nameRegex);
-      if (matchName) {
-        // Cắt lấy phần text đứng sau tên người chơi trên cùng dòng
+      if (nameRegex.test(lineText)) {
+        // [Cách A] Tìm KDA ở cùng dòng
+        const matchName = lineText.match(nameRegex);
         const afterNameText = lineText.slice(matchName.index + matchName[0].length);
-        const kdaOnSameLine = parseKDA(afterNameText);
+        const sameLineKDA = parseKDA(afterNameText);
 
-        if (kdaOnSameLine) {
-          foundKDA = kdaOnSameLine;
-          console.log(
-            `✅ Found KDA cho ${searchName} tại dòng ${lineIndex + 1}: ${foundKDA.kill}/${foundKDA.death}/${foundKDA.assist}`
-          );
+        if (sameLineKDA) {
+          foundKDA = sameLineKDA;
+          console.log(`✅ [Cùng dòng] KDA cho ${searchName}: ${foundKDA.kill}/${foundKDA.death}/${foundKDA.assist}`);
           break;
         }
+
+        // [Cách B] Quét xuống 6 dòng tiếp theo để tìm chỉ số KDA
+        for (let lookAhead = 1; lookAhead <= 6; lookAhead++) {
+          const nextLineIndex = lineIndex + lookAhead;
+          if (nextLineIndex >= formattedTxtLines.length) break;
+
+          const nextLineText = formattedTxtLines[nextLineIndex];
+          const belowLineKDA = parseKDA(nextLineText);
+
+          if (belowLineKDA) {
+            foundKDA = belowLineKDA;
+            console.log(`✅ [Dòng +${lookAhead}] KDA cho ${searchName}: ${foundKDA.kill}/${foundKDA.death}/${foundKDA.assist}`);
+            break;
+          }
+        }
+
+        if (foundKDA) break;
       }
     }
 
     if (foundKDA) {
       resultMap.set(userId, foundKDA);
     } else {
-      console.warn(`⚠️ Không quét thấy KDA hợp lệ cho IGN: "${searchName}" khi đọc từ trên xuống.`);
+      console.warn(`⚠️ Không quét thấy KDA hợp lệ cho IGN: "${searchName}"`);
     }
   }
 
