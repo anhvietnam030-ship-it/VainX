@@ -1,13 +1,8 @@
 const config = require('../config');
 
-// roomId dạng "3v3-1", "3v3-2", ... "5v5-4"
 const rooms = new Map();
-
-// Phòng ẨN — không nằm trong danh sách công khai
 const hiddenRooms = new Map();
-
-// === ELO DATA ===
-const eloData = new Map(); // userId -> { elo, rank, ign }
+const eloData = new Map();
 
 function getElo(userId) {
   if (!eloData.has(userId)) {
@@ -45,7 +40,6 @@ function updateElo(userId, newElo, ign) {
 }
 
 function registerIGN(userId, ign) {
-  // Kiểm tra trùng IGN
   for (const [id, data] of eloData) {
     if (data.ign && data.ign.toLowerCase() === ign.toLowerCase() && id !== userId) {
       return { ok: false, reason: 'IGN này đã được đăng ký bởi người khác.' };
@@ -124,16 +118,13 @@ function initRooms() {
   return rooms;
 }
 
-// Dựng lại toàn bộ phòng từ state đã lưu (dùng khi khởi động lại / sau khi deploy)
 function restoreRooms(savedRooms) {
   rooms.clear();
   for (const saved of savedRooms) {
     if (!saved || !saved.mode || !saved.index) continue;
-
     const room = saved.isRank
       ? buildRankRoom(saved.mode, saved.index)
       : buildInitialRoom(saved.mode, saved.index);
-
     room.status = saved.status || 'waiting';
     room.code = saved.code || null;
     room.revealedAt = saved.revealedAt || null;
@@ -142,51 +133,35 @@ function restoreRooms(savedRooms) {
     room.panelChannelId = saved.panelChannelId || null;
     room.panelMessageId = saved.panelMessageId || null;
     room.timeoutMs = saved.timeoutMs || config.DEFAULT_ROOM_TIMEOUT_MS;
-    room.players = new Map(
-      (saved.players || []).map((p) => {
-        const { id, ...rest } = p;
-        return [id, rest];
-      })
-    );
+    room.players = new Map((saved.players || []).map((p) => {
+      const { id, ...rest } = p;
+      return [id, rest];
+    }));
     room.bannedUsers = new Set(saved.bannedUsers || []);
-
     if (room.isRank) {
       room.resultMap = new Map(saved.resultMap || []);
       room.resultWindowEnd = saved.resultWindowEnd || null;
     }
-
     rooms.set(room.id, room);
   }
-
-  // Đảm bảo đủ số phòng thường mặc định theo config
   for (const mode of Object.keys(config.CAPACITY)) {
     for (let i = 1; i <= config.ROOMS_PER_MODE; i++) {
       const id = `${mode}-${i}`;
-      if (!rooms.has(id)) {
-        rooms.set(id, buildInitialRoom(mode, i));
-      }
+      if (!rooms.has(id)) rooms.set(id, buildInitialRoom(mode, i));
     }
   }
-
   return rooms;
 }
 
 function restoreEloData(savedEloMap) {
   eloData.clear();
-  for (const [userId, data] of savedEloMap) {
-    eloData.set(userId, data);
-  }
+  for (const [userId, data] of savedEloMap) eloData.set(userId, data);
   return eloData;
 }
 
-// Xóa hoàn toàn ELO của 1 người chơi (đưa về Unranked, dùng cho lệnh admin /xoa-elo)
-function clearElo(userId) {
-  return eloData.delete(userId);
-}
+function clearElo(userId) { return eloData.delete(userId); }
 
-function getRoom(roomId) {
-  return rooms.get(roomId) || hiddenRooms.get(roomId);
-}
+function getRoom(roomId) { return rooms.get(roomId) || hiddenRooms.get(roomId); }
 
 function ensureRoom(mode, index) {
   const id = `${mode}-${index}`;
@@ -227,29 +202,14 @@ function removeExtraRoom(roomId) {
   return { ok: true, room };
 }
 
-function getAllRooms() {
-  return Array.from(rooms.values());
-}
+function getAllRooms() { return Array.from(rooms.values()); }
+function getRoomsByMode(mode) { return getAllRooms().filter(r => r.mode === mode); }
 
-function getRoomsByMode(mode) {
-  return getAllRooms().filter(r => r.mode === mode);
-}
+function getAllNormalRooms() { return getAllRooms().filter(r => !r.isRank); }
+function getNormalRoomsByMode(mode) { return getAllNormalRooms().filter(r => r.mode === mode); }
+function getAllRankRooms() { return getAllRooms().filter(r => r.isRank); }
+function getRankRoomsByMode(mode) { return getAllRankRooms().filter(r => r.mode === mode); }
 
-// === HÀM LỌC PHÒNG ===
-function getAllNormalRooms() {
-  return getAllRooms().filter(r => !r.isRank);
-}
-function getNormalRoomsByMode(mode) {
-  return getAllNormalRooms().filter(r => r.mode === mode);
-}
-function getAllRankRooms() {
-  return getAllRooms().filter(r => r.isRank);
-}
-function getRankRoomsByMode(mode) {
-  return getAllRankRooms().filter(r => r.mode === mode);
-}
-
-// === PHÒNG ẨN ===
 function createHiddenRoom(mode) {
   const room = buildInitialRoom(mode, 0);
   room.id = `${mode}-an-${Date.now()}`;
@@ -259,12 +219,8 @@ function createHiddenRoom(mode) {
   hiddenRooms.set(room.id, room);
   return room;
 }
-function getHiddenRoom(roomId) {
-  return hiddenRooms.get(roomId);
-}
-function getAllHiddenRooms() {
-  return Array.from(hiddenRooms.values());
-}
+function getHiddenRoom(roomId) { return hiddenRooms.get(roomId); }
+function getAllHiddenRooms() { return Array.from(hiddenRooms.values()); }
 function deleteHiddenRoom(roomId) {
   const room = hiddenRooms.get(roomId);
   if (room) clearRoomTimers(room);
@@ -272,7 +228,6 @@ function deleteHiddenRoom(roomId) {
   return !!room;
 }
 
-// === PHÒNG RANK ===
 function buildRankRoom(mode, index) {
   const room = buildInitialRoom(mode, index);
   room.id = `${mode}-rank-${index}`;
@@ -284,6 +239,7 @@ function buildRankRoom(mode, index) {
   room.timers.resultWindow = null;
   return room;
 }
+
 function addRankRoomsToMode(mode, count) {
   const existing = getRankRoomsByMode(mode);
   const maxAllowed = config.MAX_RANK_ROOMS_PER_MODE || config.MAX_ROOMS_PER_MODE;
@@ -303,6 +259,7 @@ function addRankRoomsToMode(mode, count) {
   }
   return { created, requested: count, capped: count > toAdd, currentTotal: existing.length + created.length, maxAllowed };
 }
+
 function removeRankRoom(roomId) {
   const room = rooms.get(roomId);
   if (!room || !room.isRank) return { ok: false, reason: 'not_found' };
@@ -311,23 +268,15 @@ function removeRankRoom(roomId) {
   return { ok: true, room };
 }
 
-// === UTILITY ===
 function findRoomOfUser(userId) {
-  for (const room of rooms.values()) {
-    if (room.players.has(userId)) return room;
-  }
-  for (const room of hiddenRooms.values()) {
-    if (room.players.has(userId)) return room;
-  }
+  for (const room of rooms.values()) if (room.players.has(userId)) return room;
+  for (const room of hiddenRooms.values()) if (room.players.has(userId)) return room;
   return null;
 }
+
 function findRoomOfUserInMode(userId, mode) {
-  for (const room of rooms.values()) {
-    if (room.mode === mode && room.players.has(userId)) return room;
-  }
-  for (const room of hiddenRooms.values()) {
-    if (room.mode === mode && room.players.has(userId)) return room;
-  }
+  for (const room of rooms.values()) if (room.mode === mode && room.players.has(userId)) return room;
+  for (const room of hiddenRooms.values()) if (room.mode === mode && room.players.has(userId)) return room;
   return null;
 }
 
@@ -359,14 +308,10 @@ function resetRoom(room) {
   }
 }
 
-function isFull(room) {
-  return room.players.size >= room.capacity;
-}
+function isFull(room) { return room.players.size >= room.capacity; }
 function allReady(room) {
   if (room.players.size === 0) return false;
-  for (const p of room.players.values()) {
-    if (!p.ready) return false;
-  }
+  for (const p of room.players.values()) if (!p.ready) return false;
   return true;
 }
 function teamCounts(room) {
@@ -394,12 +339,8 @@ function banUser(room, userId) {
   room.bannedUsers.add(userId);
   room.players.delete(userId);
 }
-function unbanUser(room, userId) {
-  room.bannedUsers.delete(userId);
-}
-function isBanned(room, userId) {
-  return room.bannedUsers.has(userId);
-}
+function unbanUser(room, userId) { room.bannedUsers.delete(userId); }
+function isBanned(room, userId) { return room.bannedUsers.has(userId); }
 function generateCode() {
   let code;
   do {
@@ -411,15 +352,13 @@ function formatPersonalCode(room, userId) {
   if (!room.code) return null;
   const player = room.players.get(userId);
   if (!player) return null;
-  if (player.team) {
-    return `${room.code}-${player.team}_${player.username}`;
-  }
+  if (player.team) return `${room.code}-${player.team}_${player.username}`;
   return `${room.code}-${player.username}`;
 }
 
-// ============================================================
-// ===== HÀM OCR – ƯU TIÊN TÌM KDA TRÊN CÙNG DÒNG ============
-// ============================================================
+// ==========================================================
+// ===== HÀM OCR MỚI – TÌM ĐÚNG KDA THEO TÊN ==============
+// ==========================================================
 function extractAllKDAResult(text, room) {
   const resultMap = new Map();
   const players = Array.from(room.players.entries());
@@ -427,16 +366,14 @@ function extractAllKDAResult(text, room) {
   console.log('📝 OCR Text:', text);
   console.log('👥 Players:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
 
-  // Tách dòng
+  // Tách dòng và giữ nguyên thứ tự
   const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
-  // Duyệt từng người chơi
+  // Lưu vị trí các dòng chứa tên (để sau còn biết vùng)
+  const nameLineMap = new Map(); // userId -> { line, index }
   for (const [userId, playerData] of players) {
     const eloObj = getElo(userId);
     const searchName = eloObj.ign || playerData.username;
-    console.log(`🔎 Tìm IGN: "${searchName}"`);
-
-    // Tìm dòng chứa tên
     const nameRegex = new RegExp(searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     let foundLine = null;
     let foundLineIndex = -1;
@@ -447,56 +384,110 @@ function extractAllKDAResult(text, room) {
         break;
       }
     }
-
-    if (!foundLine) {
+    if (foundLine) {
+      nameLineMap.set(userId, { line: foundLine, index: foundLineIndex });
+    } else {
       console.warn(`⚠️ Không tìm thấy dòng nào chứa tên "${searchName}"`);
+    }
+  }
+
+  // Tìm tất cả KDA trong toàn văn bản, gắn thêm số dòng
+  const allKda = [];
+  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
+  let m;
+  while ((m = kdaRegex.exec(text)) !== null) {
+    // Tìm dòng chứa KDA này
+    let lineContaining = null;
+    let lineIdx = -1;
+    const pos = m.index;
+    // Duyệt các dòng, tìm dòng nào có vị trí bao phủ pos
+    let cumulative = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const lineStart = cumulative;
+      const lineEnd = cumulative + lines[i].length;
+      if (pos >= lineStart && pos < lineEnd) {
+        lineContaining = lines[i];
+        lineIdx = i;
+        break;
+      }
+      cumulative += lines[i].length + 1; // +1 cho newline
+    }
+    allKda.push({
+      kill: parseInt(m[1], 10),
+      death: parseInt(m[2], 10),
+      assist: parseInt(m[3], 10),
+      index: m.index,
+      line: lineContaining,
+      lineIdx: lineIdx,
+      used: false,
+    });
+  }
+
+  console.log(`🔍 Tìm thấy ${allKda.length} cụm KDA.`);
+
+  // Với mỗi người chơi có tên trong text, tìm KDA tương ứng
+  for (const [userId, nameInfo] of nameLineMap) {
+    const playerData = players.find(([id]) => id === userId)?.[1];
+    if (!playerData) continue;
+    const searchName = getElo(userId).ign || playerData.username;
+
+    // Ưu tiên tìm KDA trên cùng dòng
+    const sameLineKda = allKda.filter(k => k.line === nameInfo.line && !k.used);
+    if (sameLineKda.length > 0) {
+      // Lấy KDA đầu tiên trên dòng (giả định chỉ có 1)
+      const best = sameLineKda[0];
+      best.used = true;
+      resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
+      console.log(`✅ Map KDA cho ${searchName}: ${best.kill}/${best.death}/${best.assist} (cùng dòng "${nameInfo.line}")`);
       continue;
     }
 
-    // Tìm KDA trên dòng đó
-    const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
-    const match = kdaRegex.exec(foundLine);
-    if (match) {
-      const kill = parseInt(match[1], 10);
-      const death = parseInt(match[2], 10);
-      const assist = parseInt(match[3], 10);
-      resultMap.set(userId, { kill, death, assist });
-      console.log(`✅ Map KDA cho ${searchName}: ${kill}/${death}/${assist} (trên dòng "${foundLine}")`);
+    // Nếu không có KDA cùng dòng, tìm trên các dòng lân cận (lệch tối đa 2 dòng)
+    const nearbyKda = allKda.filter(k => {
+      if (k.used) return false;
+      const dist = Math.abs(k.lineIdx - nameInfo.index);
+      return dist <= 2 && dist >= 0;
+    });
+    // Ưu tiên dòng dưới (index lớn hơn) vì KDA thường nằm bên phải tên
+    const sorted = nearbyKda.sort((a, b) => {
+      // Ưu tiên dòng cùng hoặc thấp hơn
+      const aBetter = a.lineIdx >= nameInfo.index ? 0 : 1;
+      const bBetter = b.lineIdx >= nameInfo.index ? 0 : 1;
+      if (aBetter !== bBetter) return aBetter - bBetter;
+      return Math.abs(a.lineIdx - nameInfo.index) - Math.abs(b.lineIdx - nameInfo.index);
+    });
+    if (sorted.length > 0) {
+      const best = sorted[0];
+      best.used = true;
+      resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
+      console.log(`✅ Map KDA cho ${searchName}: ${best.kill}/${best.death}/${best.assist} (dòng ${best.lineIdx}, cách ${Math.abs(best.lineIdx - nameInfo.index)} dòng)`);
       continue;
     }
 
-    // Nếu không có KDA trên dòng, thử tìm gần nhất (phạm vi 300 ký tự)
-    console.warn(`⚠️ Không tìm thấy KDA trên dòng của "${searchName}", thử tìm gần nhất...`);
-    const linePos = text.indexOf(foundLine);
-    if (linePos === -1) continue;
-
-    // Lấy tất cả KDA trong toàn bộ văn bản để chọn gần nhất
-    const allKda = [];
-    const globalRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
-    let m;
-    while ((m = globalRegex.exec(text)) !== null) {
-      allKda.push({
-        kill: parseInt(m[1], 10),
-        death: parseInt(m[2], 10),
-        assist: parseInt(m[3], 10),
-        index: m.index,
-      });
+    // Cuối cùng, fallback gần nhất nhưng chỉ lấy KDA chưa dùng và nằm sau tên (ưu tiên)
+    const remaining = allKda.filter(k => !k.used);
+    if (remaining.length === 0) {
+      console.warn(`⚠️ Không còn KDA nào để gán cho "${searchName}"`);
+      continue;
     }
-
-    let best = null;
+    // Tìm KDA có vị trí gần nhất với tên (dùng vị trí ký tự)
+    const namePos = text.indexOf(nameInfo.line);
+    if (namePos === -1) continue;
+    let bestFallback = null;
     let bestDist = Infinity;
-    for (const kda of allKda) {
-      const dist = Math.abs(kda.index - linePos);
+    for (const k of remaining) {
+      const dist = Math.abs(k.index - namePos);
       if (dist < bestDist && dist < 300) {
         bestDist = dist;
-        best = kda;
+        bestFallback = k;
       }
     }
-    if (best) {
-      resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
-      console.log(`✅ Map KDA (fallback) cho ${searchName}: ${best.kill}/${best.death}/${best.assist} (cách ${bestDist} ký tự)`);
+    if (bestFallback) {
+      bestFallback.used = true;
+      resultMap.set(userId, { kill: bestFallback.kill, death: bestFallback.death, assist: bestFallback.assist });
+      console.log(`✅ Map KDA (fallback) cho ${searchName}: ${bestFallback.kill}/${bestFallback.death}/${bestFallback.assist} (cách ${bestDist} ký tự)`);
     } else {
-      console.warn(`⚠️ Không tìm thấy KDA gần dòng của "${searchName}" trong phạm vi 300 ký tự.`);
+      console.warn(`⚠️ Không tìm thấy KDA nào cho "${searchName}"`);
     }
   }
 
@@ -533,7 +524,6 @@ module.exports = {
   getHiddenRoom,
   getAllHiddenRooms,
   deleteHiddenRoom,
-  // Rank exports
   getElo,
   getRankFromElo,
   updateElo,
@@ -545,9 +535,7 @@ module.exports = {
   removeRankRoom,
   getAllRankRooms,
   getRankRoomsByMode,
-  // Filter
   getAllNormalRooms,
   getNormalRoomsByMode,
-  // OCR helper
   extractAllKDAResult,
 };
