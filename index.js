@@ -70,6 +70,108 @@ const eloStore = require('./src/eloStore');
 const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 const rankSessions = require('./src/rankSessions');
 
+// ===== HOÀN TẤT PHIÊN RANK KHI ĐỦ ĐIỀU KIỆN =====
+// - Bỏ qua hoàn toàn "người chơi" giả tạo bởi /test-fill-rank (đánh dấu isBot: true khi tạo).
+//   Những người này KHÔNG BAO GIỜ được tính vào danh sách "phải gửi kết quả" và
+//   KHÔNG BAO GIỜ nhận ELO.
+// - Nếu có kdaMap (đọc được từ ảnh OCR của người gửi), chỉ cần MỘT người chơi THẬT
+//   gửi kết quả là đủ: hệ thống sẽ tự suy ra thắng/thua + KDA cho những người thật
+//   còn lại nếu tên họ cũng xuất hiện trong ảnh (dựa vào team so với người đã gửi:
+//   cùng team = cùng kết quả, khác team = kết quả ngược lại; nếu không rõ team thì
+//   mặc định lấy theo kết quả của người gửi). Ai không tìm thấy trong ảnh thì đơn
+//   giản là không được tính ELO lần đó — không có gì để chặn cả phòng nữa.
+// - Nếu KHÔNG có kdaMap (trường hợp /admin-submit-result nhập tay từng người), vẫn
+//   giữ hành vi cũ là chờ đủ tất cả người THẬT (không tính bot) tự gửi.
+async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
+  if (!session) return null;
+
+  const realPlayers = session.players.filter(([, data]) => !data.isBot).map(([id]) => id);
+  if (realPlayers.length === 0) return null;
+
+  if (kdaMap) {
+    const sampleEntry = Array.from(session.resultMap.entries()).find(([id]) => realPlayers.includes(id));
+    if (sampleEntry) {
+      const [sampleId, sampleData] = sampleEntry;
+      const samplePlayerEntry = session.players.find(([id]) => id === sampleId);
+      const sampleTeam = samplePlayerEntry ? samplePlayerEntry[1].team : null;
+
+      for (const id of realPlayers) {
+        if (session.resultMap.has(id)) continue; // đã tự gửi rồi, giữ nguyên
+        const playerEntry = session.players.find(([pid]) => pid === id);
+        const playerData = playerEntry ? playerEntry[1] : null;
+        const kda = kdaMap.get(id);
+
+        let inferredResult = sampleData.result;
+        if (sampleTeam && playerData && playerData.team) {
+          inferredResult = playerData.team === sampleTeam
+            ? sampleData.result
+            : (sampleData.result === 'win' ? 'loss' : 'win');
+        }
+
+        rankSessions.addResult(session.id, id, {
+          result: inferredResult,
+          kill: kda ? kda.kill : null,
+          death: kda ? kda.death : null,
+          assist: kda ? kda.assist : null,
+          kda: kda ? (kda.death === 0 ? kda.kill + kda.assist : (kda.kill + kda.assist) / kda.death) : undefined,
+          imageUrl: sampleData.imageUrl || null,
+          inferred: true,
+        });
+      }
+    }
+  }
+
+  const submittedReal = Array.from(session.resultMap.keys()).filter(id => realPlayers.includes(id));
+  const ready = kdaMap ? submittedReal.length > 0 : realPlayers.every(id => submittedReal.includes(id));
+  if (!ready) return null;
+
+  const finalSession = rankSessions.finalizeSession(session.id);
+  if (!finalSession) return null;
+
+  const eloUpdates = [];
+  for (const [userId, resultData] of finalSession.resultMap) {
+    if (!realPlayers.includes(userId)) continue; // an toàn: không bao giờ tính ELO cho bot giả
+    const userEloObj = getElo(userId);
+    const userElo = userEloObj.elo ?? config.RANK_DEFAULT_ELO;
+    const opponentIds = realPlayers.filter(id => id !== userId);
+    const opponentElos = opponentIds.map(id => {
+      const e = getElo(id).elo;
+      return e === null ? config.RANK_DEFAULT_ELO : e;
+    });
+    const userRankIndex = userEloObj.rankIndex || 0;
+    const newElo = calculateNewElo(userElo, opponentElos, resultData.result, resultData.kda, userRankIndex);
+    updateElo(userId, newElo);
+    const updatedData = getElo(userId);
+    eloStore.upsertElo(userId, updatedData)
+      .then(() => console.log(`✅ Đã cập nhật ELO cho ${userId} lên Supabase: ${newElo}`))
+      .catch((err) => console.error(`❌ Lỗi upsert ELO cho ${userId}:`, err));
+    eloUpdates.push({
+      userId,
+      oldElo: userElo,
+      newElo,
+      result: resultData.result,
+      kda: resultData.kda,
+    });
+  }
+  persistence.saveState(rooms, eloData);
+
+  const resultChannelId = process.env.RANK_RESULT_CHANNEL_ID;
+  if (resultChannelId) {
+    const resultChannel = await client.channels.fetch(resultChannelId).catch(() => null);
+    if (resultChannel) {
+      let msg = `📊 **${room.label} (${roomId})** - KẾT QUẢ ELO (đã điều chỉnh KDA):\n`;
+      for (const upd of eloUpdates) {
+        const rank = getElo(upd.userId).rank;
+        const kdaStr = typeof upd.kda === 'number' ? upd.kda.toFixed(2) : 'N/A';
+        msg += `<@${upd.userId}>: ${upd.oldElo} → ${upd.newElo} (${upd.result}) | KDA: ${kdaStr} | Rank: ${rank}\n`;
+      }
+      await resultChannel.send(msg).catch(() => {});
+    }
+  }
+
+  return eloUpdates;
+}
+
 // ===== COOLDOWN CHO NÚT BẤM =====
 const cooldowns = new Map();
 function checkCooldown(userId) {
@@ -1452,53 +1554,7 @@ async function handleSlashCommand(interaction) {
       return interaction.editReply({ content: '❌ Không thể lưu kết quả (session có thể đã hết hạn).' });
     }
 
-    const allPlayers = session.players.map(([id]) => id);
-    const submittedUsers = Array.from(session.resultMap.keys());
-    if (allPlayers.every(id => submittedUsers.includes(id))) {
-      const finalSession = rankSessions.finalizeSession(session.id);
-      if (finalSession) {
-        const eloUpdates = [];
-        for (const [userId, resultData] of finalSession.resultMap) {
-          const userEloObj = getElo(userId);
-          const userElo = userEloObj.elo ?? config.RANK_DEFAULT_ELO;
-          const opponentIds = allPlayers.filter(id => id !== userId);
-          const opponentElos = opponentIds.map(id => {
-            const e = getElo(id).elo;
-            return e === null ? config.RANK_DEFAULT_ELO : e;
-          });
-          const userRankIndex = userEloObj.rankIndex || 0;
-          const newElo = calculateNewElo(userElo, opponentElos, resultData.result, resultData.kda, userRankIndex);
-          // Cập nhật vào eloData
-          updateElo(userId, newElo);
-          // Lưu xuống Supabase với log
-          const updatedData = getElo(userId);
-          eloStore.upsertElo(userId, updatedData)
-            .then(() => console.log(`✅ Đã cập nhật ELO cho ${userId} lên Supabase: ${newElo}`))
-            .catch((err) => console.error(`❌ Lỗi upsert ELO cho ${userId}:`, err));
-          eloUpdates.push({
-            userId,
-            oldElo: userElo,
-            newElo,
-            result: resultData.result,
-            kda: resultData.kda,
-          });
-        }
-        persistence.saveState(rooms, eloData);
-
-        const resultChannelId = process.env.RANK_RESULT_CHANNEL_ID;
-        if (resultChannelId) {
-          const resultChannel = await client.channels.fetch(resultChannelId).catch(() => null);
-          if (resultChannel) {
-            let msg = `📊 **${room.label} (${roomId})** - KẾT QUẢ ELO (đã điều chỉnh KDA):\n`;
-            for (const upd of eloUpdates) {
-              const rank = getElo(upd.userId).rank;
-              msg += `<@${upd.userId}>: ${upd.oldElo} → ${upd.newElo} (${upd.result}) | KDA: ${upd.kda.toFixed(2)} | Rank: ${rank}\n`;
-            }
-            await resultChannel.send(msg).catch(() => {});
-          }
-        }
-      }
-    }
+    await finalizeRankSessionIfReady(session, room, roomId, kdaMap);
 
     persistence.saveState(rooms, eloData);
 
@@ -1550,51 +1606,7 @@ async function handleSlashCommand(interaction) {
       return interaction.reply({ content: '❌ Không thể lưu kết quả (session có thể đã hết hạn).', ephemeral: true });
     }
 
-    const allPlayers = session.players.map(([id]) => id);
-    const submittedUsers = Array.from(session.resultMap.keys());
-    if (allPlayers.every(id => submittedUsers.includes(id))) {
-      const finalSession = rankSessions.finalizeSession(session.id);
-      if (finalSession) {
-        const eloUpdates = [];
-        for (const [userId, resultData] of finalSession.resultMap) {
-          const userEloObj = getElo(userId);
-          const userElo = userEloObj.elo ?? config.RANK_DEFAULT_ELO;
-          const opponentIds = allPlayers.filter(id => id !== userId);
-          const opponentElos = opponentIds.map(id => {
-            const e = getElo(id).elo;
-            return e === null ? config.RANK_DEFAULT_ELO : e;
-          });
-          const userRankIndex = userEloObj.rankIndex || 0;
-          const newElo = calculateNewElo(userElo, opponentElos, resultData.result, resultData.kda, userRankIndex);
-          updateElo(userId, newElo);
-          const updatedData = getElo(userId);
-          eloStore.upsertElo(userId, updatedData)
-            .then(() => console.log(`✅ Admin: đã cập nhật ELO cho ${userId} lên Supabase: ${newElo}`))
-            .catch((err) => console.error(`❌ Admin: lỗi upsert ELO cho ${userId}:`, err));
-          eloUpdates.push({
-            userId,
-            oldElo: userElo,
-            newElo,
-            result: resultData.result,
-            kda: resultData.kda,
-          });
-        }
-        persistence.saveState(rooms, eloData);
-
-        const resultChannelId = process.env.RANK_RESULT_CHANNEL_ID;
-        if (resultChannelId) {
-          const resultChannel = await client.channels.fetch(resultChannelId).catch(() => null);
-          if (resultChannel) {
-            let msg = `📊 **${room.label} (${roomId})** - KẾT QUẢ ELO (đã điều chỉnh KDA):\n`;
-            for (const upd of eloUpdates) {
-              const rank = getElo(upd.userId).rank;
-              msg += `<@${upd.userId}>: ${upd.oldElo} → ${upd.newElo} (${upd.result}) | KDA: ${upd.kda.toFixed(2)} | Rank: ${rank}\n`;
-            }
-            await resultChannel.send(msg).catch(() => {});
-          }
-        }
-      }
-    }
+    await finalizeRankSessionIfReady(session, room, roomId, null);
 
     return interaction.reply({
       content: `✅ Admin đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}**, KDA ${kill}/${death}/${assist} (${kda.toFixed(2)}) cho <@${targetUser.id}> trong ${room.label}.`,
@@ -1683,7 +1695,7 @@ async function handleSlashCommand(interaction) {
 
     for (let i = 1; i <= needed; i++) {
       const fakeId = `9${Date.now()}${i}`.slice(0, 18);
-      room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true });
+      room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true, isBot: true });
     }
 
     const channel = interaction.channel;
@@ -1737,7 +1749,7 @@ async function handleSlashCommand(interaction) {
 
     for (let i = 1; i <= needed; i++) {
       const fakeId = `9${Date.now()}${i}`.slice(0, 18);
-      room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true });
+      room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true, isBot: true });
     }
 
     const channel = interaction.channel;
@@ -1794,7 +1806,7 @@ async function handleSlashCommand(interaction) {
 
     for (let i = 1; i <= needed; i++) {
       const fakeId = `9${Date.now()}${i}`.slice(0, 18);
-      room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true });
+      room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true, isBot: true });
     }
 
     const channel = interaction.channel;
@@ -2239,51 +2251,7 @@ async function handleModalSubmit(interaction) {
     return interaction.editReply({ content: '❌ Không thể lưu kết quả (session có thể đã hết hạn).' });
   }
 
-  const allPlayers = session.players.map(([id]) => id);
-  const submittedUsers = Array.from(session.resultMap.keys());
-  if (allPlayers.every(id => submittedUsers.includes(id))) {
-    const finalSession = rankSessions.finalizeSession(session.id);
-    if (finalSession) {
-      const eloUpdates = [];
-      for (const [userId, resultData] of finalSession.resultMap) {
-        const userEloObj = getElo(userId);
-        const userElo = userEloObj.elo ?? config.RANK_DEFAULT_ELO;
-        const opponentIds = allPlayers.filter(id => id !== userId);
-        const opponentElos = opponentIds.map(id => {
-          const e = getElo(id).elo;
-          return e === null ? config.RANK_DEFAULT_ELO : e;
-        });
-        const userRankIndex = userEloObj.rankIndex || 0;
-        const newElo = calculateNewElo(userElo, opponentElos, resultData.result, resultData.kda, userRankIndex);
-        updateElo(userId, newElo);
-        const updatedData = getElo(userId);
-        eloStore.upsertElo(userId, updatedData)
-          .then(() => console.log(`✅ Modal: đã cập nhật ELO cho ${userId} lên Supabase: ${newElo}`))
-          .catch((err) => console.error(`❌ Modal: lỗi upsert ELO cho ${userId}:`, err));
-        eloUpdates.push({
-          userId,
-          oldElo: userElo,
-          newElo,
-          result: resultData.result,
-          kda: resultData.kda,
-        });
-      }
-      persistence.saveState(rooms, eloData);
-
-      const resultChannelId = process.env.RANK_RESULT_CHANNEL_ID;
-      if (resultChannelId) {
-        const resultChannel = await client.channels.fetch(resultChannelId).catch(() => null);
-        if (resultChannel) {
-          let msg = `📊 **${room.label} (${roomId})** - KẾT QUẢ ELO (đã điều chỉnh KDA):\n`;
-          for (const upd of eloUpdates) {
-            const rank = getElo(upd.userId).rank;
-            msg += `<@${upd.userId}>: ${upd.oldElo} → ${upd.newElo} (${upd.result}) | KDA: ${upd.kda.toFixed(2)} | Rank: ${rank}\n`;
-          }
-          await resultChannel.send(msg).catch(() => {});
-        }
-      }
-    }
-  }
+  await finalizeRankSessionIfReady(session, room, roomId, kdaMap);
 
   persistence.saveState(rooms, eloData);
 
