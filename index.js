@@ -65,6 +65,9 @@ const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows, roo
 const persistence = require('./src/persistence');
 const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 
+// ===== KHỞI TẠO CLIENT =====
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+
 // ===== IMAGE HISTORY =====
 const HISTORY_FILE = path.join(__dirname, 'data', 'image-history.json');
 
@@ -588,6 +591,7 @@ async function tryRevealCode(room, channel) {
 client.once('ready', async () => {
   console.log(`Đã đăng nhập với tên ${client.user.tag}`);
 
+  // Khôi phục state cho các phòng đang có
   for (const room of getAllRooms()) {
     if (room.players.size === 0 || !room.panelChannelId) continue;
     const channel = await client.channels.fetch(room.panelChannelId).catch(() => null);
@@ -2174,7 +2178,7 @@ async function handleButton(interaction) {
     });
   }
 
-  // Nút "Gửi kết quả" trên panel rank
+  // Nút "Gửi kết quả" trên panel rank – hướng dẫn dùng lệnh với file đính kèm
   if (customId.startsWith('submit_result_')) {
     const roomId = customId.replace('submit_result_', '');
     const room = getRoom(roomId);
