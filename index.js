@@ -68,6 +68,10 @@ const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 // ===== KHỞI TẠO CLIENT =====
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+// ===== GỌI KEEPALIVE =====
+startKeepAliveServer();
+startSelfPing();
+
 // ===== IMAGE HISTORY =====
 const HISTORY_FILE = path.join(__dirname, 'data', 'image-history.json');
 
@@ -591,7 +595,7 @@ async function tryRevealCode(room, channel) {
 client.once('ready', async () => {
   console.log(`Đã đăng nhập với tên ${client.user.tag}`);
 
-  // Khôi phục state cho các phòng đang có
+  // Khôi phục state và timer cho các phòng đang có
   for (const room of getAllRooms()) {
     if (room.players.size === 0 || !room.panelChannelId) continue;
     const channel = await client.channels.fetch(room.panelChannelId).catch(() => null);
@@ -656,11 +660,42 @@ client.once('ready', async () => {
     await renderRoom(room, channel);
   }
 
+  // ===== TỰ ĐỘNG TẠO LẠI PANEL CHO TẤT CẢ PHÒNG (SAU KHI DEPLOY) =====
+  console.log('🔄 Đang tạo lại panel cho tất cả phòng đang hoạt động...');
+
+  for (const room of getAllRooms()) {
+    if (room.hidden) continue; // bỏ qua phòng ẩn
+    if (room.players.size === 0 && room.status === 'waiting') continue; // bỏ qua phòng trống chưa có ai
+
+    const channel = room.panelChannelId ? await client.channels.fetch(room.panelChannelId).catch(() => null) : null;
+    if (!channel) continue;
+
+    // Xóa panel cũ nếu có
+    if (room.panelMessageId) {
+      try {
+        const oldMsg = await channel.messages.fetch(room.panelMessageId).catch(() => null);
+        if (oldMsg) await oldMsg.delete().catch(() => {});
+      } catch (_) {}
+    }
+
+    // Gửi panel mới
+    const embed = roomEmbed(room);
+    const rowsUi = roomActionRows(room);
+    const newMsg = await channel.send({ embeds: [embed], components: rowsUi }).catch(() => null);
+    if (newMsg) {
+      room.panelMessageId = newMsg.id;
+      room.panelChannelId = channel.id;
+      persistence.saveState(rooms, eloData);
+      console.log(`✅ Đã tạo lại panel cho ${room.label}`);
+    }
+  }
+  console.log('✅ Hoàn tất tạo lại panel.');
+
   // ===== BẮT ĐẦU TỰ ĐỘNG THÔNG BÁO THEO GIỜ =====
   await sendScheduledAnnounce();
   scheduledInterval = setInterval(async () => {
     await sendScheduledAnnounce();
-  }, 60 * 1000); // Mỗi phút kiểm tra 1 lần
+  }, 60 * 1000);
   console.log('✅ Đã bật thông báo tự động từ 20:00 đến 22:00, mỗi 30 phút.');
 });
 
@@ -2573,10 +2608,6 @@ async function giveCode(interaction, roomId) {
     ephemeral: true,
   });
 }
-
-// ===== KEEP-ALIVE HTTP SERVER (để Render nhận diện port đang mở) =====
-startKeepAliveServer();
-startSelfPing();
 
 // ===== LOGIN =====
 client.login(config.TOKEN)
