@@ -4,7 +4,6 @@ const rooms = new Map();
 const hiddenRooms = new Map();
 const eloData = new Map();
 
-// ===== ELO FUNCTIONS =====
 function getElo(userId) {
   if (!eloData.has(userId)) {
     return { elo: null, rank: 'Unranked', rankIndex: 0, ign: null };
@@ -77,9 +76,7 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
   return Math.max(0, Math.min(3000, newElo));
 }
 
-function clearElo(userId) { return eloData.delete(userId); }
-
-// ===== ROOM BUILDERS =====
+// ===== ROOM FUNCTIONS =====
 function buildInitialRoom(mode, index) {
   return {
     id: `${mode}-${index}`,
@@ -162,14 +159,9 @@ function restoreEloData(savedEloMap) {
   return eloData;
 }
 
-// ===== ROOM ACCESS =====
+function clearElo(userId) { return eloData.delete(userId); }
+
 function getRoom(roomId) { return rooms.get(roomId) || hiddenRooms.get(roomId); }
-function getAllRooms() { return Array.from(rooms.values()); }
-function getRoomsByMode(mode) { return getAllRooms().filter(r => r.mode === mode); }
-function getAllNormalRooms() { return getAllRooms().filter(r => !r.isRank); }
-function getNormalRoomsByMode(mode) { return getAllNormalRooms().filter(r => r.mode === mode); }
-function getAllRankRooms() { return getAllRooms().filter(r => r.isRank); }
-function getRankRoomsByMode(mode) { return getAllRankRooms().filter(r => r.mode === mode); }
 
 function ensureRoom(mode, index) {
   const id = `${mode}-${index}`;
@@ -210,7 +202,14 @@ function removeExtraRoom(roomId) {
   return { ok: true, room };
 }
 
-// ===== HIDDEN ROOMS =====
+function getAllRooms() { return Array.from(rooms.values()); }
+function getRoomsByMode(mode) { return getAllRooms().filter(r => r.mode === mode); }
+
+function getAllNormalRooms() { return getAllRooms().filter(r => !r.isRank); }
+function getNormalRoomsByMode(mode) { return getAllNormalRooms().filter(r => r.mode === mode); }
+function getAllRankRooms() { return getAllRooms().filter(r => r.isRank); }
+function getRankRoomsByMode(mode) { return getAllRankRooms().filter(r => r.mode === mode); }
+
 function createHiddenRoom(mode) {
   const room = buildInitialRoom(mode, 0);
   room.id = `${mode}-an-${Date.now()}`;
@@ -229,7 +228,6 @@ function deleteHiddenRoom(roomId) {
   return !!room;
 }
 
-// ===== RANK ROOMS =====
 function buildRankRoom(mode, index) {
   const room = buildInitialRoom(mode, index);
   room.id = `${mode}-rank-${index}`;
@@ -270,7 +268,6 @@ function removeRankRoom(roomId) {
   return { ok: true, room };
 }
 
-// ===== UTILITY =====
 function findRoomOfUser(userId) {
   for (const room of rooms.values()) if (room.players.has(userId)) return room;
   for (const room of hiddenRooms.values()) if (room.players.has(userId)) return room;
@@ -359,71 +356,79 @@ function formatPersonalCode(room, userId) {
   return `${room.code}-${player.username}`;
 }
 
-// =============================================================
-// ===== OCR: TỐI ƯU BẮT KDA CHÍNH XÁC (XỬ LÝ LỖI OCR & XUỐNG DÒNG) =====
-// =============================================================
+// ============================================================
+// ===== HÀM OCR CHÍNH XÁC – CHỈ LẤY KDA PHÍA SAU TÊN =======
+// ============================================================
 function extractAllKDAResult(text, room) {
   const resultMap = new Map();
   const players = Array.from(room.players.entries());
 
-  console.log('📝 OCR Text gốc:', text);
+  console.log('📝 OCR Text:', text);
   console.log('👥 Players:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
 
-  // Chuẩn hóa OCR: sửa các ký tự OCR dễ đọc nhầm nhầm thành dấu /
-  const normalizedText = text.replace(/(\d+)\s*[lI|]\s*(\d+)\s*[lI|]\s*(\d+)/g, '$1/$2/$3');
+  // Lấy tất cả KDA và vị trí
+  const kdaList = [];
+  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
+  let match;
+  while ((match = kdaRegex.exec(text)) !== null) {
+    kdaList.push({
+      kill: parseInt(match[1], 10),
+      death: parseInt(match[2], 10),
+      assist: parseInt(match[3], 10),
+      index: match.index,
+      used: false,
+    });
+  }
+
+  // Sắp xếp KDA theo vị trí
+  kdaList.sort((a, b) => a.index - b.index);
 
   for (const [userId, playerData] of players) {
     const eloObj = getElo(userId);
     const searchName = eloObj.ign || playerData.username;
     console.log(`🔎 Tìm IGN: "${searchName}"`);
 
-    const escapedName = searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-    // 1. Tìm KDA ngay sau tên IGN trong phạm vi 100 ký tự (cho phép xuống dòng)
-    const exactRegex = new RegExp(`(?:[a-zA-Z0-9_-]+_)?${escapedName}[\\s\\S]{0,100}?(\\d+)\\s*\\/\\s*(\\d+)\\s*\\/\\s*(\\d+)`, 'i');
-    let match = normalizedText.match(exactRegex);
-
-    if (match) {
-      const kdaObj = {
-        kill: parseInt(match[1], 10),
-        death: parseInt(match[2], 10),
-        assist: parseInt(match[3], 10),
-      };
-      resultMap.set(userId, kdaObj);
-      console.log(`✅ Map KDA chính xác cho ${searchName}: ${kdaObj.kill}/${kdaObj.death}/${kdaObj.assist}`);
+    // Tìm vị trí tên
+    const nameRegex = new RegExp(searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const nameMatch = text.match(nameRegex);
+    if (!nameMatch) {
+      console.warn(`⚠️ Không tìm thấy tên "${searchName}" trong OCR.`);
       continue;
     }
 
-    // 2. Fallback: Lấy KDA đầu tiên tính từ vị trí tên IGN trong toàn bộ văn bản
-    console.warn(`⚠️ Không thấy KDA sát tên "${searchName}", thử fallback...`);
-    const namePos = normalizedText.toLowerCase().indexOf(searchName.toLowerCase());
+    const nameIndex = nameMatch.index;
+    let best = null;
+    let bestDist = Infinity;
 
-    if (namePos !== -1) {
-      const textAfterName = normalizedText.slice(namePos);
-      const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/;
-      const fallbackMatch = textAfterName.match(kdaRegex);
-
-      if (fallbackMatch) {
-        const kdaObj = {
-          kill: parseInt(fallbackMatch[1], 10),
-          death: parseInt(fallbackMatch[2], 10),
-          assist: parseInt(fallbackMatch[3], 10),
-        };
-        resultMap.set(userId, kdaObj);
-        console.log(`✅ Map KDA (Fallback) cho ${searchName}: ${kdaObj.kill}/${kdaObj.death}/${kdaObj.assist}`);
-      } else {
-        console.warn(`⚠️ Vẫn không tìm thấy KDA cho ${searchName}`);
+    // Chỉ tìm KDA có vị trí lớn hơn tên (phía sau)
+    for (const kda of kdaList) {
+      if (kda.used) continue;
+      if (kda.index > nameIndex) {
+        const dist = kda.index - nameIndex;
+        if (dist < bestDist && dist < 300) {
+          bestDist = dist;
+          best = kda;
+        }
       }
+    }
+
+    if (best) {
+      best.used = true;
+      resultMap.set(userId, {
+        kill: best.kill,
+        death: best.death,
+        assist: best.assist,
+      });
+      console.log(`✅ Map KDA cho ${searchName}: ${best.kill}/${best.death}/${best.assist} (cách ${bestDist} ký tự, phía sau)`);
     } else {
-      console.warn(`⚠️ Không tìm thấy IGN "${searchName}" trong kết quả OCR.`);
+      console.warn(`⚠️ Không tìm thấy KDA phía sau tên "${searchName}" trong phạm vi 300 ký tự.`);
     }
   }
 
-  console.log('📊 Kết quả map KDA cuối cùng:', Array.from(resultMap.entries()));
+  console.log('📊 Kết quả map KDA:', Array.from(resultMap.entries()));
   return resultMap;
 }
 
-// ===== EXPORTS =====
 module.exports = {
   rooms,
   eloData,
