@@ -21,6 +21,15 @@ const {
 } = require('discord.js');
 
 const config = require('./config');
+// ===== COOLDOWN CHO NÚT BẤM =====
+const cooldowns = new Map();
+function checkCooldown(userId) {
+  const now = Date.now();
+  const last = cooldowns.get(userId) || 0;
+  if (now - last < config.ACTION_COOLDOWN_MS) return false;
+  cooldowns.set(userId, now);
+  return true;
+}
 const {
   rooms,
   initRooms,
