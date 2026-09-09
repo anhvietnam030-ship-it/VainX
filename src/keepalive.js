@@ -1,3 +1,4 @@
+// src/keepalive.js
 const http = require('http');
 const https = require('https');
 const config = require('../config');
@@ -12,7 +13,6 @@ function iosPlayRedirectHtml() {
 <body>
   <p>Đang mở Vainglory...</p>
   <script>
-    // iOS: thử mở thẳng app đã cài trước, App Store sẽ tự hiện nút "OPEN" nếu đã cài sẵn
     window.location.href = ${JSON.stringify(config.APP_URL_SCHEME)};
     setTimeout(function () {
       window.location.href = ${JSON.stringify(config.IOS_STORE_URL)};
@@ -22,10 +22,6 @@ function iosPlayRedirectHtml() {
 </html>`;
 }
 
-// Render (và nhiều nền tảng "Web Service" khác) yêu cầu app phải mở 1 cổng HTTP
-// để nó dò xem app còn sống hay không. Bot Discord bản thân không cần cổng nào cả
-// (chỉ kết nối WebSocket ra ngoài), nên nếu không có đoạn này Render sẽ báo
-// "port scan timeout" rồi coi deploy là thất bại.
 function startKeepAliveServer() {
   const port = process.env.PORT || 3000;
 
@@ -38,8 +34,6 @@ function startKeepAliveServer() {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(iosPlayRedirectHtml());
       } else {
-        // Android / PC / bất kỳ máy nào khác: redirect thẳng ở tầng server, không qua trang trung
-        // gian nào, không thử mở app.
         res.writeHead(302, { Location: config.ANDROID_STORE_URL });
         res.end();
       }
@@ -53,16 +47,18 @@ function startKeepAliveServer() {
     console.log(`Keep-alive HTTP server dang lang nghe tren cong ${port} (chi de qua port-check, khong dung de goi API).`);
   });
 
+  // Bắt lỗi EADDRINUSE để log rõ hơn
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`❌ Cổng ${port} đang bị chiếm. Vui lòng kiểm tra hoặc đổi PORT trong environment.`);
+    } else {
+      console.error('❌ Lỗi server keep-alive:', err);
+    }
+  });
+
   return server;
 }
 
-// Render free Web Service tự "ngu" (spin down) sau 15 phut khong co request nao goi vao.
-// Neu SELF_PING_URL duoc khai (hoac Render tu dien RENDER_EXTERNAL_URL), bot se tu goi
-// vao chinh URL public cua no moi 10 phut de tinh la "co traffic", tranh bi ngu.
-//
-// LUU Y: day la meo lach, KHONG phai giai phap chinh thuc Render ho tro. Cach chac chan
-// 100% van la nang len goi Starter tra phi ($7/thang, khong bi spin-down) hoac dung them
-// mot dich vu ping ngoai (UptimeRobot, cron-job.org...) goi vao URL nay moi 5-10 phut.
 function startSelfPing() {
   const url = process.env.SELF_PING_URL || process.env.RENDER_EXTERNAL_URL;
   if (!url) {
@@ -70,11 +66,11 @@ function startSelfPing() {
     return;
   }
 
-  const INTERVAL_MS = 10 * 60 * 1000; // 10 phut/lan, luon < 15 phut Render cho phep
+  const INTERVAL_MS = 10 * 60 * 1000;
   setInterval(() => {
     https
       .get(url, (res) => {
-        res.resume(); // xa data, tranh ro ri bo nho
+        res.resume();
         console.log(`Self-ping ${url} -> status ${res.statusCode}`);
       })
       .on('error', (err) => console.error('Self-ping loi:', err.message));
