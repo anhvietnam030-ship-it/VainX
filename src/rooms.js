@@ -357,75 +357,192 @@ function formatPersonalCode(room, userId) {
 }
 
 // ============================================================
-// ===== HÀM OCR CHÍNH XÁC – CHỈ LẤY KDA PHÍA SAU TÊN =======
+// ===== HÀM OCR MAP KDA - ƯU TIÊN CÙNG DÒNG / TỌA ĐỘ ========
 // ============================================================
-function extractAllKDAResult(text, room) {
+//
+// `text` vẫn được giữ để tương thích code cũ.
+// `ocrOverlay` là TextOverlay.Lines từ OCR.space (nếu có).
+//
+// - Có overlay: map theo cùng dòng + KDA nằm SAU IGN.
+// - Không có overlay: chỉ map KDA trên CÙNG DÒNG ParsedText.
+// - Không còn fallback lấy KDA gần nhất trong toàn văn bản.
+// ============================================================
+function extractAllKDAResult(text, room, ocrOverlay = null) {
   const resultMap = new Map();
   const players = Array.from(room.players.entries());
 
   console.log('📝 OCR Text:', text);
-  console.log('👥 Players:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
+  console.log(
+    '👥 Players:',
+    players.map(([id, p]) => `${p.username} (${id})`).join(', ')
+  );
 
-  // Lấy tất cả KDA và vị trí
-  const kdaList = [];
-  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
-  let match;
-  while ((match = kdaRegex.exec(text)) !== null) {
-    kdaList.push({
+  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/;
+
+  function parseKDA(value) {
+    const match = String(value || '').match(kdaRegex);
+    if (!match) return null;
+
+    return {
       kill: parseInt(match[1], 10),
       death: parseInt(match[2], 10),
       assist: parseInt(match[3], 10),
-      index: match.index,
-      used: false,
-    });
+    };
   }
 
-  // Sắp xếp KDA theo vị trí
-  kdaList.sort((a, b) => a.index - b.index);
+  let overlayLines = [];
+
+  // OCR.space TextOverlay.Lines[].Words[]
+  if (Array.isArray(ocrOverlay?.Lines)) {
+    overlayLines = ocrOverlay.Lines
+      .map((line) => {
+        const words = Array.isArray(line.Words) ? line.Words : [];
+
+        return {
+          words: words
+            .map((w) => ({
+              text: String(w.WordText || w.Text || '').trim(),
+              left: Number(w.Left) || 0,
+              top: Number(w.Top) || 0,
+              width: Number(w.Width) || 0,
+              height: Number(w.Height) || 0,
+            }))
+            .filter((w) => w.text),
+        };
+      })
+      .filter((line) => line.words.length > 0);
+  }
 
   for (const [userId, playerData] of players) {
     const eloObj = getElo(userId);
-    const searchName = eloObj.ign || playerData.username;
+    const searchName = String(
+      eloObj.ign || playerData.username || ''
+    ).trim();
+
     console.log(`🔎 Tìm IGN: "${searchName}"`);
 
-    // Tìm vị trí tên
-    const nameRegex = new RegExp(searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    const nameMatch = text.match(nameRegex);
-    if (!nameMatch) {
-      console.warn(`⚠️ Không tìm thấy tên "${searchName}" trong OCR.`);
+    if (!searchName) {
+      console.warn(
+        `⚠️ User ${userId} không có IGN/username để tìm.`
+      );
       continue;
     }
 
-    const nameIndex = nameMatch.index;
-    let best = null;
-    let bestDist = Infinity;
+    const escapedName = searchName.replace(
+      /[.*+?^${}()|[\]\\]/g,
+      '\\$&'
+    );
 
-    // Chỉ tìm KDA có vị trí lớn hơn tên (phía sau)
-    for (const kda of kdaList) {
-      if (kda.used) continue;
-      if (kda.index > nameIndex) {
-        const dist = kda.index - nameIndex;
-        if (dist < bestDist && dist < 300) {
-          bestDist = dist;
-          best = kda;
+    const nameRegex = new RegExp(escapedName, 'i');
+
+    let found = null;
+
+    // ============================================================
+    // 1. CÓ TEXT OVERLAY -> MAP BẰNG TỌA ĐỘ
+    // ============================================================
+    if (overlayLines.length > 0) {
+      for (const line of overlayLines) {
+        const words = line.words;
+
+        const nameWordIndex = words.findIndex((w) =>
+          nameRegex.test(w.text)
+        );
+
+        if (nameWordIndex === -1) continue;
+
+        const nameWord = words[nameWordIndex];
+        const nameRight = nameWord.left + nameWord.width;
+
+        // Chỉ nhận KDA nằm bên phải IGN trên CÙNG OCR LINE.
+        const candidates = words
+          .map((word, index) => ({
+            ...word,
+            index,
+            kda: parseKDA(word.text),
+          }))
+          .filter(
+            (word) =>
+              word.kda &&
+              word.index > nameWordIndex &&
+              word.left >= nameRight - 5
+          )
+          .sort((a, b) => a.left - b.left);
+
+        if (candidates.length > 0) {
+          const candidate = candidates[0];
+
+          found = {
+            ...candidate.kda,
+            source: 'overlay-same-line',
+          };
+
+          console.log(
+            `✅ Map KDA cho ${searchName}: ` +
+              `${found.kill}/${found.death}/${found.assist} ` +
+              `(OCR tọa độ, cùng dòng, phía sau IGN)`
+          );
+
+          break;
         }
       }
     }
 
-    if (best) {
-      best.used = true;
+    // ============================================================
+    // 2. KHÔNG CÓ OVERLAY -> CHỈ CHẤP NHẬN CÙNG DÒNG TEXT
+    // ============================================================
+    if (!found) {
+      const lines = String(text || '').split(/\r?\n/);
+
+      for (const line of lines) {
+        const nameMatch = line.match(nameRegex);
+
+        if (!nameMatch) continue;
+
+        const afterName = line.slice(
+          nameMatch.index + nameMatch[0].length
+        );
+
+        const kda = parseKDA(afterName);
+
+        if (kda) {
+          found = {
+            ...kda,
+            source: 'parsedtext-same-line',
+          };
+
+          console.log(
+            `✅ Map KDA cho ${searchName}: ` +
+              `${found.kill}/${found.death}/${found.assist} ` +
+              `(ParsedText cùng dòng, phía sau IGN)`
+          );
+
+          break;
+        }
+      }
+    }
+
+    // ============================================================
+    // 3. KHÔNG CHẮC -> KHÔNG MAP
+    // ============================================================
+    if (found) {
       resultMap.set(userId, {
-        kill: best.kill,
-        death: best.death,
-        assist: best.assist,
+        kill: found.kill,
+        death: found.death,
+        assist: found.assist,
       });
-      console.log(`✅ Map KDA cho ${searchName}: ${best.kill}/${best.death}/${best.assist} (cách ${bestDist} ký tự, phía sau)`);
     } else {
-      console.warn(`⚠️ Không tìm thấy KDA phía sau tên "${searchName}" trong phạm vi 300 ký tự.`);
+      console.warn(
+        `⚠️ Không map KDA cho "${searchName}". ` +
+          `Không tìm thấy KDA chắc chắn nằm phía sau IGN trên cùng dòng.`
+      );
     }
   }
 
-  console.log('📊 Kết quả map KDA:', Array.from(resultMap.entries()));
+  console.log(
+    '📊 Kết quả map KDA:',
+    Array.from(resultMap.entries())
+  );
+
   return resultMap;
 }
 
