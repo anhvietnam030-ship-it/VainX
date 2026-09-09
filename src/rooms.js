@@ -128,7 +128,7 @@ function initRooms() {
 function restoreRooms(savedRooms) {
   rooms.clear();
   for (const saved of savedRooms) {
-    if (!saved || !saved.mode || !saved.index) continue; // bỏ qua bản ghi cũ/thiếu dữ liệu
+    if (!saved || !saved.mode || !saved.index) continue;
 
     const room = saved.isRank
       ? buildRankRoom(saved.mode, saved.index)
@@ -158,7 +158,7 @@ function restoreRooms(savedRooms) {
     rooms.set(room.id, room);
   }
 
-  // Đảm bảo đủ số phòng thường mặc định theo config, phòng nào chưa có (vd. state cũ/hỏng) thì tạo mới
+  // Đảm bảo đủ số phòng thường mặc định theo config
   for (const mode of Object.keys(config.CAPACITY)) {
     for (let i = 1; i <= config.ROOMS_PER_MODE; i++) {
       const id = `${mode}-${i}`;
@@ -179,7 +179,6 @@ function restoreEloData(savedEloMap) {
   return eloData;
 }
 
-// Xóa hoàn toàn ELO của 1 người chơi (đưa về Unranked, dùng cho lệnh admin /xoa-elo)
 function clearElo(userId) {
   return eloData.delete(userId);
 }
@@ -417,74 +416,91 @@ function formatPersonalCode(room, userId) {
   return `${room.code}-${player.username}`;
 }
 
-// === OCR HELPER: extract all KDA from OCR text ===
+// =============================================
+// ===== OCR HELPER – SỬA THEO DÒNG ===========
+// =============================================
 function extractAllKDAResult(text, room) {
   const resultMap = new Map();
   const players = Array.from(room.players.entries());
 
-  // Log toàn bộ text OCR để kiểm tra
   console.log('📝 OCR Text:', text);
-  console.log('👥 Players trong phòng:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
+  console.log('👥 Players:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
 
-  // Tìm tất cả KDA trong text
-  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
-  const kdaList = [];
-  let match;
-  while ((match = kdaRegex.exec(text)) !== null) {
-    kdaList.push({
-      kill: parseInt(match[1], 10),
-      death: parseInt(match[2], 10),
-      assist: parseInt(match[3], 10),
-      index: match.index,
-    });
-  }
-  console.log(`🔍 Tìm thấy ${kdaList.length} cụm KDA trong OCR.`);
+  // Tách dòng, loại bỏ dòng rỗng
+  const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+  console.log(`📄 Tổng số dòng: ${lines.length}`);
 
-  if (kdaList.length === 0) {
-    console.warn('⚠️ Không tìm thấy bất kỳ KDA nào trong text.');
-    return resultMap;
-  }
-
-  // Với mỗi người chơi, tìm KDA gần tên họ nhất
+  // Với mỗi người chơi, tìm dòng chứa tên
   for (const [userId, playerData] of players) {
     const eloObj = getElo(userId);
     const searchName = eloObj.ign || playerData.username;
-    console.log(`🔎 Tìm IGN: "${searchName}" cho user ${userId}`);
+    console.log(`🔎 Tìm IGN: "${searchName}"`);
 
-    // Tìm vị trí tên trong text (không phân biệt hoa thường)
+    // Tìm dòng nào chứa tên (không phân biệt hoa thường)
     const nameRegex = new RegExp(searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    const nameMatch = text.match(nameRegex);
-    if (!nameMatch) {
-      console.warn(`⚠️ Không tìm thấy tên "${searchName}" trong OCR.`);
+    let foundLine = null;
+    let foundIndex = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (nameRegex.test(lines[i])) {
+        foundLine = lines[i];
+        foundIndex = i;
+        break;
+      }
+    }
+
+    if (!foundLine) {
+      console.warn(`⚠️ Không tìm thấy dòng nào chứa tên "${searchName}"`);
       continue;
     }
 
-    const nameIndex = nameMatch.index;
-    console.log(`📍 Tìm thấy "${searchName}" tại vị trí ${nameIndex}`);
+    // Tìm KDA trên dòng đó (ưu tiên)
+    const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
+    const match = kdaRegex.exec(foundLine);
+    if (match) {
+      const kill = parseInt(match[1], 10);
+      const death = parseInt(match[2], 10);
+      const assist = parseInt(match[3], 10);
+      resultMap.set(userId, { kill, death, assist });
+      console.log(`✅ Map KDA cho ${searchName}: ${kill}/${death}/${assist} (trên dòng: "${foundLine}")`);
+      continue;
+    }
 
-    // Chọn KDA gần tên nhất (trong vòng 300 ký tự)
+    // Nếu không có KDA trên cùng dòng, thử tìm KDA gần nhất (fallback – phạm vi 200 ký tự)
+    console.warn(`⚠️ Không tìm thấy KDA trên dòng của "${searchName}", thử tìm gần nhất...`);
+    const nameIndex = foundLine ? text.indexOf(foundLine) : -1;
+    if (nameIndex === -1) continue;
+
+    // Tìm tất cả KDA trong toàn văn bản (đã có từ trước, nhưng ta dùng lại)
+    const allKda = [];
+    let m;
+    const globalKdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
+    while ((m = globalKdaRegex.exec(text)) !== null) {
+      allKda.push({
+        kill: parseInt(m[1], 10),
+        death: parseInt(m[2], 10),
+        assist: parseInt(m[3], 10),
+        index: m.index,
+      });
+    }
+
     let best = null;
     let bestDist = Infinity;
-    for (const kda of kdaList) {
+    for (const kda of allKda) {
       const dist = Math.abs(kda.index - nameIndex);
-      if (dist < bestDist && dist < 300) {
+      if (dist < bestDist && dist < 200) {
         bestDist = dist;
         best = kda;
       }
     }
     if (best) {
-      resultMap.set(userId, {
-        kill: best.kill,
-        death: best.death,
-        assist: best.assist,
-      });
-      console.log(`✅ Map KDA cho ${searchName}: ${best.kill}/${best.death}/${best.assist} (cách ${bestDist} ký tự)`);
+      resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
+      console.log(`✅ Map KDA (fallback) cho ${searchName}: ${best.kill}/${best.death}/${best.assist} (cách ${bestDist} ký tự)`);
     } else {
-      console.warn(`⚠️ Không tìm thấy KDA gần tên "${searchName}" trong phạm vi 300 ký tự.`);
+      console.warn(`⚠️ Không tìm thấy KDA gần tên "${searchName}" trong phạm vi 200 ký tự.`);
     }
   }
 
-  console.log(`📊 Kết quả map KDA:`, Array.from(resultMap.entries()));
+  console.log('📊 Kết quả map KDA:', Array.from(resultMap.entries()));
   return resultMap;
 }
 
