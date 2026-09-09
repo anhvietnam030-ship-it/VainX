@@ -1,5 +1,10 @@
 require('dotenv').config();
 
+// Thư mục lưu dữ liệu bền vững. Nếu bạn gắn Persistent Disk trên Render (khuyến nghị),
+// đặt biến môi trường DATA_DIR = đúng mount path của disk đó (vd. "/data").
+// Nếu không set, sẽ dùng thư mục "data" ngay trong code -> sẽ MẤT sau mỗi lần deploy trên Render.
+const DATA_DIR = process.env.DATA_DIR || require('path').join(__dirname, 'data');
+
 module.exports = {
   // ----- DISCORD TOKEN & ID -----
   TOKEN: process.env.DISCORD_TOKEN,
@@ -12,14 +17,29 @@ module.exports = {
   LOG_CHANNEL_ID: process.env.LOG_CHANNEL_ID || null,
   ANNOUNCE_CHANNEL_ID: process.env.ANNOUNCE_CHANNEL_ID || null, // Kênh thông báo tự động
 
+  // Kênh cố định để tự động đăng lại panel phòng mỗi khi bot khởi động (không cần /setup tay nữa).
+  // Lấy ID kênh: bật Developer Mode trong Discord -> chuột phải kênh -> Copy Channel ID,
+  // rồi set các biến môi trường tương ứng trên Render (tab Environment).
+  PANEL_CHANNELS: {
+    normal: {
+      '3v3': process.env.PANEL_CHANNEL_3V3 || null,
+      '5v5': process.env.PANEL_CHANNEL_5V5 || null,
+    },
+    rank: {
+      '3v3': process.env.PANEL_CHANNEL_RANK_3V3 || null,
+      '5v5': process.env.PANEL_CHANNEL_RANK_5V5 || null,
+    },
+  },
+
   CAPACITY: {
     '3v3': 6,
     '5v5': 10,
   },
 
-  ROOMS_PER_MODE: 0,              // Không tạo sẵn phòng mặc định
-  MAX_ROOMS_PER_MODE: 10,         // Số phòng thường tối đa mỗi chế độ
-  MAX_RANK_ROOMS_PER_MODE: 10,    // Số phòng rank tối đa mỗi chế độ
+  ROOMS_PER_MODE: 2,               // Số phòng thường mặc định mỗi chế độ (khi chưa có state cũ)
+  DEFAULT_RANK_ROOMS_PER_MODE: 2,  // Số phòng rank mặc định mỗi chế độ (khi chưa có state cũ)
+  MAX_ROOMS_PER_MODE: 10,          // Số phòng thường tối đa mỗi chế độ
+  MAX_RANK_ROOMS_PER_MODE: 10,     // Số phòng rank tối đa mỗi chế độ
 
   DEFAULT_ROOM_TIMEOUT_MS: 60 * 60 * 1000,  // 1 giờ
   READY_COUNTDOWN_MS: 2 * 60 * 1000,        // 2 phút
@@ -30,7 +50,7 @@ module.exports = {
   ENFORCE_TEAM_BALANCE: false,
   ACTION_COOLDOWN_MS: 2000,
 
-  STATE_FILE: require('path').join(__dirname, 'data', 'rooms-state.json'),
+  STATE_FILE: require('path').join(DATA_DIR, 'rooms-state.json'),
 
   // ----- CỬA HÀNG APP -----
   IOS_STORE_URL: 'https://apps.apple.com/us/app/vainglory/id671464704',

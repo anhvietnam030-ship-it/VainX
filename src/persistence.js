@@ -10,6 +10,8 @@ function ensureDataDir() {
 function serializeRoom(room) {
   const obj = {
     id: room.id,
+    mode: room.mode,
+    index: room.index,
     status: room.status,
     code: room.code,
     revealedAt: room.revealedAt,

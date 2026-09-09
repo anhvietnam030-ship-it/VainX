@@ -124,6 +124,61 @@ function initRooms() {
   return rooms;
 }
 
+// Dựng lại toàn bộ phòng từ state đã lưu (dùng khi khởi động lại / sau khi deploy)
+function restoreRooms(savedRooms) {
+  rooms.clear();
+  for (const saved of savedRooms) {
+    if (!saved || !saved.mode || !saved.index) continue; // bỏ qua bản ghi cũ/thiếu dữ liệu
+
+    const room = saved.isRank
+      ? buildRankRoom(saved.mode, saved.index)
+      : buildInitialRoom(saved.mode, saved.index);
+
+    room.status = saved.status || 'waiting';
+    room.code = saved.code || null;
+    room.revealedAt = saved.revealedAt || null;
+    room.firstJoinAt = saved.firstJoinAt || null;
+    room.fullAt = saved.fullAt || null;
+    room.panelChannelId = saved.panelChannelId || null;
+    room.panelMessageId = saved.panelMessageId || null;
+    room.timeoutMs = saved.timeoutMs || config.DEFAULT_ROOM_TIMEOUT_MS;
+    room.players = new Map(
+      (saved.players || []).map((p) => {
+        const { id, ...rest } = p;
+        return [id, rest];
+      })
+    );
+    room.bannedUsers = new Set(saved.bannedUsers || []);
+
+    if (room.isRank) {
+      room.resultMap = new Map(saved.resultMap || []);
+      room.resultWindowEnd = saved.resultWindowEnd || null;
+    }
+
+    rooms.set(room.id, room);
+  }
+
+  // Đảm bảo đủ số phòng thường mặc định theo config, phòng nào chưa có (vd. state cũ/hỏng) thì tạo mới
+  for (const mode of Object.keys(config.CAPACITY)) {
+    for (let i = 1; i <= config.ROOMS_PER_MODE; i++) {
+      const id = `${mode}-${i}`;
+      if (!rooms.has(id)) {
+        rooms.set(id, buildInitialRoom(mode, i));
+      }
+    }
+  }
+
+  return rooms;
+}
+
+function restoreEloData(savedEloMap) {
+  eloData.clear();
+  for (const [userId, data] of savedEloMap) {
+    eloData.set(userId, data);
+  }
+  return eloData;
+}
+
 function getRoom(roomId) {
   return rooms.get(roomId) || hiddenRooms.get(roomId);
 }
@@ -415,6 +470,8 @@ module.exports = {
   rooms,
   eloData,
   initRooms,
+  restoreRooms,
+  restoreEloData,
   getRoom,
   getAllRooms,
   getRoomsByMode,

@@ -45,6 +45,8 @@ const {
   ensureRoom,
   addRoomsToMode,
   removeExtraRoom,
+  restoreRooms,
+  restoreEloData,
   // Rank exports
   eloData,
   getElo,
@@ -63,6 +65,7 @@ const {
 } = require('./src/rooms');
 const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows, roomActionRowsEN } = require('./src/ui');
 const persistence = require('./src/persistence');
+const eloStore = require('./src/eloStore');
 const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 
 // ===== KHỞI TẠO CLIENT =====
@@ -168,7 +171,7 @@ function bi(vi, en) {
   return `${vi}\n🌐 ${en}`;
 }
 
-// ===== ANNOUNCEMENT FUNCTIONS =====
+// ===== ANNOUNCEMENT FUNCTIONS (khi có người join phòng) =====
 const ANNOUNCE_CHANNEL_ID = config.ANNOUNCE_CHANNEL_ID;
 
 async function startAnnouncement(room) {
@@ -205,7 +208,7 @@ function stopAnnouncement(room) {
   }
 }
 
-// ===== TỰ ĐỘNG THÔNG BÁO THEO GIỜ =====
+// ===== TỰ ĐỘNG THÔNG BÁO THEO GIỜ (20:00-22:00, mỗi 30 phút) =====
 let lastScheduledAnnounce = 0;
 let scheduledInterval = null;
 
@@ -489,6 +492,7 @@ async function handleResultWindowEnd(room) {
     const kda = resultData.kda || ((resultData.kill + resultData.assist) / (resultData.death || 1));
     const newElo = calculateNewElo(userElo, opponentElos, resultData.result, kda, userRankIndex);
     updateElo(userId, newElo);
+    eloStore.upsertElo(userId, getElo(userId)).catch(() => {});
     eloUpdates.push({
       userId,
       oldElo: userElo === null ? config.RANK_DEFAULT_ELO : userElo,
@@ -587,11 +591,55 @@ async function tryRevealCode(room, channel) {
   }
 }
 
+// ===== TỰ ĐỘNG DỌN PANEL CŨ & ĐĂNG LẠI PANEL MỚI (thay cho việc admin phải gõ /setup tay) =====
+async function repostPanelsForChannel(channelId, roomList) {
+  if (!channelId || roomList.length === 0) return;
+  const channel = await client.channels.fetch(channelId).catch(() => null);
+  if (!channel) {
+    console.error(`❌ Không tìm thấy kênh panel với ID: ${channelId} (kiểm tra lại biến môi trường PANEL_CHANNEL_*).`);
+    return;
+  }
+
+  // Xóa panel cũ (tin nhắn của chính bot) trong kênh — panel cũ không còn hiệu lực sau khi restart.
+  try {
+    const messages = await channel.messages.fetch({ limit: 50 });
+    const botMessages = messages.filter((m) => m.author.id === client.user.id);
+    if (botMessages.size > 0) {
+      await channel.bulkDelete(botMessages, true).catch(async () => {
+        // bulkDelete lỗi nếu có tin nhắn quá 14 ngày -> xóa từng cái
+        for (const msg of botMessages.values()) {
+          await msg.delete().catch(() => {});
+        }
+      });
+    }
+  } catch (err) {
+    console.error(`⚠️ Không dọn được panel cũ trong kênh ${channelId}:`, err.message);
+  }
+
+  // Đăng panel mới cho từng phòng
+  for (const room of roomList) {
+    room.panelChannelId = null;
+    room.panelMessageId = null;
+    await renderRoom(room, channel);
+  }
+}
+
+async function autoHealPanels() {
+  for (const mode of Object.keys(config.CAPACITY)) {
+    await repostPanelsForChannel(config.PANEL_CHANNELS.normal[mode], getNormalRoomsByMode(mode));
+    await repostPanelsForChannel(config.PANEL_CHANNELS.rank[mode], getRankRoomsByMode(mode));
+  }
+  persistence.saveState(rooms, eloData);
+  console.log('✅ Đã tự động đăng lại toàn bộ panel phòng.');
+}
+
 // ===== CLIENT READY =====
 client.once('ready', async () => {
   console.log(`Đã đăng nhập với tên ${client.user.tag}`);
 
-  // 1. Khôi phục timer cho các phòng đang có
+  await autoHealPanels();
+
+  // Khôi phục state cho các phòng đang có
   for (const room of getAllRooms()) {
     if (room.players.size === 0 || !room.panelChannelId) continue;
     const channel = await client.channels.fetch(room.panelChannelId).catch(() => null);
@@ -656,45 +704,11 @@ client.once('ready', async () => {
     await renderRoom(room, channel);
   }
 
-  // ===== 2. TỰ ĐỘNG TẠO LẠI PANEL CHO TẤT CẢ PHÒNG (SAU KHI DEPLOY) =====
-  console.log('🔄 Đang tạo lại panel cho tất cả phòng đang hoạt động...');
-
-  for (const room of getAllRooms()) {
-    // Bỏ qua phòng trống và phòng ẩn
-    if (room.hidden) continue;
-    if (room.players.size === 0 && room.status === 'waiting') continue;
-
-    // Tìm kênh cũ (nếu có) hoặc dùng kênh mặc định?
-    let channel = room.panelChannelId ? await client.channels.fetch(room.panelChannelId).catch(() => null) : null;
-    // Nếu không có kênh cũ, bỏ qua (không tự tạo mới ở đâu cả)
-    if (!channel) continue;
-
-    // Xóa panel cũ nếu có
-    if (room.panelMessageId) {
-      try {
-        const oldMsg = await channel.messages.fetch(room.panelMessageId).catch(() => null);
-        if (oldMsg) await oldMsg.delete().catch(() => {});
-      } catch (_) {}
-    }
-
-    // Gửi panel mới
-    const embed = roomEmbed(room);
-    const rowsUi = roomActionRows(room);
-    const newMsg = await channel.send({ embeds: [embed], components: rowsUi }).catch(() => null);
-    if (newMsg) {
-      room.panelMessageId = newMsg.id;
-      room.panelChannelId = channel.id;
-      persistence.saveState(rooms, eloData);
-      console.log(`✅ Đã tạo lại panel cho ${room.label}`);
-    }
-  }
-  console.log('✅ Hoàn tất tạo lại panel.');
-
-  // ===== 3. BẮT ĐẦU TỰ ĐỘNG THÔNG BÁO THEO GIỜ =====
+  // ===== BẮT ĐẦU TỰ ĐỘNG THÔNG BÁO THEO GIỜ =====
   await sendScheduledAnnounce();
   scheduledInterval = setInterval(async () => {
     await sendScheduledAnnounce();
-  }, 60 * 1000);
+  }, 60 * 1000); // Mỗi phút kiểm tra 1 lần
   console.log('✅ Đã bật thông báo tự động từ 20:00 đến 22:00, mỗi 30 phút.');
 });
 
@@ -1278,6 +1292,7 @@ async function handleSlashCommand(interaction) {
     if (!result.ok) {
       return interaction.reply({ content: `❌ ${result.reason}`, ephemeral: true });
     }
+    eloStore.upsertElo(interaction.user.id, getElo(interaction.user.id)).catch(() => {});
     persistence.saveState(rooms, eloData);
     return interaction.reply({ content: `✅ Đã đăng ký IGN thành công: **${ign}**\nBot sẽ dùng IGN này để tìm KDA của bạn trong ảnh.`, ephemeral: true });
   }
@@ -2212,7 +2227,7 @@ async function handleButton(interaction) {
     });
   }
 
-  // Nút "Gửi kết quả" trên panel rank
+  // Nút "Gửi kết quả" trên panel rank – hướng dẫn dùng lệnh với file đính kèm
   if (customId.startsWith('submit_result_')) {
     const roomId = customId.replace('submit_result_', '');
     const room = getRoom(roomId);
@@ -2608,9 +2623,33 @@ async function giveCode(interaction, roomId) {
   });
 }
 
-// ===== LOGIN =====
-client.login(config.TOKEN)
-  .then(() => console.log(`=== BOT DISCORD ĐÃ ONLINE THÀNH CÔNG: ${client.user.tag} ===`))
-  .catch((err) => console.error('=== LỖI ĐĂNG NHẬP DISCORD ===', err));
+// ===== KEEP-ALIVE HTTP SERVER (để Render nhận diện port đang mở) =====
+startKeepAliveServer();
+startSelfPing();
+
+// ===== KHỞI TẠO PHÒNG + KHÔI PHỤC ELO TỪ SUPABASE (bền vững qua mọi lần deploy) =====
+async function bootstrap() {
+  initRooms();
+  const rankDefault = config.DEFAULT_RANK_ROOMS_PER_MODE || 0;
+  if (rankDefault > 0) {
+    for (const mode of Object.keys(config.CAPACITY)) {
+      addRankRoomsToMode(mode, rankDefault);
+    }
+  }
+  console.log(`ℹ️ Đã khởi tạo ${rooms.size} phòng (${rankDefault > 0 ? 'gồm cả rank' : 'chỉ phòng thường'}).`);
+
+  const eloMap = await eloStore.loadAllElo();
+  if (eloMap.size > 0) {
+    restoreEloData(eloMap);
+    console.log(`✅ Đã khôi phục elo của ${eloMap.size} người chơi từ Supabase.`);
+  } else if (!eloStore.isEnabled()) {
+    console.warn('⚠️ Supabase chưa được cấu hình — ELO sẽ KHÔNG được lưu bền vững qua deploy.');
+  }
+
+  await client.login(config.TOKEN);
+  console.log(`=== BOT DISCORD ĐÃ ONLINE THÀNH CÔNG: ${client.user.tag} ===`);
+}
+
+bootstrap().catch((err) => console.error('=== LỖI KHỞI ĐỘNG BOT ===', err));
 
 process.on('unhandledRejection', (err) => console.error('=== UNHANDLED REJECTION ===', err));
