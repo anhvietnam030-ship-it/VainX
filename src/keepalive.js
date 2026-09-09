@@ -1,4 +1,3 @@
-// src/keepalive.js
 const http = require('http');
 const https = require('https');
 const config = require('../config');
@@ -43,11 +42,11 @@ function startKeepAliveServer() {
     res.end('Vainglory Lobby Bot dang chay OK.');
   });
 
-  server.listen(port, () => {
+  // ✅ SỬA: thêm '0.0.0.0' để Render health check có thể kết nối
+  server.listen(port, '0.0.0.0', () => {
     console.log(`Keep-alive HTTP server dang lang nghe tren cong ${port} (chi de qua port-check, khong dung de goi API).`);
   });
 
-  // Bắt lỗi EADDRINUSE để log rõ hơn
   server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
       console.error(`❌ Cổng ${port} đang bị chiếm. Vui lòng kiểm tra hoặc đổi PORT trong environment.`);
