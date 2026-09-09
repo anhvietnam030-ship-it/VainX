@@ -2639,10 +2639,10 @@ async function bootstrap() {
   console.log(`ℹ️ Đã khởi tạo ${rooms.size} phòng (${rankDefault > 0 ? 'gồm cả rank' : 'chỉ phòng thường'}).`);
 
   const eloMap = await eloStore.loadAllElo();
-  if (eloMap.size > 0) {
-    restoreEloData(eloMap);
-    console.log(`✅ Đã khôi phục elo của ${eloMap.size} người chơi từ Supabase.`);
-  } else if (!eloStore.isEnabled()) {
+  if (eloStore.isEnabled()) {
+    console.log(`✅ Đã kết nối Supabase (${eloMap.size} người chơi có ELO đã lưu).`);
+    if (eloMap.size > 0) restoreEloData(eloMap);
+  } else {
     console.warn('⚠️ Supabase chưa được cấu hình — ELO sẽ KHÔNG được lưu bền vững qua deploy.');
   }
 
