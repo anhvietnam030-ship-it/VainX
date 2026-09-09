@@ -179,6 +179,18 @@ const commands = [
     .setDescription('Xóa tin nhắn của Bot (cả DM) — từng phần hoặc toàn bộ (chỉ admin)')
     .setDMPermission(true)
     .addIntegerOption(opt => opt.setName('so_luong').setDescription('Số tin nhắn (để trống = xóa TẤT CẢ)').setMinValue(1).setRequired(false)),
+
+  // ----- IGN REGISTRATION -----
+  new SlashCommandBuilder()
+    .setName('register-ign')
+    .setDescription('Đăng ký tên trong game (IGN) để bot tính Elo chính xác, chống giả mạo')
+    .addStringOption(opt =>
+      opt.setName('ign')
+         .setDescription('Tên trong game của bạn (phân biệt hoa thường)')
+         .setRequired(true)
+         .setMinLength(2)
+         .setMaxLength(20)
+    ),
 ];
 
 const rest = new REST({ version: '10' }).setToken(config.TOKEN);
@@ -191,8 +203,8 @@ const rest = new REST({ version: '10' }).setToken(config.TOKEN);
     } else {
       await rest.put(Routes.applicationCommands(config.CLIENT_ID), { body: commands });
     }
-    console.log(`Đã đăng ký ${commands.length} lệnh.`);
+    console.log(`✅ Đã đăng ký ${commands.length} lệnh.`);
   } catch (err) {
-    console.error(err);
+    console.error('❌ Lỗi đăng ký lệnh:', err);
   }
 })();

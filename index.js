@@ -1,12 +1,11 @@
-// index.js - FULL
 // Fix: ưu tiên IPv4
 const dns = require('node:dns');
 dns.setDefaultResultOrder('ipv4first');
 
-const fs = require('fs');
-const path = require('path');
 const axios = require('axios');
 const FormData = require('form-data');
+const fs = require('fs');
+const path = require('path');
 const {
   Client,
   GatewayIntentBits,
@@ -51,6 +50,7 @@ const {
   getElo,
   updateElo,
   calculateNewElo,
+  registerIGN,
   addRankRoomsToMode,
   removeRankRoom,
   getAllRankRooms,
@@ -58,12 +58,14 @@ const {
   // Filter functions
   getAllNormalRooms,
   getNormalRoomsByMode,
+  // OCR helper
+  extractAllKDAResult,
 } = require('./src/rooms');
 const { mainMenuEmbed, mainMenuRow, roomListRows, roomEmbed, roomActionRows, roomActionRowsEN } = require('./src/ui');
 const persistence = require('./src/persistence');
 const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 
-// ===== IMAGE HISTORY (90 days) =====
+// ===== IMAGE HISTORY =====
 const HISTORY_FILE = path.join(__dirname, 'data', 'image-history.json');
 
 function loadImageHistory() {
@@ -83,9 +85,9 @@ function saveImageHistory(history) {
 function isImageUsedRecently(url, userId, days = 90) {
   const history = loadImageHistory();
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-  return history.some(entry => 
-    entry.url === url && 
-    entry.userId === userId && 
+  return history.some(entry =>
+    entry.url === url &&
+    entry.userId === userId &&
     entry.submittedAt > cutoff
   );
 }
@@ -98,12 +100,12 @@ function addImageHistory(url, userId, roomId) {
   saveImageHistory(filtered);
 }
 
-// ===== OCR HELPERS =====
+// ===== OCR HELPERS (OCR.space - upload file) =====
 const OCR_API_KEY = process.env.OCR_API_KEY || config.OCR_API_KEY;
 
 async function ocrImage(imageUrl) {
   if (!OCR_API_KEY) {
-    console.error('❌ OCR_API_KEY chưa được cấu hình');
+    console.error('❌ OCR_API_KEY chưa được cấu hình trong .env hoặc config.js');
     throw new Error('MISSING_OCR_API_KEY');
   }
   try {
@@ -154,71 +156,6 @@ async function ocrImage(imageUrl) {
   }
 }
 
-function extractKDAResult(text, username) {
-  if (!username) return { kda: null, kill: null, death: null, assist: null, result: null };
-
-  // Tìm tất cả KDA
-  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
-  const matches = [];
-  let match;
-  while ((match = kdaRegex.exec(text)) !== null) {
-    matches.push({
-      kill: parseInt(match[1], 10),
-      death: parseInt(match[2], 10),
-      assist: parseInt(match[3], 10),
-      full: match[0],
-      index: match.index,
-    });
-  }
-
-  if (matches.length === 0) {
-    return { kda: null, kill: null, death: null, assist: null, result: null };
-  }
-
-  // Lọc KDA hợp lý
-  const validMatches = matches.filter(m => m.kill <= 30 && m.death <= 30 && m.assist <= 30);
-
-  // Tìm KDA của người gửi dựa trên tên
-  let selected = null;
-  if (username) {
-    const nameRegex = new RegExp(username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    const nameMatch = text.match(nameRegex);
-    if (nameMatch) {
-      const nameIndex = nameMatch.index;
-      for (const m of validMatches) {
-        const distance = Math.abs(m.index - nameIndex);
-        if (distance < 100) {
-          selected = m;
-          break;
-        }
-      }
-    }
-  }
-
-  // KHÔNG FALLBACK - từ chối nếu không tìm thấy tên
-  if (!selected) {
-    console.log(`⚠️ Không tìm thấy tên "${username}" trong ảnh. Từ chối tính Elo.`);
-    return { kda: null, kill: null, death: null, assist: null, result: null };
-  }
-
-  const { kill, death, assist } = selected;
-  const kda = death === 0 ? kill + assist : (kill + assist) / death;
-
-  // Tìm kết quả
-  let result = null;
-  const resultMatch = text.match(/(VICTORY|DEFEAT|victory|defeat|Chiến thắng|Thất bại|CHIẾN THẮNG|THẤT BẠI|WIN|LOSE)/);
-  if (resultMatch) {
-    const raw = resultMatch[1].toLowerCase();
-    if (raw.includes('victory') || raw.includes('chiến thắng') || raw === 'win') {
-      result = 'win';
-    } else if (raw.includes('defeat') || raw.includes('thất bại') || raw === 'lose') {
-      result = 'loss';
-    }
-  }
-
-  return { kda, kill, death, assist, result };
-}
-
 // ===== CÁC HÀM TIỆN ÍCH =====
 function t(interaction, vi, en) {
   return interaction.locale === 'vi' ? vi : en;
@@ -228,51 +165,67 @@ function bi(vi, en) {
   return `${vi}\n🌐 ${en}`;
 }
 
-startKeepAliveServer();
-startSelfPing();
+// ===== ANNOUNCEMENT FUNCTIONS (khi có người join phòng) =====
+const ANNOUNCE_CHANNEL_ID = config.ANNOUNCE_CHANNEL_ID;
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-initRooms();
+async function startAnnouncement(room) {
+  if (!['3v3', '5v5'].includes(room.mode)) return;
+  if (room.timers.announceInterval) return;
+  if (!ANNOUNCE_CHANNEL_ID) return;
 
-// Khôi phục state
-const loadedState = persistence.loadState();
-loadedState.rooms.forEach((data, id) => {
-  let room = getRoom(id);
-  if (!room) {
-    const match = /^(3v3|5v5)-(\d+)$/.exec(id);
-    if (match) room = ensureRoom(match[1], parseInt(match[2], 10));
+  const channel = await client.channels.fetch(ANNOUNCE_CHANNEL_ID).catch(() => null);
+  if (!channel) {
+    console.error('❌ Không tìm thấy kênh thông báo với ID:', ANNOUNCE_CHANNEL_ID);
+    return;
   }
-  if (!room) return;
-  room.status = data.status || 'waiting';
-  room.code = data.code || null;
-  room.revealedAt = data.revealedAt || null;
-  room.firstJoinAt = data.firstJoinAt || null;
-  room.fullAt = data.fullAt || null;
-  room.panelChannelId = data.panelChannelId || null;
-  room.panelMessageId = data.panelMessageId || null;
-  room.timeoutMs = data.timeoutMs || config.DEFAULT_ROOM_TIMEOUT_MS;
-  room.players = new Map(
-    (data.players || []).map((p) => [p.id, { username: p.username, team: p.team, ready: p.ready }])
-  );
-  room.bannedUsers = new Set(data.bannedUsers || []);
-  if (data.isRank) {
-    room.isRank = true;
-    room.resultMap = new Map(data.resultMap || []);
-    room.resultWindowEnd = data.resultWindowEnd || null;
-  }
-});
-loadedState.eloData.forEach((data, userId) => {
-  eloData.set(userId, data);
-});
 
-// Cooldown
-const lastActionAt = new Map();
-function checkCooldown(userId) {
-  const now = Date.now();
-  const last = lastActionAt.get(userId) || 0;
-  if (now - last < config.ACTION_COOLDOWN_MS) return false;
-  lastActionAt.set(userId, now);
-  return true;
+  const msg = await channel.send('📢 **Nhanh tay đăng ký chơi cùng nhau nào anh em!**').catch(() => null);
+  if (!msg) return;
+
+  room.announceMessageId = msg.id;
+  room.timers.announceInterval = setInterval(async () => {
+    const ch = await client.channels.fetch(ANNOUNCE_CHANNEL_ID).catch(() => null);
+    if (ch) {
+      ch.send('📢 **Nhanh tay đăng ký chơi cùng nhau nào anh em!**').catch(() => {});
+    }
+  }, 10 * 60 * 1000);
+
+  console.log(`✅ Đã bắt đầu thông báo cho phòng ${room.id}`);
+}
+
+function stopAnnouncement(room) {
+  if (room.timers.announceInterval) {
+    clearInterval(room.timers.announceInterval);
+    room.timers.announceInterval = null;
+    room.announceMessageId = null;
+    console.log(`✅ Đã dừng thông báo cho phòng ${room.id}`);
+  }
+}
+
+// ===== TỰ ĐỘNG THÔNG BÁO THEO GIỜ (20:00-22:00, mỗi 30 phút) =====
+let lastScheduledAnnounce = 0;
+let scheduledInterval = null;
+
+async function sendScheduledAnnounce() {
+  if (!ANNOUNCE_CHANNEL_ID) return;
+  const channel = await client.channels.fetch(ANNOUNCE_CHANNEL_ID).catch(() => null);
+  if (!channel) {
+    console.error('❌ Không tìm thấy kênh thông báo ANNOUNCE_CHANNEL_ID');
+    return;
+  }
+  const now = new Date();
+  const hours = now.getHours();
+  const minutes = now.getMinutes();
+
+  if (hours >= 20 && hours < 22) {
+    if (Date.now() - lastScheduledAnnounce >= 30 * 60 * 1000) {
+      await channel.send('📢 **Vào đăng ký chơi cùng nhau nào AE!**').catch(() => {});
+      lastScheduledAnnounce = Date.now();
+      console.log(`✅ Đã gửi thông báo định kỳ lúc ${hours}:${minutes}`);
+    }
+  } else {
+    lastScheduledAnnounce = 0;
+  }
 }
 
 // ===== CÁC HÀM ADMIN, RENDER, TIMER =====
@@ -328,7 +281,7 @@ async function renderHiddenRoom(room) {
       const sent = await ch.send({ embeds: [embed], components: rowsUi });
       target.messageId = sent.id;
     } catch (err) {
-      console.error(`Lỗi render phòng ẩn ${room.id}:`, err);
+      console.error(`Lỗi render phòng ẩn ${room.id} cho DM ${target.channelId}:`, err);
     }
   }
 }
@@ -395,8 +348,8 @@ function scheduleInactivityTimeout(room, channel, customMs) {
       await channel
         .send(
           bi(
-            `⏰ **${room.label}** đã tự động reset vì quá thời gian chờ.`,
-            `**${room.label}** was auto-reset due to timeout.`
+            `⏰ **${room.label}** đã tự động reset vì quá thời gian chờ mà chưa đủ người / chưa sẵn sàng.`,
+            `**${room.label}** was auto-reset because it wasn't full / everyone ready in time.`
           )
         )
         .catch(() => {});
@@ -414,7 +367,7 @@ async function announceRoomFull(room, channel) {
         .then((user) =>
           user.send(
             `✅ **${room.label}** đã **đủ người**!\n` +
-              `Bấm **Sẵn sàng** trong vòng ${readyMinutes} phút, nếu không bạn sẽ bị đá.`
+              `Bấm **Sẵn sàng** ngay trong tin nhắn phòng phía trên trong vòng ${readyMinutes} phút, nếu không bạn sẽ bị đá khỏi phòng để nhường chỗ cho người khác.`
           )
         )
         .catch(() => {});
@@ -425,11 +378,26 @@ async function announceRoomFull(room, channel) {
   await channel
     .send(
       bi(
-        `✅ **${room.label}** đã đủ người! ${mentions}\nHãy bấm **Sẵn sàng** trong vòng ${readyMinutes} phút.`,
-        `**${room.label}** is full! ${mentions}\nHit **Ready** within ${readyMinutes} minutes.`
+        `✅ **${room.label}** đã đủ người! ${mentions}\nHãy bấm **Sẵn sàng** trong vòng ${readyMinutes} phút, nếu không sẽ bị đá khỏi phòng.`,
+        `**${room.label}** is now full! ${mentions}\nPlease hit **Ready** within ${readyMinutes} minutes, or you'll be kicked from the room.`
       )
     )
     .catch(() => {});
+  for (const id of ids) {
+    client.users
+      .fetch(id)
+      .then((user) =>
+        user.send(
+          bi(
+            `✅ **${room.label}** mà bạn đăng ký đã **đủ người**!\n` +
+              `Vào kênh <#${channel.id}> và bấm **Sẵn sàng** trong vòng ${readyMinutes} phút, nếu không bạn sẽ bị đá khỏi phòng để nhường chỗ cho người khác.`,
+            `**${room.label}** you signed up for is now **full**!\n` +
+              `Go to <#${channel.id}> and hit **Ready** within ${readyMinutes} minutes, or you'll be kicked to make room for someone else.`
+          )
+        )
+      )
+      .catch(() => {});
+  }
 }
 
 function scheduleReadyCountdown(room, channel) {
@@ -464,8 +432,8 @@ async function handleReadyCountdownExpire(room, channel) {
     await channel
       .send(
         bi(
-          `⚖️ **${room.label}**: mọi người đã sẵn sàng nhưng team chưa cân bằng.`,
-          `⚖️ **${room.label}**: everyone is ready but teams aren't balanced.`
+          `⚖️ **${room.label}**: mọi người đã sẵn sàng nhưng team chưa cân bằng nên chưa phát được code. Hãy tự đổi team hoặc rời phòng.`,
+          `**${room.label}**: everyone is ready but teams aren't balanced yet, so the code hasn't been revealed. Please change team or leave the room.`
         )
       )
       .catch(() => {});
@@ -478,8 +446,8 @@ async function handleReadyCountdownExpire(room, channel) {
   await channel
     .send(
       bi(
-        `⏱️ Hết ${readyMinutes2} phút chờ sẵn sàng tại **${room.label}** — đã đá ${mentions}.`,
-        `⏱️ Ready window for **${room.label}** is over — kicked ${mentions}.`
+        `⏱️ Hết ${readyMinutes2} phút chờ sẵn sàng tại **${room.label}** — đã đá ${mentions} ra khỏi phòng để nhường chỗ. Bấm **Gia nhập** để đăng ký lại.`,
+        `⏱️ The ${readyMinutes2}-minute ready window for **${room.label}** is over — kicked ${mentions} to free up their spots. Hit **Join** to sign up again.`
       )
     )
     .catch(() => {});
@@ -493,6 +461,7 @@ async function handleReadyCountdownExpire(room, channel) {
   await renderRoom(room, channel);
 }
 
+// ===== XỬ LÝ KẾT THÚC CỬA SỔ 45 PHÚT (RANK) =====
 async function handleResultWindowEnd(room) {
   if (!room.isRank) return;
   if (room.status !== 'revealed') return;
@@ -514,21 +483,22 @@ async function handleResultWindowEnd(room) {
       const e = getElo(id).elo;
       return e === null ? config.RANK_DEFAULT_ELO : e;
     });
-    const newElo = calculateNewElo(userElo, opponentElos, resultData.result, resultData.kda, userRankIndex);
+    const kda = resultData.kda || ((resultData.kill + resultData.assist) / (resultData.death || 1));
+    const newElo = calculateNewElo(userElo, opponentElos, resultData.result, kda, userRankIndex);
     updateElo(userId, newElo);
     eloUpdates.push({
       userId,
       oldElo: userElo === null ? config.RANK_DEFAULT_ELO : userElo,
       newElo,
       result: resultData.result,
-      kda: resultData.kda,
+      kda: kda,
     });
   }
 
   persistence.saveState(rooms, eloData);
 
   if (channel) {
-    let msg = `📊 **${room.label}** đã kết thúc! Kết quả Elo:\n`;
+    let msg = `📊 **${room.label}** đã kết thúc! Kết quả Elo (có điều chỉnh KDA):\n`;
     for (const upd of eloUpdates) {
       const rank = getElo(upd.userId).rank;
       msg += `<@${upd.userId}>: ${upd.oldElo} → ${upd.newElo} (${upd.result}) | KDA: ${upd.kda.toFixed(2)} | Rank: ${rank}\n`;
@@ -575,8 +545,8 @@ async function tryRevealCode(room, channel) {
   await channel
     .send(
       bi(
-        `🔑 **${room.label}** đã phát code! Mỗi người bấm **"Lấy code của tôi"** để nhận mã.`,
-        `🔑 **${room.label}** code has been revealed! Tap **"Get my code"** to get yours.`
+        `🔑 **${room.label}** đã đủ người sẵn sàng! Code phòng đã được phát — mỗi người bấm nút **"Lấy code của tôi"** trên panel để nhận mã riêng.`,
+        `🔑 **${room.label}** is full and ready! The room code has been revealed — everyone tap **"Get my code"** on the panel to get your own copy.`
       )
     )
     .catch(() => {});
@@ -605,8 +575,8 @@ async function tryRevealCode(room, channel) {
       await channel
         .send(
           bi(
-            `♻️ **${room.label}** đã được reset.`,
-            `**${room.label}** has been reset.`
+            `♻️ **${room.label}** đã được reset, mời mọi người đăng ký lại.`,
+            `**${room.label}** has been reset, everyone is welcome to sign up again.`
           )
         )
         .catch(() => {});
@@ -653,8 +623,8 @@ client.once('ready', async () => {
             await channel
               .send(
                 bi(
-                  `♻️ **${room.label}** đã được reset.`,
-                  `**${room.label}** has been reset.`
+                  `♻️ **${room.label}** đã được reset, mời mọi người đăng ký lại.`,
+                  `**${room.label}** has been reset, everyone is welcome to sign up again.`
                 )
               )
               .catch(() => {});
@@ -681,6 +651,13 @@ client.once('ready', async () => {
     }
     await renderRoom(room, channel);
   }
+
+  // ===== BẮT ĐẦU TỰ ĐỘNG THÔNG BÁO THEO GIỜ =====
+  await sendScheduledAnnounce();
+  scheduledInterval = setInterval(async () => {
+    await sendScheduledAnnounce();
+  }, 60 * 1000); // Mỗi phút kiểm tra 1 lần
+  console.log('✅ Đã bật thông báo tự động từ 20:00 đến 22:00, mỗi 30 phút.');
 });
 
 // ===== MAIN INTERACTION HANDLER =====
@@ -863,7 +840,7 @@ async function handleSlashCommand(interaction) {
     persistence.saveState(rooms, eloData);
 
     return interaction.reply({
-      content: `✅ Đã gia hạn thêm **${phut} phút** cho **${room.label}**.`,
+      content: `✅ Đã gia hạn thêm **${phut} phút** cho **${room.label}** trước khi tự reset.`,
       ephemeral: true,
     });
   }
@@ -877,14 +854,14 @@ async function handleSlashCommand(interaction) {
       return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
     }
     if (room.status === 'revealed') {
-      return interaction.reply({ content: '❌ Phòng đã phát code, không mời thêm được.', ephemeral: true });
+      return interaction.reply({ content: '❌ Phòng đã phát code, không mời thêm được nữa.', ephemeral: true });
     }
     if (isFull(room)) {
       return interaction.reply({ content: '❌ Phòng đã đầy rồi.', ephemeral: true });
     }
     if (isBanned(room, targetUser.id)) {
       return interaction.reply({
-        content: `❌ <@${targetUser.id}> đang bị cấm khỏi **${room.label}**.`,
+        content: `❌ <@${targetUser.id}> đang bị cấm khỏi **${room.label}**, không mời được.`,
         ephemeral: true,
       });
     }
@@ -930,8 +907,8 @@ async function handleSlashCommand(interaction) {
 
     return interaction.reply({
       content: `✅ Đã cấm <@${targetUser.id}> tham gia **${room.label}**${
-        wasInRoom ? ' (đã bị đá khỏi phòng)' : ''
-      }.`,
+        wasInRoom ? ' (đã bị đá khỏi phòng luôn)' : ''
+      }. Các phòng khác không bị ảnh hưởng.`,
       ephemeral: true,
     });
   }
@@ -970,7 +947,7 @@ async function handleSlashCommand(interaction) {
     }
     if (!room.players.has(targetUser.id)) {
       return interaction.reply({
-        content: `ℹ️ <@${targetUser.id}> hiện không ở trong **${room.label}**.`,
+        content: `ℹ️ <@${targetUser.id}> hiện không ở trong **${room.label}** (có thể đã rời trước đó).`,
         ephemeral: true,
       });
     }
@@ -983,8 +960,15 @@ async function handleSlashCommand(interaction) {
       interaction.channel;
     await renderRoom(room, channel);
 
+    if (room.hidden) {
+      client.users
+        .fetch(targetUser.id)
+        .then((user) => user.send(`⚠️ Bạn đã bị admin đá khỏi trận đang diễn ra tại **${room.label}**. Bạn vẫn có thể bấm **Gia nhập** lại trên panel để tham gia trận sau.`))
+        .catch(() => {});
+    }
+
     return interaction.reply({
-      content: `✅ Đã đá <@${targetUser.id}> khỏi trận tại **${room.label}**.`,
+      content: `✅ Đã đá <@${targetUser.id}> khỏi trận tại **${room.label}** (chưa cấm — họ vào lại được).`,
       ephemeral: true,
     });
   }
@@ -999,7 +983,7 @@ async function handleSlashCommand(interaction) {
     const room = getHiddenRoom(roomId);
     if (!room) {
       return interaction.reply({
-        content: `❌ Không tìm thấy phòng ẩn "${roomId}".`,
+        content: `❌ Không tìm thấy phòng ẩn "${roomId}" (lệnh này chỉ dùng cho phòng ẩn — xem ID đúng bằng \`/danh-sach-phong-an\`).`,
         ephemeral: true,
       });
     }
@@ -1009,7 +993,7 @@ async function handleSlashCommand(interaction) {
     const targetIdx = room.panelTargets.findIndex((t) => t.userId === targetUser.id);
     if (targetIdx === -1) {
       return interaction.reply({
-        content: `ℹ️ <@${targetUser.id}> chưa từng được mời vào **${room.label}**.`,
+        content: `ℹ️ <@${targetUser.id}> chưa từng được mời vào **${room.label}**, không có gì để xoá.`,
         ephemeral: true,
       });
     }
@@ -1022,18 +1006,18 @@ async function handleSlashCommand(interaction) {
         if (msg) await msg.delete().catch(() => {});
       }
     } catch (err) {
-      console.error(`Không xoá được panel cho ${targetUser.id}:`, err);
+      console.error(`Không xoá được tin nhắn panel phòng ẩn cho ${targetUser.id}:`, err);
     }
 
     client.users
       .fetch(targetUser.id)
-      .then((user) => user.send(`🚫 Bạn đã bị admin xoá khỏi nhóm phòng ẩn **${room.label}**.`))
+      .then((user) => user.send(`🚫 Bạn đã bị admin xoá khỏi nhóm phòng ẩn **${room.label}** — không còn quyền xem/tham gia phòng này nữa.`))
       .catch(() => {});
 
     await renderRoom(room, interaction.channel);
 
     return interaction.reply({
-      content: `✅ Đã xoá <@${targetUser.id}> khỏi nhóm **${room.label}**.`,
+      content: `✅ Đã xoá <@${targetUser.id}> khỏi nhóm **${room.label}** (đã xoá luôn panel DM của họ).`,
       ephemeral: true,
     });
   }
@@ -1051,13 +1035,13 @@ async function handleSlashCommand(interaction) {
       await sendHiddenRoomDM(room, interaction.user, `👑 Bạn (admin) vừa tạo phòng ẩn: **${room.label}**.`);
     } catch (err) {
       console.error('Không DM được panel phòng ẩn cho admin:', err);
-      dmNote = '\n⚠️ Không DM được panel cho bạn (có thể bạn đang tắt DM từ thành viên server).';
+      dmNote = '\n⚠️ Không DM được panel cho bạn (có thể bạn đang tắt DM từ thành viên server) — bật lên rồi thử lại.';
     }
 
     return interaction.reply({
       content:
         `✅ Đã tạo **${room.label}** (ID: \`${room.id}\`) và gửi panel vào DM của bạn.\n` +
-        `Dùng \`/moi-phong-an phong:${room.id}\` để mời thêm người khác.` +
+        `Dùng \`/moi-phong-an phong:${room.id}\` để mời thêm người khác (họ sẽ nhận panel qua DM riêng, không ai khác thấy).` +
         dmNote,
       ephemeral: true,
     });
@@ -1070,7 +1054,7 @@ async function handleSlashCommand(interaction) {
     }
     if (!interaction.guild) {
       return interaction.reply({
-        content: '⚠️ Lệnh này phải chạy trong 1 kênh của server (không dùng được từ DM).',
+        content: '⚠️ Lệnh này phải chạy trong 1 kênh của server (không dùng được từ DM), vì DM không hiện đủ danh sách thành viên để chọn.',
         ephemeral: true,
       });
     }
@@ -1078,7 +1062,7 @@ async function handleSlashCommand(interaction) {
     const room = getHiddenRoom(roomId);
     if (!room) {
       return interaction.reply({
-        content: `❌ Không tìm thấy phòng ẩn "${roomId}".`,
+        content: `❌ Không tìm thấy phòng ẩn "${roomId}" — dùng \`/danh-sach-phong-an\` để xem ID chính xác.`,
         ephemeral: true,
       });
     }
@@ -1090,7 +1074,7 @@ async function handleSlashCommand(interaction) {
       .setMaxValues(25);
 
     return interaction.reply({
-      content: `📨 Chọn (nhiều) người muốn mời riêng vào **${room.label}** (tối đa 25 người/lần):`,
+      content: `📨 Chọn (nhiều) người muốn mời riêng vào **${room.label}** (tối đa 25 người/lần — chạy lại lệnh này nếu cần mời thêm):`,
       components: [new ActionRowBuilder().addComponents(select)],
       ephemeral: true,
     });
@@ -1243,10 +1227,27 @@ async function handleSlashCommand(interaction) {
     return;
   }
 
-  // ---- SUBMIT-RESULT ----
+  // ---- REGISTER-IGN ----
+  if (commandName === 'register-ign') {
+    const ign = interaction.options.getString('ign', true).trim();
+    if (ign.length < 2 || ign.length > 20) {
+      return interaction.reply({ content: '❌ Tên IGN phải từ 2-20 ký tự.', ephemeral: true });
+    }
+    if (!/^[a-zA-Z0-9_\- ]+$/.test(ign)) {
+      return interaction.reply({ content: '❌ IGN chỉ được chứa chữ cái, số, dấu gạch dưới, gạch ngang và khoảng trắng.', ephemeral: true });
+    }
+    const result = registerIGN(interaction.user.id, ign);
+    if (!result.ok) {
+      return interaction.reply({ content: `❌ ${result.reason}`, ephemeral: true });
+    }
+    persistence.saveState(rooms, eloData);
+    return interaction.reply({ content: `✅ Đã đăng ký IGN thành công: **${ign}**\nBot sẽ dùng IGN này để tìm KDA của bạn trong ảnh.`, ephemeral: true });
+  }
+
+  // ---- SUBMIT-RESULT (VỚI FILE ĐÍNH KÈM + FORWARD LOG) ----
   if (commandName === 'submit-result') {
     console.log(`✅ Nhận lệnh /submit-result từ ${interaction.user.tag}`);
-    
+
     try {
       await interaction.deferReply({ ephemeral: true });
       console.log('✅ Defer reply thành công');
@@ -1272,23 +1273,20 @@ async function handleSlashCommand(interaction) {
     if (Date.now() > room.resultWindowEnd) {
       return interaction.editReply({ content: '❌ Đã quá hạn 45 phút.' });
     }
-    if (room.resultMap.has(interaction.user.id)) {
-      return interaction.editReply({ content: 'ℹ️ Bạn đã gửi kết quả rồi.' });
-    }
 
     const attachment = interaction.options.getAttachment('hinhanh', true);
     if (!attachment || !attachment.contentType || !attachment.contentType.startsWith('image/')) {
       return interaction.editReply({ content: '❌ File đính kèm không phải là ảnh hợp lệ.' });
     }
 
-    // Kiểm tra ảnh đã dùng chưa
+    // === KIỂM TRA ẢNH ĐÃ DÙNG CHƯA ===
     if (isImageUsedRecently(attachment.url, interaction.user.id)) {
-      return interaction.editReply({ 
-        content: '❌ Ảnh này đã được sử dụng trong vòng 90 ngày qua. Vui lòng chụp ảnh mới!' 
+      return interaction.editReply({
+        content: '❌ Ảnh này đã được sử dụng trong vòng 90 ngày qua. Vui lòng chụp ảnh mới!'
       });
     }
 
-    // Forward vào kênh log
+    // === FORWARD ẢNH VÀO KÊNH LOG ===
     if (config.LOG_CHANNEL_ID) {
       try {
         const logChannel = await client.channels.fetch(config.LOG_CHANNEL_ID);
@@ -1304,6 +1302,7 @@ async function handleSlashCommand(interaction) {
       }
     }
 
+    // === LƯU LỊCH SỬ ẢNH ===
     addImageHistory(attachment.url, interaction.user.id, room.id);
 
     console.log(`🔍 Bắt đầu OCR cho file: ${attachment.name} (${attachment.contentType}, ${attachment.size} bytes)`);
@@ -1326,34 +1325,57 @@ async function handleSlashCommand(interaction) {
       });
     }
 
-    const { kda, kill, death, assist, result } = extractKDAResult(ocrText, interaction.user.username);
-    if (!kda || !result) {
-      console.log('⚠️ Không parse được KDA hoặc kết quả từ OCR text:', ocrText);
+    // === PARSE KDA CHO TẤT CẢ NGƯỜI CHƠI ===
+    const kdaMap = extractAllKDAResult(ocrText, room);
+
+    if (kdaMap.size === 0) {
       return interaction.editReply({
-        content: '❌ Không tìm thấy KDA hoặc kết quả trong ảnh. Vui lòng kiểm tra ảnh hoặc nhờ admin gửi thay.',
+        content: '❌ Không tìm thấy KDA của bất kỳ ai trong ảnh. Vui lòng kiểm tra ảnh hoặc nhờ admin gửi thay.',
       });
     }
 
-    if (Date.now() > room.resultWindowEnd) {
-      return interaction.editReply({ content: '❌ Đã quá hạn 45 phút.' });
+    // Tìm kết quả trận đấu
+    let result = null;
+    const resultMatch = ocrText.match(/(VICTORY|DEFEAT|victory|defeat|Chiến thắng|Thất bại|CHIẾN THẮNG|THẤT BẠI|WIN|LOSE)/);
+    if (resultMatch) {
+      const raw = resultMatch[1].toLowerCase();
+      if (raw.includes('victory') || raw.includes('chiến thắng') || raw === 'win') result = 'win';
+      else if (raw.includes('defeat') || raw.includes('thất bại') || raw === 'lose') result = 'loss';
     }
-    if (room.resultMap.has(interaction.user.id)) {
-      return interaction.editReply({ content: 'ℹ️ Bạn đã gửi kết quả rồi.' });
+    if (!result) {
+      return interaction.editReply({
+        content: '❌ Không tìm thấy kết quả trận đấu (VICTORY/DEFEAT) trong ảnh.',
+      });
     }
 
-    room.resultMap.set(interaction.user.id, {
-      result: result,
-      imageUrl: attachment.url,
-      submittedAt: Date.now(),
-      kda: kda,
-      kill: kill,
-      death: death,
-      assist: assist,
-    });
+    // Lưu KDA cho tất cả người chơi khớp
+    let savedCount = 0;
+    for (const [userId, kda] of kdaMap) {
+      if (!room.resultMap.has(userId)) {
+        room.resultMap.set(userId, {
+          result: result,
+          imageUrl: attachment.url,
+          submittedAt: Date.now(),
+          kill: kda.kill,
+          death: kda.death,
+          assist: kda.assist,
+        });
+        savedCount++;
+      }
+    }
+
+    // Kiểm tra xem người gửi có được lưu không
+    const senderId = interaction.user.id;
+    if (!kdaMap.has(senderId)) {
+      return interaction.editReply({
+        content: `⚠️ Không tìm thấy IGN của bạn (${interaction.user.username}) trong ảnh. Đã lưu KDA cho ${savedCount} người khác. Vui lòng kiểm tra IGN đã đăng ký khớp với tên trong ảnh chưa.\nĐể đăng ký IGN, dùng \`/register-ign <tên_game>\`.`,
+      });
+    }
+
     persistence.saveState(rooms, eloData);
 
     return interaction.editReply({
-      content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}**, KDA ${kill}/${death}/${assist} (${kda.toFixed(2)}) cho ${room.label}. (OCR tự động)`,
+      content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}** cho **${savedCount}** người chơi trong phòng (bao gồm bạn).`,
     });
   }
 
@@ -1666,7 +1688,7 @@ async function handleSlashCommand(interaction) {
     const channel = interaction.channel;
 
     await interaction.reply({
-      content: `🧹 Đang dọn tối đa ${soLuong} tin nhắn gần nhất...`,
+      content: `🧹 Đang dọn tối đa ${soLuong} tin nhắn gần nhất (tự bỏ qua panel phòng đang hoạt động trong kênh này)...`,
       ephemeral: true,
     });
 
@@ -1693,7 +1715,7 @@ async function handleSlashCommand(interaction) {
       return interaction.followUp({
         content:
           `✅ Đã xóa **${deletedCount}** tin nhắn (Discord chỉ cho xóa hàng loạt tin nhắn dưới 14 ngày tuổi, tin cũ hơn sẽ bị bỏ qua).` +
-          (skippedPanels > 0 ? `\n🛡️ Đã bỏ qua **${skippedPanels}** panel phòng đang hoạt động.` : ''),
+          (skippedPanels > 0 ? `\n🛡️ Đã bỏ qua **${skippedPanels}** panel phòng đang hoạt động để không bị mất.` : ''),
         ephemeral: true,
       });
     } catch (err) {
@@ -1785,7 +1807,7 @@ async function handleSlashCommand(interaction) {
     return interaction.followUp({
       content:
         `✅ Đã xóa **${totalDeleted}** tin nhắn của Bot ${noiChung}.` +
-        (skippedPanels > 0 ? `\n🛡️ Đã bỏ qua **${skippedPanels}** panel phòng đang hoạt động.` : ''),
+        (skippedPanels > 0 ? `\n🛡️ Đã bỏ qua **${skippedPanels}** panel phòng đang hoạt động để không bị mất.` : ''),
       ephemeral: true,
     });
   }
@@ -1816,7 +1838,7 @@ async function handleSlashCommand(interaction) {
     if (!result.ok) {
       if (result.reason === 'protected') {
         return interaction.reply({
-          content: `❌ **${room.label}** nằm trong ${config.ROOMS_PER_MODE} phòng gốc, không xóa hẳn được — dùng \`/reset-room\` để reset.`,
+          content: `❌ **${room.label}** nằm trong ${config.ROOMS_PER_MODE} phòng gốc (mặc định), không xóa hẳn được — dùng \`/reset-room\` nếu chỉ muốn đưa phòng về trạng thái trống.`,
           ephemeral: true,
         });
       }
@@ -1859,7 +1881,7 @@ async function handleSlashCommand(interaction) {
 
     persistence.saveState(rooms, eloData);
     return interaction.followUp({
-      content: `✅ Đã xóa hẳn **${deletedCount}** phòng thường${mode ? ` (chế độ ${mode.toUpperCase()})` : ' (cả 3v3 lẫn 5v5)'}.`,
+      content: `✅ Đã xóa hẳn **${deletedCount}** phòng thường${mode ? ` (chế độ ${mode.toUpperCase()})` : ' (cả 3v3 lẫn 5v5)'}. Dùng \`/setup\` để tạo phòng mới khi cần.`,
       ephemeral: true,
     });
   }
@@ -1905,68 +1927,144 @@ async function handleSlashCommand(interaction) {
   }
 }
 
-// ===== MODAL SUBMIT =====
+// ===== MODAL SUBMIT (OCR) =====
 async function handleModalSubmit(interaction) {
   if (!interaction.customId.startsWith('submitresult_')) return;
+
+  console.log('🔍 Modal submit received for room:', interaction.customId);
 
   const roomId = interaction.customId.replace('submitresult_', '');
   const room = getRoom(roomId);
   if (!room || !room.isRank) {
-    return interaction.reply({ content: '❌ Phòng không tồn tại hoặc không phải rank.', ephemeral: true });
+    try {
+      return await interaction.reply({ content: '❌ Phòng không tồn tại hoặc không phải rank.', ephemeral: true });
+    } catch (e) {
+      console.error('❌ Lỗi reply khi room không tồn tại:', e);
+      return;
+    }
   }
 
   const imageUrl = interaction.fields.getTextInputValue('image');
   if (!imageUrl) {
-    return interaction.reply({ content: '❌ Bạn chưa nhập link ảnh.', ephemeral: true });
+    try {
+      return await interaction.reply({ content: '❌ Bạn chưa nhập link ảnh.', ephemeral: true });
+    } catch (e) {
+      console.error('❌ Lỗi reply khi thiếu ảnh:', e);
+      return;
+    }
   }
 
-  await interaction.deferReply({ ephemeral: true });
+  // Kiểm tra lịch sử
+  if (isImageUsedRecently(imageUrl, interaction.user.id)) {
+    return interaction.reply({
+      content: '❌ Ảnh này đã được sử dụng trong vòng 90 ngày qua. Vui lòng chụp ảnh mới!',
+      ephemeral: true,
+    });
+  }
+
+  try {
+    await interaction.deferReply({ ephemeral: true });
+    console.log('✅ Defer thành công, bắt đầu OCR...');
+  } catch (err) {
+    console.error('❌ Defer reply lỗi:', err);
+    try {
+      await interaction.reply({
+        content: '⚠️ Bot đã quá thời gian xử lý. Vui lòng thử lại ngay (mở modal và gửi nhanh trong vòng vài phút).',
+        ephemeral: true,
+      });
+    } catch (e2) {
+      console.error('❌ Không thể gửi phản hồi:', e2);
+    }
+    return;
+  }
+
+  // Forward ảnh vào kênh log
+  if (config.LOG_CHANNEL_ID) {
+    try {
+      const logChannel = await client.channels.fetch(config.LOG_CHANNEL_ID);
+      if (logChannel) {
+        await logChannel.send({
+          content: `📸 **${interaction.user.tag}** (<@${interaction.user.id}>) gửi ảnh qua modal cho phòng **${room.id}** (${room.label}) tại <t:${Math.floor(Date.now()/1000)}>`,
+          files: [imageUrl],
+        });
+        console.log('✅ Đã forward ảnh vào kênh log');
+      }
+    } catch (err) {
+      console.error('❌ Không thể forward ảnh vào kênh log:', err.message);
+    }
+  }
+
+  addImageHistory(imageUrl, interaction.user.id, room.id);
 
   let ocrText = '';
   try {
+    console.log('📥 Gọi OCR.space...');
     ocrText = await ocrImage(imageUrl);
+    console.log('✅ OCR nhận được text dài:', ocrText ? ocrText.length : 0);
   } catch (err) {
-    console.error('OCR error:', err);
-    return interaction.editReply({ content: '❌ Lỗi khi xử lý ảnh. Vui lòng thử lại sau.' });
+    console.error('❌ OCR error:', err);
+    if (err.message === 'MISSING_OCR_API_KEY') {
+      return interaction.editReply({ content: '❌ Bot chưa được cấu hình OCR. Vui lòng báo admin thêm API key.' });
+    }
+    return interaction.editReply({
+      content: '❌ Lỗi khi xử lý ảnh. Vui lòng thử lại hoặc dùng /admin-submit-result.',
+    });
   }
 
   if (!ocrText) {
     return interaction.editReply({
-      content: '❌ Không thể đọc được ảnh. Vui lòng kiểm tra link ảnh hoặc nhờ admin gửi thay.',
+      content: '❌ Không thể đọc được ảnh. Vui lòng kiểm tra link ảnh (phải là link trực tiếp, ví dụ: https://i.postimg.cc/xxx/... ) hoặc nhờ admin gửi thay (dùng /admin-submit-result).',
     });
   }
 
-  const { kda, kill, death, assist, result } = extractKDAResult(ocrText, interaction.user.username);
-  if (!kda || !result) {
+  const kdaMap = extractAllKDAResult(ocrText, room);
+  if (kdaMap.size === 0) {
     return interaction.editReply({
-      content: '❌ Không tìm thấy KDA hoặc kết quả trong ảnh. Vui lòng kiểm tra ảnh hoặc nhờ admin gửi thay.',
+      content: '❌ Không tìm thấy KDA của bất kỳ ai trong ảnh. Vui lòng kiểm tra ảnh hoặc nhờ admin gửi thay.',
     });
   }
 
-  if (!room.players.has(interaction.user.id)) {
-    return interaction.editReply({ content: '❌ Bạn không ở trong phòng này.' });
+  let result = null;
+  const resultMatch = ocrText.match(/(VICTORY|DEFEAT|victory|defeat|Chiến thắng|Thất bại|CHIẾN THẮNG|THẤT BẠI|WIN|LOSE)/);
+  if (resultMatch) {
+    const raw = resultMatch[1].toLowerCase();
+    if (raw.includes('victory') || raw.includes('chiến thắng') || raw === 'win') result = 'win';
+    else if (raw.includes('defeat') || raw.includes('thất bại') || raw === 'lose') result = 'loss';
   }
-  if (Date.now() > room.resultWindowEnd) {
-    return interaction.editReply({ content: '❌ Đã quá hạn 45 phút.' });
-  }
-  if (room.resultMap.has(interaction.user.id)) {
-    return interaction.editReply({ content: 'ℹ️ Bạn đã gửi kết quả rồi.' });
+  if (!result) {
+    return interaction.editReply({
+      content: '❌ Không tìm thấy kết quả trận đấu (VICTORY/DEFEAT) trong ảnh.',
+    });
   }
 
-  room.resultMap.set(interaction.user.id, {
-    result: result,
-    imageUrl: imageUrl,
-    submittedAt: Date.now(),
-    kda: kda,
-    kill: kill,
-    death: death,
-    assist: assist,
-  });
+  let savedCount = 0;
+  for (const [userId, kda] of kdaMap) {
+    if (!room.resultMap.has(userId)) {
+      room.resultMap.set(userId, {
+        result: result,
+        imageUrl: imageUrl,
+        submittedAt: Date.now(),
+        kill: kda.kill,
+        death: kda.death,
+        assist: kda.assist,
+      });
+      savedCount++;
+    }
+  }
+
+  const senderId = interaction.user.id;
+  if (!kdaMap.has(senderId)) {
+    return interaction.editReply({
+      content: `⚠️ Không tìm thấy IGN của bạn (${interaction.user.username}) trong ảnh. Đã lưu KDA cho ${savedCount} người khác. Vui lòng kiểm tra IGN đã đăng ký khớp với tên trong ảnh chưa.\nĐể đăng ký IGN, dùng \`/register-ign <tên_game>\`.`,
+    });
+  }
+
   persistence.saveState(rooms, eloData);
 
   await interaction.editReply({
-    content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}**, KDA ${kill}/${death}/${assist} (${kda.toFixed(2)}) cho ${room.label}. (OCR tự động)`,
+    content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}** cho **${savedCount}** người chơi trong phòng (bao gồm bạn).`,
   });
+  console.log('✅ Kết quả đã lưu cho user', interaction.user.id);
 }
 
 // ===== BUTTON =====
@@ -1980,7 +2078,7 @@ async function handleButton(interaction) {
       return interaction.reply({
         content: t(interaction,
           `⚠️ Hiện chưa có phòng **${mode.toUpperCase()}** nào — chờ admin tạo phòng bằng \`/setup\`.`,
-          `⚠️ There are no **${mode.toUpperCase()}** rooms yet.`
+          `⚠️ There are no **${mode.toUpperCase()}** rooms yet — wait for an admin to create some with \`/setup\`.`
         ),
         ephemeral: true,
       });
@@ -1988,7 +2086,7 @@ async function handleButton(interaction) {
     return interaction.reply({
       content: t(interaction,
         `Chọn 1 trong ${roomsOfMode.length} phòng **${mode.toUpperCase()}** để tham gia:`,
-        `Pick one of the ${roomsOfMode.length} **${mode.toUpperCase()}** rooms:`
+        `Pick one of the ${roomsOfMode.length} **${mode.toUpperCase()}** rooms to join:`
       ),
       components: roomListRows(roomsOfMode),
       ephemeral: true,
@@ -2017,7 +2115,7 @@ async function handleButton(interaction) {
   if (customId.startsWith('translate_')) {
     const roomId = customId.replace('translate_', '');
     const room = getRoom(roomId);
-    if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
+    if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
     return interaction.reply({
       content: '🌐 English buttons (only visible to you):',
       components: roomActionRowsEN(room),
@@ -2027,7 +2125,7 @@ async function handleButton(interaction) {
   if (customId.startsWith('hiddeninvitebtn_')) {
     const roomId = customId.replace('hiddeninvitebtn_', '');
     const room = getHiddenRoom(roomId);
-    if (!room) return interaction.reply({ content: '❌ Phòng ẩn này không tồn tại.', ephemeral: true });
+    if (!room) return interaction.reply({ content: '❌ Phòng ẩn này không tồn tại (có thể đã bị xóa).', ephemeral: true });
     const isAdminNow = await isAdminUserId(interaction.user.id);
     if (!isAdminNow) {
       return interaction.reply({ content: '❌ Chỉ admin mới mời thêm người vào phòng ẩn được.', ephemeral: true });
@@ -2035,8 +2133,8 @@ async function handleButton(interaction) {
     if (!interaction.guild) {
       return interaction.reply({
         content:
-          '⚠️ Không thể hiện đủ danh sách thành viên khi mời từ trong DM.\n' +
-          `👉 Vào **1 kênh trong server** và gõ \`/moi-phong-an phong:${room.id}\`.`,
+          '⚠️ Không thể hiện đủ danh sách thành viên khi mời từ trong DM (Discord giới hạn khiến menu chọn người ở đây chỉ thấy được vài người, không phải cả server).\n' +
+          `👉 Vào **1 kênh trong server** và gõ \`/moi-phong-an phong:${room.id}\` — lệnh đó sẽ hiện menu chọn được đầy đủ, tìm kiếm được, tối đa 25 người mỗi lần (đủ dùng nhiều lần nếu cần mời hơn 25 người).`,
         ephemeral: true,
       });
     }
@@ -2046,7 +2144,7 @@ async function handleButton(interaction) {
       .setMinValues(1)
       .setMaxValues(25);
     return interaction.reply({
-      content: `📨 Chọn (nhiều) người muốn mời riêng vào **${room.label}** (tối đa 25 người/lần):`,
+      content: `📨 Chọn (nhiều) người muốn mời riêng vào **${room.label}** (tối đa 25 người/lần — chạy lại nút này nếu cần mời thêm):`,
       components: [new ActionRowBuilder().addComponents(select)],
       ephemeral: true,
     });
@@ -2054,15 +2152,15 @@ async function handleButton(interaction) {
   if (customId.startsWith('invite_')) {
     const roomId = customId.replace('invite_', '');
     const room = getRoom(roomId);
-    if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
+    if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
     if (room.status === 'revealed') {
       return interaction.reply({
-        content: t(interaction, '❌ Phòng đã phát code, không mời thêm được nữa.', "❌ The code has been revealed."),
+        content: t(interaction, '❌ Phòng đã phát code, không mời thêm được nữa.', "❌ The code has been revealed, you can't invite anyone else now."),
         ephemeral: true,
       });
     }
     if (isFull(room)) {
-      return interaction.reply({ content: t(interaction, '❌ Phòng đã đầy rồi.', '❌ Room is full.'), ephemeral: true });
+      return interaction.reply({ content: t(interaction, '❌ Phòng đã đầy rồi.', '❌ This room is full.'), ephemeral: true });
     }
     const select = new UserSelectMenuBuilder()
       .setCustomId(`inviteselect_${room.id}`)
@@ -2111,7 +2209,7 @@ async function handleUserSelectMenu(interaction) {
     const roomId = customId.replace('hiddeninvite_', '');
     const room = getHiddenRoom(roomId);
     if (!room) {
-      return interaction.update({ content: '❌ Phòng ẩn này không tồn tại.', components: [] });
+      return interaction.update({ content: '❌ Phòng ẩn này không tồn tại (có thể đã bị xóa).', components: [] });
     }
     const isAdminNow = await isAdminUserId(interaction.user.id);
     if (!isAdminNow) {
@@ -2145,7 +2243,7 @@ async function handleUserSelectMenu(interaction) {
       ? `✅ Đã gửi lời mời phòng ẩn **${room.label}** cho ${invited.length} người: ${invited.map((id) => `<@${id}>`).join(' ')}.`
       : '';
     if (failed.length) {
-      summary += `${summary ? '\n' : ''}⚠️ Không DM được cho: ${failed.map((id) => `<@${id}>`).join(' ')} (có thể họ tắt DM).`;
+      summary += `${summary ? '\n' : ''}⚠️ Không DM được cho: ${failed.map((id) => `<@${id}>`).join(' ')} (có thể họ tắt DM từ thành viên server).`;
     }
     return interaction.update({ content: summary || '❌ Không mời được ai cả.', components: [] });
   }
@@ -2154,7 +2252,7 @@ async function handleUserSelectMenu(interaction) {
 
   const roomId = customId.replace('inviteselect_', '');
   const room = getRoom(roomId);
-  if (!room) return interaction.update({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), components: [] });
+  if (!room) return interaction.update({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), components: [] });
 
   const targets = interaction.users;
   if (!targets || targets.size === 0) {
@@ -2162,12 +2260,12 @@ async function handleUserSelectMenu(interaction) {
   }
   if (room.status === 'revealed') {
     return interaction.update({
-      content: t(interaction, '❌ Phòng đã phát code, không mời thêm được nữa.', "❌ The code has been revealed."),
+      content: t(interaction, '❌ Phòng đã phát code, không mời thêm được nữa.', "❌ The code has been revealed, you can't invite anyone else now."),
       components: [],
     });
   }
   if (isFull(room)) {
-    return interaction.update({ content: t(interaction, '❌ Phòng đã đầy rồi.', '❌ Room is full.'), components: [] });
+    return interaction.update({ content: t(interaction, '❌ Phòng đã đầy rồi.', '❌ This room is full.'), components: [] });
   }
 
   const invitedIds = [];
@@ -2179,7 +2277,7 @@ async function handleUserSelectMenu(interaction) {
     }
     if (isBanned(room, targetUser.id)) {
       skipped.push(
-        t(interaction, `<@${targetUser.id}> (đang bị cấm khỏi phòng)`, `<@${targetUser.id}> (banned)`)
+        t(interaction, `<@${targetUser.id}> (đang bị cấm khỏi phòng)`, `<@${targetUser.id}> (banned from this room)`)
       );
       continue;
     }
@@ -2243,12 +2341,12 @@ function splitTeamCustomId(customId) {
 
 async function joinRoom(interaction, roomId) {
   const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
+  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
   if (isBanned(room, interaction.user.id)) {
     return interaction.reply({
       content: t(interaction,
-        `❌ Bạn đã bị cấm tham gia **${room.label}**.`,
-        `❌ You're banned from **${room.label}**.`
+        `❌ Bạn đã bị cấm tham gia **${room.label}** (vẫn vào được các phòng khác bình thường).`,
+        `❌ You're banned from **${room.label}** (you can still join other rooms).`
       ),
       ephemeral: true,
     });
@@ -2257,7 +2355,7 @@ async function joinRoom(interaction, roomId) {
     return interaction.reply({
       content: t(interaction,
         `❌ Bạn cần role <@&${config.JOIN_ROLE_ID}> mới được tham gia phòng.`,
-        `❌ You need the <@&${config.JOIN_ROLE_ID}> role.`
+        `❌ You need the <@&${config.JOIN_ROLE_ID}> role to join a room.`
       ),
       ephemeral: true,
     });
@@ -2266,8 +2364,8 @@ async function joinRoom(interaction, roomId) {
   if (existing && existing.id !== room.id) {
     return interaction.reply({
       content: t(interaction,
-        `⚠️ Bạn đang ở **${existing.label}** rồi. Hãy rời phòng đó trước.`,
-        `⚠️ You're already in **${existing.label}**. Leave first.`
+        `⚠️ Bạn đang ở **${existing.label}** rồi. Hãy rời phòng đó trước khi vào phòng khác.`,
+        `⚠️ You're already in **${existing.label}**. Leave that room first before joining another one.`
       ),
       ephemeral: true,
     });
@@ -2276,13 +2374,13 @@ async function joinRoom(interaction, roomId) {
     return interaction.reply({ content: t(interaction, 'ℹ️ Bạn đã ở trong phòng này rồi.', 'ℹ️ You are already in this room.'), ephemeral: true });
   }
   if (isFull(room)) {
-    return interaction.reply({ content: t(interaction, '❌ Phòng đã đủ người.', '❌ Room is full.'), ephemeral: true });
+    return interaction.reply({ content: t(interaction, '❌ Phòng đã đủ người.', '❌ This room is full.'), ephemeral: true });
   }
   if (room.status === 'revealed') {
     return interaction.reply({
       content: t(interaction,
         '❌ Phòng đang chuẩn bị vào game, không thể tham gia lúc này.',
-        "❌ Room is starting, can't join now."
+        "❌ This room is about to start the game, you can't join right now."
       ),
       ephemeral: true,
     });
@@ -2303,6 +2401,11 @@ async function joinRoom(interaction, roomId) {
 
   await renderRoom(room, channel);
 
+  // === BẮT ĐẦU THÔNG BÁO KHI CÓ NGƯỜI JOIN ===
+  if (['3v3', '5v5'].includes(room.mode)) {
+    startAnnouncement(room);
+  }
+
   if (isFull(room)) {
     await announceRoomFull(room, channel);
     scheduleReadyCountdown(room, channel);
@@ -2316,7 +2419,7 @@ async function joinRoom(interaction, roomId) {
 
 async function leaveRoom(interaction, roomId) {
   const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
+  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
   if (!room.players.has(interaction.user.id)) {
     return interaction.reply({ content: t(interaction, 'ℹ️ Bạn không ở trong phòng này.', 'ℹ️ You are not in this room.'), ephemeral: true });
   }
@@ -2324,7 +2427,7 @@ async function leaveRoom(interaction, roomId) {
     return interaction.reply({
       content: t(interaction,
         '❌ Phòng đã phát code, không thể rời lúc này. Chờ phòng tự reset nhé.',
-        "❌ Code has been revealed, you can't leave now."
+        "❌ The code has already been revealed, you can't leave right now. Wait for the room to reset."
       ),
       ephemeral: true,
     });
@@ -2344,9 +2447,12 @@ async function leaveRoom(interaction, roomId) {
     }
   }
 
+  // === DỪNG THÔNG BÁO NẾU PHÒNG TRỐNG ===
   if (room.players.size === 0) {
+    stopAnnouncement(room);
     resetRoom(room);
   }
+
   await renderRoom(room, channel);
   return interaction.reply({
     content: t(interaction, `✅ Bạn đã rời **${room.label}**.`, `✅ You left **${room.label}**.`),
@@ -2356,32 +2462,32 @@ async function leaveRoom(interaction, roomId) {
 
 async function toggleReady(interaction, roomId) {
   const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
+  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
   const player = room.players.get(interaction.user.id);
   if (!player) {
     return interaction.reply({
-      content: t(interaction, '⚠️ Bạn cần **Gia nhập** phòng trước khi bấm Sẵn sàng.', '⚠️ You need to **Join** first.'),
+      content: t(interaction, '⚠️ Bạn cần **Gia nhập** phòng trước khi bấm Sẵn sàng.', '⚠️ You need to **Join** the room before hitting Ready.'),
       ephemeral: true,
     });
   }
   if (room.status === 'revealed') {
     return interaction.reply({
-      content: t(interaction, 'ℹ️ Phòng đã phát code rồi, chờ vòng sau nhé.', 'ℹ️ Code already revealed.'),
+      content: t(interaction, 'ℹ️ Phòng đã phát code rồi, chờ vòng sau nhé.', 'ℹ️ The code has already been revealed, wait for the next round.'),
       ephemeral: true,
     });
   }
   if (!isFull(room)) {
     return interaction.reply({
       content: t(interaction,
-        `⚠️ Phòng chưa đủ người (${room.players.size}/${room.capacity}).`,
-        `⚠️ Room isn't full yet (${room.players.size}/${room.capacity}).`
+        `⚠️ Phòng chưa đủ người (${room.players.size}/${room.capacity}) — chưa thể bấm Sẵn sàng.`,
+        `⚠️ Room isn't full yet (${room.players.size}/${room.capacity}) — you can't hit Ready.`
       ),
       ephemeral: true,
     });
   }
   if (!checkCooldown(interaction.user.id)) {
     return interaction.reply({
-      content: t(interaction, '⏳ Bạn thao tác hơi nhanh, đợi 1-2 giây rồi thử lại.', "⏳ Slow down, wait 1-2 seconds."),
+      content: t(interaction, '⏳ Bạn thao tác hơi nhanh, đợi 1-2 giây rồi thử lại.', "⏳ You're clicking too fast, wait 1-2 seconds and try again."),
       ephemeral: true,
     });
   }
@@ -2391,31 +2497,39 @@ async function toggleReady(interaction, roomId) {
   await renderRoom(room, channel);
   await tryRevealCode(room, channel);
 
+  let extra = t(interaction, '', '');
+  if (room.status === 'waiting' && isFull(room) && allReady(room)) {
+    extra = t(interaction,
+      '\n⚖️ Team hiện chưa cân bằng nên code chưa được phát — tự đổi team hoặc chờ người khác đổi.',
+      "\n⚖️ Teams aren't balanced yet so the code hasn't been revealed — change team yourself or wait for someone else to."
+    );
+  }
+
   return interaction.reply({
-    content: t(interaction, player.ready ? '✅ Bạn đã sẵn sàng.' : '↩️ Bạn đã bỏ trạng thái sẵn sàng.', player.ready ? '✅ You are ready.' : '↩️ You are no longer ready.'),
+    content: t(interaction, player.ready ? '✅ Bạn đã sẵn sàng.' : '↩️ Bạn đã bỏ trạng thái sẵn sàng.', player.ready ? '✅ You are ready.' : '↩️ You are no longer ready.') + extra,
     ephemeral: true,
   });
 }
 
 async function setTeam(interaction, roomId, team) {
   const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
+  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
   const player = room.players.get(interaction.user.id);
   if (!player) {
     return interaction.reply({
-      content: t(interaction, '⚠️ Bạn cần **Gia nhập** phòng trước khi chọn team.', '⚠️ You need to **Join** first.'),
+      content: t(interaction, '⚠️ Bạn cần **Gia nhập** phòng trước khi chọn team.', '⚠️ You need to **Join** the room before picking a team.'),
       ephemeral: true,
     });
   }
   if (room.status === 'revealed') {
     return interaction.reply({
-      content: t(interaction, 'ℹ️ Phòng đã phát code rồi, không đổi team được nữa.', "ℹ️ Code already revealed, can't change team."),
+      content: t(interaction, 'ℹ️ Phòng đã phát code rồi, không đổi team được nữa.', "ℹ️ The code has already been revealed, you can't change team anymore."),
       ephemeral: true,
     });
   }
   if (!checkCooldown(interaction.user.id)) {
     return interaction.reply({
-      content: t(interaction, '⏳ Bạn thao tác hơi nhanh, đợi 1-2 giây rồi thử lại.', "⏳ Slow down, wait 1-2 seconds."),
+      content: t(interaction, '⏳ Bạn thao tác hơi nhanh, đợi 1-2 giây rồi thử lại.', "⏳ You're clicking too fast, wait 1-2 seconds and try again."),
       ephemeral: true,
     });
   }
@@ -2435,9 +2549,9 @@ async function setTeam(interaction, roomId, team) {
 
 async function giveCode(interaction, roomId) {
   const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
+  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ This room does not exist.'), ephemeral: true });
   if (room.status !== 'revealed' || !room.code) {
-    return interaction.reply({ content: t(interaction, 'ℹ️ Phòng chưa có code.', "ℹ️ Code not available."), ephemeral: true });
+    return interaction.reply({ content: t(interaction, 'ℹ️ Phòng chưa có code.', "ℹ️ This room doesn't have a code yet."), ephemeral: true });
   }
   const personal = formatPersonalCode(room, interaction.user.id);
   if (!personal) {

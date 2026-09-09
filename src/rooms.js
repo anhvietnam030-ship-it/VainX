@@ -7,11 +7,11 @@ const rooms = new Map();
 const hiddenRooms = new Map();
 
 // === ELO DATA ===
-const eloData = new Map(); // userId -> { elo, rank }
+const eloData = new Map(); // userId -> { elo, rank, ign }
 
 function getElo(userId) {
   if (!eloData.has(userId)) {
-    return { elo: null, rank: 'Unranked', rankIndex: 0 };
+    return { elo: null, rank: 'Unranked', rankIndex: 0, ign: null };
   }
   const data = eloData.get(userId);
   let rankIndex = 0;
@@ -27,17 +27,34 @@ function getElo(userId) {
 function getRankFromElo(elo) {
   if (elo === null || elo === undefined) return 'Unranked';
   for (const tier of config.RANK_TIERS) {
-    if (elo >= tier.minElo && elo < tier.maxElo) {
-      return tier.name;
-    }
+    if (elo >= tier.minElo && elo < tier.maxElo) return tier.name;
   }
   return 'Unranked';
 }
 
-function updateElo(userId, newElo) {
+function updateElo(userId, newElo, ign) {
   const rank = getRankFromElo(newElo);
-  eloData.set(userId, { elo: newElo, rank });
-  return { elo: newElo, rank };
+  const data = { elo: newElo, rank };
+  if (ign !== undefined) data.ign = ign;
+  else {
+    const old = eloData.get(userId);
+    if (old && old.ign) data.ign = old.ign;
+  }
+  eloData.set(userId, data);
+  return data;
+}
+
+function registerIGN(userId, ign) {
+  // Kiểm tra trùng IGN
+  for (const [id, data] of eloData) {
+    if (data.ign && data.ign.toLowerCase() === ign.toLowerCase() && id !== userId) {
+      return { ok: false, reason: 'IGN này đã được đăng ký bởi người khác.' };
+    }
+  }
+  const current = eloData.get(userId) || { elo: config.RANK_DEFAULT_ELO, rank: 'Unranked' };
+  current.ign = ign;
+  eloData.set(userId, current);
+  return { ok: true };
 }
 
 function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
@@ -46,7 +63,6 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
   const avgOppElo = opponentElos.reduce((a, b) => a + b, 0) / opponentElos.length;
   const expected = 1 / (1 + Math.pow(10, (avgOppElo - currentElo) / 400));
   const S = result === 'win' ? 1 : 0;
-  
   const K = config.RANK_K_FACTORS[userRankIndex] || 32;
   let rawChange = K * (S - expected);
 
@@ -58,18 +74,15 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
     else if (kdaValue >= 2) kdaFactor = 1.0;
     else if (kdaValue >= 1) kdaFactor = 0.8;
     else kdaFactor = 0.5;
-
-    if (S === 1) {
-      rawChange = rawChange * kdaFactor;
-    } else {
-      rawChange = rawChange * (1 / kdaFactor);
-    }
+    if (S === 1) rawChange = rawChange * kdaFactor;
+    else rawChange = rawChange * (1 / kdaFactor);
   }
 
   const newElo = currentElo + Math.round(rawChange);
   return Math.max(0, Math.min(3000, newElo));
 }
 
+// ===== ROOM FUNCTIONS =====
 function buildInitialRoom(mode, index) {
   return {
     id: `${mode}-${index}`,
@@ -248,7 +261,6 @@ function findRoomOfUser(userId) {
   }
   return null;
 }
-
 function findRoomOfUserInMode(userId, mode) {
   for (const room of rooms.values()) {
     if (room.mode === mode && room.players.has(userId)) return room;
@@ -345,6 +357,60 @@ function formatPersonalCode(room, userId) {
   return `${room.code}-${player.username}`;
 }
 
+// === OCR HELPER: extract all KDA from OCR text ===
+function extractAllKDAResult(text, room) {
+  const resultMap = new Map();
+  const players = Array.from(room.players.entries());
+
+  // Tìm tất cả KDA trong text
+  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
+  const kdaList = [];
+  let match;
+  while ((match = kdaRegex.exec(text)) !== null) {
+    kdaList.push({
+      kill: parseInt(match[1], 10),
+      death: parseInt(match[2], 10),
+      assist: parseInt(match[3], 10),
+      index: match.index,
+    });
+  }
+
+  if (kdaList.length === 0) return resultMap;
+
+  // Với mỗi người chơi, tìm KDA gần tên họ nhất
+  for (const [userId, playerData] of players) {
+    // Lấy IGN nếu có, fallback là username
+    const eloObj = getElo(userId);
+    const searchName = eloObj.ign || playerData.username;
+    
+    // Tìm vị trí tên trong text
+    const nameRegex = new RegExp(searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const nameMatch = text.match(nameRegex);
+    if (!nameMatch) continue;
+
+    const nameIndex = nameMatch.index;
+    // Chọn KDA gần tên nhất (trong vòng 200 ký tự)
+    let best = null;
+    let bestDist = Infinity;
+    for (const kda of kdaList) {
+      const dist = Math.abs(kda.index - nameIndex);
+      if (dist < bestDist && dist < 200) {
+        bestDist = dist;
+        best = kda;
+      }
+    }
+    if (best) {
+      resultMap.set(userId, {
+        kill: best.kill,
+        death: best.death,
+        assist: best.assist,
+      });
+    }
+  }
+
+  return resultMap;
+}
+
 module.exports = {
   rooms,
   eloData,
@@ -377,6 +443,7 @@ module.exports = {
   getRankFromElo,
   updateElo,
   calculateNewElo,
+  registerIGN,
   buildRankRoom,
   addRankRoomsToMode,
   removeRankRoom,
@@ -385,4 +452,6 @@ module.exports = {
   // Filter
   getAllNormalRooms,
   getNormalRoomsByMode,
+  // OCR helper
+  extractAllKDAResult,
 };
