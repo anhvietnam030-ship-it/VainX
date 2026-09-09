@@ -357,21 +357,13 @@ function formatPersonalCode(room, userId) {
 }
 
 // ============================================================
-// ===== HÀM OCR MAP KDA - THUẦN TÚY TỌA ĐỘ HÌNH HỌC ========
+// ===== HÀM CHUYỂN OCR SANG DẠNG TXT & QUÉT TỪ TRÊN XUỐNG =====
 // ============================================================
-//
-// `text` giữ lại để log/tương thích.
-// `ocrOverlay` là TextOverlay từ OCR.space (bắt buộc isOverlayRequired=true)
-// ============================================================
-function extractAllKDAResult(text, room, ocrOverlay = null) {
+function extractAllKDAResult(rawText, room, ocrOverlay = null) {
   const resultMap = new Map();
   const players = Array.from(room.players.entries());
 
-  console.log('📝 OCR Text:', text);
-  console.log(
-    '👥 Players:',
-    players.map(([id, p]) => `${p.username} (${id})`).join(', ')
-  );
+  console.log('👥 Players cần tìm:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
 
   const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/;
 
@@ -385,17 +377,18 @@ function extractAllKDAResult(text, room, ocrOverlay = null) {
     };
   }
 
-  // Thu thập tất cả các Word có thông số tọa độ từ overlay
-  let allWords = [];
-  if (Array.isArray(ocrOverlay?.Lines)) {
+  // Bước 1: Chuẩn hóa OCR thành các dòng văn bản dạng TXT (sắp xếp Y từ trên xuống dưới)
+  let formattedTxtLines = [];
+
+  if (Array.isArray(ocrOverlay?.Lines) && ocrOverlay.Lines.length > 0) {
+    let allWords = [];
     for (const line of ocrOverlay.Lines) {
       const words = Array.isArray(line.Words) ? line.Words : [];
       for (const w of words) {
-        const wordText = String(w.WordText || w.Text || '').trim();
-        if (!wordText) continue;
-
+        const text = String(w.WordText || w.Text || '').trim();
+        if (!text) continue;
         allWords.push({
-          text: wordText,
+          text,
           left: Number(w.Left) || 0,
           top: Number(w.Top) || 0,
           width: Number(w.Width) || 0,
@@ -404,112 +397,87 @@ function extractAllKDAResult(text, room, ocrOverlay = null) {
         });
       }
     }
-  }
 
-  if (allWords.length === 0) {
-    console.warn('⚠️ Không có dữ liệu tọa độ ocrOverlay (TextOverlay.Lines). Không thể map KDA.');
-    return resultMap;
-  }
+    // Nhóm các từ có cùng trục Y ngang hàng
+    const rows = [];
+    allWords.sort((a, b) => a.top - b.top);
 
-  // 1. Phân nhóm các Words theo dòng tọa độ Y
-  const rows = [];
-  allWords.sort((a, b) => a.top - b.top);
+    for (const word of allWords) {
+      let matchedRow = rows.find(
+        (r) => Math.abs(r.centerY - word.centerY) <= Math.max(word.height, 15) / 2
+      );
 
-  for (const word of allWords) {
-    let matchedRow = rows.find(
-      (r) => Math.abs(r.centerY - word.centerY) <= Math.max(word.height, 15) / 2
-    );
-
-    if (matchedRow) {
-      matchedRow.words.push(word);
-      matchedRow.centerY =
-        matchedRow.words.reduce((sum, w) => sum + w.centerY, 0) / matchedRow.words.length;
-    } else {
-      rows.push({
-        centerY: word.centerY,
-        words: [word],
-      });
+      if (matchedRow) {
+        matchedRow.words.push(word);
+        matchedRow.centerY =
+          matchedRow.words.reduce((sum, w) => sum + w.centerY, 0) / matchedRow.words.length;
+      } else {
+        rows.push({ centerY: word.centerY, words: [word] });
+      }
     }
+
+    // Ghép từng dòng từ trái sang phải
+    formattedTxtLines = rows
+      .sort((a, b) => a.centerY - b.centerY)
+      .map((r) =>
+        r.words
+          .sort((a, b) => a.left - b.left)
+          .map((w) => w.text)
+          .join(' ')
+      );
+  } else {
+    // Nếu không có Overlay, dùng xâu text thô phân tách dòng theo `\n`
+    formattedTxtLines = String(rawText || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
   }
 
-  // Sắp xếp các Word trong từng dòng theo thứ tự từ trái sang phải (X)
-  for (const row of rows) {
-    row.words.sort((a, b) => a.left - b.left);
-  }
+  // Xuất cấu trúc chuỗi TXT ra Log để kiểm tra
+  const generatedTxtContent = formattedTxtLines.join('\n');
+  console.log('📄 [Dữ liệu OCR chuyển sang TXT theo hàng dọc]:\n' + generatedTxtContent);
 
-  // 2. Tìm IGN và map KDA theo tọa độ X bên phải IGN
+  // Bước 2: Đọc file TXT ảo từ trên xuống dưới (đọc từng dòng) để xác định KDA
   for (const [userId, playerData] of players) {
     const eloObj = getElo(userId);
     const searchName = String(eloObj.ign || playerData.username || '').trim();
 
-    console.log(`🔎 Tìm IGN: "${searchName}"`);
-
-    if (!searchName) {
-      console.warn(`⚠️ User ${userId} không có IGN/username để tìm.`);
-      continue;
-    }
+    if (!searchName) continue;
 
     const escapedName = searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const nameRegex = new RegExp(escapedName, 'i');
 
-    let matchedKDA = null;
+    let foundKDA = null;
 
-    for (const row of rows) {
-      const rowText = row.words.map((w) => w.text).join(' ');
+    // Duyệt dọc từng dòng từ top -> bottom
+    for (let lineIndex = 0; lineIndex < formattedTxtLines.length; lineIndex++) {
+      const lineText = formattedTxtLines[lineIndex];
 
-      if (!nameRegex.test(rowText)) continue;
+      // Tìm tên người chơi trên dòng hiện tại
+      const matchName = lineText.match(nameRegex);
+      if (matchName) {
+        // Cắt lấy phần text đứng sau tên người chơi trên cùng dòng
+        const afterNameText = lineText.slice(matchName.index + matchName[0].length);
+        const kdaOnSameLine = parseKDA(afterNameText);
 
-      let nameRightBound = -1;
-
-      // Tìm Word chứa IGN
-      const nameWord = row.words.find((w) => nameRegex.test(w.text));
-      if (nameWord) {
-        nameRightBound = nameWord.left + nameWord.width;
-      } else {
-        // Hỗ trợ trường hợp tên ghép bởi nhiều Word liên tiếp
-        for (let i = 0; i < row.words.length; i++) {
-          let combined = '';
-          for (let j = i; j < row.words.length; j++) {
-            combined += (combined ? ' ' : '') + row.words[j].text;
-            if (nameRegex.test(combined)) {
-              nameRightBound = row.words[j].left + row.words[j].width;
-              break;
-            }
-          }
-          if (nameRightBound !== -1) break;
+        if (kdaOnSameLine) {
+          foundKDA = kdaOnSameLine;
+          console.log(
+            `✅ Found KDA cho ${searchName} tại dòng ${lineIndex + 1}: ${foundKDA.kill}/${foundKDA.death}/${foundKDA.assist}`
+          );
+          break;
         }
-      }
-
-      if (nameRightBound === -1) continue;
-
-      // Tìm KDA nằm trên CÙNG DÒNG tọa độ và bên PHẢI tên (Left >= nameRightBound - 10)
-      const kdaCandidates = row.words
-        .map((w) => ({
-          left: w.left,
-          kda: parseKDA(w.text),
-        }))
-        .filter((item) => item.kda && item.left >= nameRightBound - 10)
-        .sort((a, b) => a.left - b.left);
-
-      if (kdaCandidates.length > 0) {
-        matchedKDA = kdaCandidates[0].kda;
-        console.log(
-          `✅ Map KDA cho ${searchName}: ${matchedKDA.kill}/${matchedKDA.death}/${matchedKDA.assist} (Tọa độ X/Y)`
-        );
-        break;
       }
     }
 
-    if (matchedKDA) {
-      resultMap.set(userId, matchedKDA);
+    if (foundKDA) {
+      resultMap.set(userId, foundKDA);
     } else {
-      console.warn(
-        `⚠️ Không map KDA cho "${searchName}". Không tìm thấy KDA trên cùng dòng tọa độ bên phải IGN.`
-      );
+      console.warn(`⚠️ Không quét thấy KDA hợp lệ cho IGN: "${searchName}" khi đọc từ trên xuống.`);
     }
   }
 
-  console.log('📊 Kết quả map KDA:', Array.from(resultMap.entries()));
+  console.log('📊 Kết quả Map KDA hoàn tất:', Array.from(resultMap.entries()));
   return resultMap;
 }
 
