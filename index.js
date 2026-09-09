@@ -2574,6 +2574,10 @@ async function giveCode(interaction, roomId) {
   });
 }
 
+// ===== KEEP-ALIVE HTTP SERVER (để Render nhận diện port đang mở) =====
+startKeepAliveServer();
+startSelfPing();
+
 // ===== LOGIN =====
 client.login(config.TOKEN)
   .then(() => console.log(`=== BOT DISCORD ĐÃ ONLINE THÀNH CÔNG: ${client.user.tag} ===`))
