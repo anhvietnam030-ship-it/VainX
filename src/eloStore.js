@@ -10,7 +10,9 @@ if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
     auth: { persistSession: false },
   });
 } else {
-  console.warn('⚠️ Supabase chưa được cấu hình -> ELO sẽ KHÔNG được lưu.');
+  console.warn(
+    '⚠️ SUPABASE_URL / SUPABASE_SERVICE_KEY chưa được cấu hình -> ELO sẽ KHÔNG được lưu bền vững.'
+  );
 }
 
 function isEnabled() {
@@ -22,7 +24,7 @@ async function loadAllElo() {
   try {
     const { data, error } = await supabase.from(TABLE).select('user_id, elo, rank, Ign');
     if (error) {
-      console.error('❌ Lỗi tải ELO:', error.message);
+      console.error('❌ Lỗi tải ELO từ Supabase:', error.message);
       return new Map();
     }
     const map = new Map();
@@ -35,7 +37,7 @@ async function loadAllElo() {
     }
     return map;
   } catch (err) {
-    console.error('❌ Lỗi tải ELO:', err.message);
+    console.error('❌ Lỗi tải ELO từ Supabase:', err.message);
     return new Map();
   }
 }
@@ -51,7 +53,7 @@ async function upsertElo(userId, data) {
         user_id: userId,
         elo: data.elo ?? null,
         rank: data.rank || 'Unranked',
-        Ign: data.ign || null,   // ✅ Tên cột chính xác
+        Ign: data.ign || null,   // ✅ Đúng tên cột trong Supabase
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'user_id' }
