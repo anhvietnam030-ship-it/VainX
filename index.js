@@ -1407,7 +1407,9 @@ async function handleSlashCommand(interaction) {
       });
     }
 
-    const kdaMap = extractAllKDAResult(ocrText, room);
+    // Tạo một object giả chỉ chứa players từ session
+const fakeRoom = { players: new Map(session.players) };
+const kdaMap = extractAllKDAResult(ocrText, fakeRoom);
 
     if (kdaMap.size === 0) {
       return interaction.editReply({
