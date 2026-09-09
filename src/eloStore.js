@@ -10,22 +10,19 @@ if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
     auth: { persistSession: false },
   });
 } else {
-  console.warn(
-    '⚠️ SUPABASE_URL / SUPABASE_SERVICE_KEY chưa được cấu hình trong biến môi trường -> ELO sẽ KHÔNG được lưu bền vững, sẽ mất mỗi khi deploy lại.'
-  );
+  console.warn('⚠️ Supabase chưa được cấu hình -> ELO sẽ KHÔNG được lưu.');
 }
 
 function isEnabled() {
   return !!supabase;
 }
 
-// Tải toàn bộ ELO đã lưu, trả về Map(userId -> { elo, rank, ign })
 async function loadAllElo() {
   if (!supabase) return new Map();
   try {
-    const { data, error } = await supabase.from(TABLE).select('user_id, elo, rank, ign');
+    const { data, error } = await supabase.from(TABLE).select('user_id, elo, rank, Ign');
     if (error) {
-      console.error('❌ Lỗi tải ELO từ Supabase:', error.message);
+      console.error('❌ Lỗi tải ELO:', error.message);
       return new Map();
     }
     const map = new Map();
@@ -33,17 +30,16 @@ async function loadAllElo() {
       map.set(row.user_id, {
         elo: row.elo,
         rank: row.rank,
-        ...(row.ign ? { ign: row.ign } : {}),
+        ...(row.Ign ? { ign: row.Ign } : {}),
       });
     }
     return map;
   } catch (err) {
-    console.error('❌ Lỗi tải ELO từ Supabase:', err.message);
+    console.error('❌ Lỗi tải ELO:', err.message);
     return new Map();
   }
 }
 
-// Lưu/ cập nhật ELO của 1 người chơi ngay khi thay đổi (kết quả trận, đăng ký IGN...)
 async function upsertElo(userId, data) {
   if (!supabase) {
     console.warn('⚠️ Supabase chưa được cấu hình, không lưu ELO cho', userId);
@@ -55,18 +51,18 @@ async function upsertElo(userId, data) {
         user_id: userId,
         elo: data.elo ?? null,
         rank: data.rank || 'Unranked',
-        ign: data.ign || null,
+        Ign: data.ign || null,   // ✅ Tên cột chính xác
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'user_id' }
     );
     if (error) {
-      console.error(`❌ Lỗi lưu ELO của ${userId} lên Supabase:`, error.message);
+      console.error(`❌ Lỗi upsert ELO cho ${userId}:`, error.message, error.details);
     } else {
-      console.log(`✅ Đã lưu ELO của ${userId} lên Supabase (${data.elo} điểm)`);
+      console.log(`✅ Đã lưu ELO của ${userId} (${data.elo} điểm)`);
     }
   } catch (err) {
-    console.error(`❌ Lỗi lưu ELO của ${userId} lên Supabase:`, err.message);
+    console.error(`❌ Lỗi upsert ELO cho ${userId}:`, err.message);
   }
 }
 
@@ -75,12 +71,12 @@ async function deleteElo(userId) {
   try {
     const { error } = await supabase.from(TABLE).delete().eq('user_id', userId);
     if (error) {
-      console.error(`❌ Lỗi xóa ELO của ${userId} trên Supabase:`, error.message);
+      console.error(`❌ Lỗi xóa ELO của ${userId}:`, error.message);
     } else {
-      console.log(`✅ Đã xóa ELO của ${userId} trên Supabase`);
+      console.log(`✅ Đã xóa ELO của ${userId}`);
     }
   } catch (err) {
-    console.error(`❌ Lỗi xóa ELO của ${userId} trên Supabase:`, err.message);
+    console.error(`❌ Lỗi xóa ELO của ${userId}:`, err.message);
   }
 }
 
