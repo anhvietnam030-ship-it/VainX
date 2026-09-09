@@ -416,9 +416,9 @@ function formatPersonalCode(room, userId) {
   return `${room.code}-${player.username}`;
 }
 
-// ============================================================
-// ===== OCR HELPER – Thuật toán gán KDA không trùng lặp =====
-// ============================================================
+// ===================================================================
+// ===== HÀM OCR MỚI – GHÉP CẶP THEO THỨ TỰ XUẤT HIỆN =============
+// ===================================================================
 function extractAllKDAResult(text, room) {
   const resultMap = new Map();
   const players = Array.from(room.players.entries());
@@ -426,60 +426,53 @@ function extractAllKDAResult(text, room) {
   console.log('📝 OCR Text:', text);
   console.log('👥 Players:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
 
-  // Tìm vị trí của tất cả tên (dùng IGN hoặc username)
-  const namePositions = [];
+  // 1. Lấy danh sách tên (theo IGN hoặc username) + vị trí
+  const nameEntries = [];
   for (const [userId, playerData] of players) {
     const eloObj = getElo(userId);
     const searchName = eloObj.ign || playerData.username;
     const regex = new RegExp(searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
     const match = text.match(regex);
     if (match) {
-      namePositions.push({ userId, name: searchName, index: match.index });
+      nameEntries.push({ userId, name: searchName, index: match.index });
     } else {
       console.warn(`⚠️ Không tìm thấy tên "${searchName}" trong OCR.`);
     }
   }
 
-  // Tìm tất cả cụm KDA và vị trí
-  const kdaPositions = [];
+  // 2. Lấy tất cả cụm KDA + vị trí
+  const kdaEntries = [];
   const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
   let m;
   while ((m = kdaRegex.exec(text)) !== null) {
-    kdaPositions.push({
+    kdaEntries.push({
       kill: parseInt(m[1], 10),
       death: parseInt(m[2], 10),
       assist: parseInt(m[3], 10),
       index: m.index,
-      used: false,
     });
   }
 
-  // Sắp xếp tên theo vị trí (không bắt buộc)
-  namePositions.sort((a, b) => a.index - b.index);
+  // 3. Sắp xếp theo thứ tự vị trí (tăng dần)
+  nameEntries.sort((a, b) => a.index - b.index);
+  kdaEntries.sort((a, b) => a.index - b.index);
 
-  // Với mỗi tên, chọn KDA gần nhất chưa được sử dụng
-  for (const namePos of namePositions) {
-    let best = null;
-    let bestDist = Infinity;
-    for (const kda of kdaPositions) {
-      if (kda.used) continue;
-      const dist = Math.abs(kda.index - namePos.index);
-      if (dist < bestDist && dist < 300) {
-        bestDist = dist;
-        best = kda;
-      }
-    }
-    if (best) {
-      best.used = true;
-      resultMap.set(namePos.userId, {
-        kill: best.kill,
-        death: best.death,
-        assist: best.assist,
-      });
-      console.log(`✅ Map KDA cho ${namePos.name}: ${best.kill}/${best.death}/${best.assist} (cách ${bestDist} ký tự)`);
-    } else {
-      console.warn(`⚠️ Không tìm thấy KDA gần tên "${namePos.name}" trong phạm vi 300 ký tự.`);
-    }
+  // 4. Ghép cặp theo thứ tự: tên thứ i với KDA thứ i
+  const minLen = Math.min(nameEntries.length, kdaEntries.length);
+  for (let i = 0; i < minLen; i++) {
+    const name = nameEntries[i];
+    const kda = kdaEntries[i];
+    resultMap.set(name.userId, {
+      kill: kda.kill,
+      death: kda.death,
+      assist: kda.assist,
+    });
+    console.log(`✅ Map KDA cho ${name.name}: ${kda.kill}/${kda.death}/${kda.assist} (thứ tự ${i+1})`);
+  }
+
+  // Nếu số lượng không khớp, log cảnh báo
+  if (nameEntries.length !== kdaEntries.length) {
+    console.warn(`⚠️ Số lượng tên (${nameEntries.length}) và KDA (${kdaEntries.length}) không khớp. Chỉ ghép được ${minLen} cặp.`);
   }
 
   console.log('📊 Kết quả map KDA:', Array.from(resultMap.entries()));
