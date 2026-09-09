@@ -63,4 +63,14 @@ async function upsertElo(userId, data) {
   }
 }
 
-module.exports = { loadAllElo, upsertElo, isEnabled };
+async function deleteElo(userId) {
+  if (!supabase) return;
+  try {
+    const { error } = await supabase.from(TABLE).delete().eq('user_id', userId);
+    if (error) console.error(`❌ Lỗi xóa ELO của ${userId} trên Supabase:`, error.message);
+  } catch (err) {
+    console.error(`❌ Lỗi xóa ELO của ${userId} trên Supabase:`, err.message);
+  }
+}
+
+module.exports = { loadAllElo, upsertElo, deleteElo, isEnabled };

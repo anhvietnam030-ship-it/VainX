@@ -179,6 +179,11 @@ function restoreEloData(savedEloMap) {
   return eloData;
 }
 
+// Xóa hoàn toàn ELO của 1 người chơi (đưa về Unranked, dùng cho lệnh admin /xoa-elo)
+function clearElo(userId) {
+  return eloData.delete(userId);
+}
+
 function getRoom(roomId) {
   return rooms.get(roomId) || hiddenRooms.get(roomId);
 }
@@ -499,6 +504,7 @@ module.exports = {
   getElo,
   getRankFromElo,
   updateElo,
+  clearElo,
   calculateNewElo,
   registerIGN,
   buildRankRoom,

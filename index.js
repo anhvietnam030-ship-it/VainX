@@ -47,6 +47,7 @@ const {
   removeExtraRoom,
   restoreRooms,
   restoreEloData,
+  clearElo,
   // Rank exports
   eloData,
   getElo,
@@ -1295,6 +1296,56 @@ async function handleSlashCommand(interaction) {
     eloStore.upsertElo(interaction.user.id, getElo(interaction.user.id)).catch(() => {});
     persistence.saveState(rooms, eloData);
     return interaction.reply({ content: `✅ Đã đăng ký IGN thành công: **${ign}**\nBot sẽ dùng IGN này để tìm KDA của bạn trong ảnh.`, ephemeral: true });
+  }
+
+  // ---- SET-ELO (admin: đặt ELO chính xác cho 1 người, dùng để test) ----
+  if (commandName === 'set-elo') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const targetUser = interaction.options.getUser('user', true);
+    const diem = interaction.options.getInteger('diem', true);
+    const clamped = Math.max(0, Math.min(3000, diem));
+    const data = updateElo(targetUser.id, clamped);
+    eloStore.upsertElo(targetUser.id, getElo(targetUser.id)).catch(() => {});
+    persistence.saveState(rooms, eloData);
+    return interaction.reply({
+      content: `✅ Đã đặt ELO của <@${targetUser.id}> thành **${clamped}** (${data.rank}).`,
+      ephemeral: true,
+    });
+  }
+
+  // ---- THEM-ELO (admin: cộng hoặc trừ điểm — dùng số âm để trừ) ----
+  if (commandName === 'them-elo') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const targetUser = interaction.options.getUser('user', true);
+    const diem = interaction.options.getInteger('diem', true);
+    const currentElo = getElo(targetUser.id).elo ?? config.RANK_DEFAULT_ELO;
+    const newElo = Math.max(0, Math.min(3000, currentElo + diem));
+    const data = updateElo(targetUser.id, newElo);
+    eloStore.upsertElo(targetUser.id, getElo(targetUser.id)).catch(() => {});
+    persistence.saveState(rooms, eloData);
+    return interaction.reply({
+      content: `✅ Đã ${diem >= 0 ? 'cộng' : 'trừ'} **${Math.abs(diem)}** điểm cho <@${targetUser.id}>. ELO: ${currentElo} → **${newElo}** (${data.rank}).`,
+      ephemeral: true,
+    });
+  }
+
+  // ---- XOA-ELO (admin: xóa hẳn ELO của 1 người, đưa về Unranked) ----
+  if (commandName === 'xoa-elo') {
+    if (!isAdmin(interaction)) {
+      return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
+    }
+    const targetUser = interaction.options.getUser('user', true);
+    clearElo(targetUser.id);
+    eloStore.deleteElo(targetUser.id).catch(() => {});
+    persistence.saveState(rooms, eloData);
+    return interaction.reply({
+      content: `✅ Đã xóa ELO của <@${targetUser.id}>, trở về **Unranked**.`,
+      ephemeral: true,
+    });
   }
 
   // ---- SUBMIT-RESULT (VỚI FILE ĐÍNH KÈM + FORWARD LOG) ----

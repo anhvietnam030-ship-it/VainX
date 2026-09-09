@@ -191,6 +191,22 @@ const commands = [
          .setMinLength(2)
          .setMaxLength(20)
     ),
+
+  // ----- QUẢN LÝ ELO (ADMIN) -----
+  new SlashCommandBuilder()
+    .setName('set-elo')
+    .setDescription('[Admin] Đặt ELO chính xác cho 1 người chơi')
+    .addUserOption(opt => opt.setName('user').setDescription('Người chơi').setRequired(true))
+    .addIntegerOption(opt => opt.setName('diem').setDescription('Giá trị ELO mới').setMinValue(0).setMaxValue(3000).setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('them-elo')
+    .setDescription('[Admin] Cộng/trừ điểm ELO cho 1 người chơi (dùng số âm để trừ)')
+    .addUserOption(opt => opt.setName('user').setDescription('Người chơi').setRequired(true))
+    .addIntegerOption(opt => opt.setName('diem').setDescription('Số điểm cộng (âm để trừ)').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('xoa-elo')
+    .setDescription('[Admin] Xóa ELO của 1 người chơi, đưa về Unranked')
+    .addUserOption(opt => opt.setName('user').setDescription('Người chơi').setRequired(true)),
 ];
 
 const rest = new REST({ version: '10' }).setToken(config.TOKEN);
