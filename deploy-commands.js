@@ -192,6 +192,12 @@ const commands = [
          .setMaxLength(20)
     ),
 
+  // ----- RANK STATS -----
+  new SlashCommandBuilder()
+    .setName('rank-stats')
+    .setDescription('Xem ELO, W/L và ước tính số win cần để lên tier kế tiếp')
+    .addUserOption(opt => opt.setName('user').setDescription('Người chơi (bỏ trống = xem chính mình)').setRequired(false)),
+
   // ----- QUẢN LÝ ELO (ADMIN, THEO CHẾ ĐỘ) -----
   new SlashCommandBuilder()
     .setName('set-elo')

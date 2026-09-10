@@ -1,13 +1,9 @@
 const config = require('../config');
 
-// roomId dạng "3v3-1", "3v3-2", ... "5v5-4"
 const rooms = new Map();
-
-// Phòng ẨN — không nằm trong danh sách công khai
 const hiddenRooms = new Map();
 
-// === ELO DATA (PER-MODE) ===
-// Map<userId, { ign: string|null, '3v3': { elo, rank }, '5v5': { elo, rank } }>
+// Map<userId, { ign, '3v3': { elo, rank, wins, losses }, '5v5': { elo, rank, wins, losses } }>
 const eloData = new Map();
 
 const MODES = ['3v3', '5v5'];
@@ -15,8 +11,8 @@ const MODES = ['3v3', '5v5'];
 function emptyEloEntry(ign = null) {
   return {
     ign,
-    '3v3': { elo: null, rank: 'Unranked' },
-    '5v5': { elo: null, rank: 'Unranked' },
+    '3v3': { elo: null, rank: 'Unranked', wins: 0, losses: 0 },
+    '5v5': { elo: null, rank: 'Unranked', wins: 0, losses: 0 },
   };
 }
 
@@ -42,15 +38,17 @@ function getElo(userId, mode) {
   if (!MODES.includes(mode)) mode = '5v5';
   const entry = eloData.get(userId);
   if (!entry) {
-    return { elo: null, rank: 'Unranked', rankIndex: 0, ign: null };
+    return { elo: null, rank: 'Unranked', rankIndex: 0, ign: null, wins: 0, losses: 0 };
   }
-  const modeData = entry[mode] || { elo: null, rank: 'Unranked' };
+  const modeData = entry[mode] || { elo: null, rank: 'Unranked', wins: 0, losses: 0 };
   const rankIndex = getRankIndex(modeData.elo);
   return {
     elo: modeData.elo,
     rank: modeData.rank || getRankFromElo(modeData.elo),
     rankIndex,
     ign: entry.ign || null,
+    wins: modeData.wins || 0,
+    losses: modeData.losses || 0,
   };
 }
 
@@ -64,13 +62,22 @@ function getFullElo(userId) {
   };
 }
 
-function updateElo(userId, mode, newElo) {
+// isWin: true = tăng wins, false = tăng losses, undefined = không đổi
+function updateElo(userId, mode, newElo, isWin) {
   if (!MODES.includes(mode)) throw new Error(`Mode không hợp lệ: ${mode}`);
   const entry = eloData.get(userId) || emptyEloEntry();
   const rank = getRankFromElo(newElo);
-  entry[mode] = { elo: newElo, rank };
+  const cur = entry[mode] || { elo: null, rank: 'Unranked', wins: 0, losses: 0 };
+  const wins = cur.wins || 0;
+  const losses = cur.losses || 0;
+  entry[mode] = {
+    elo: newElo,
+    rank,
+    wins: isWin === true ? wins + 1 : wins,
+    losses: isWin === false ? losses + 1 : losses,
+  };
   eloData.set(userId, entry);
-  return { elo: newElo, rank };
+  return { elo: newElo, rank, wins: entry[mode].wins, losses: entry[mode].losses };
 }
 
 function registerIGN(userId, ign) {
@@ -85,7 +92,6 @@ function registerIGN(userId, ign) {
   return { ok: true };
 }
 
-// Nếu mode rỗng -> xóa cả entry (cả 2 mode). Nếu có mode -> chỉ reset mode đó.
 function clearElo(userId, mode) {
   const entry = eloData.get(userId);
   if (!entry) return false;
@@ -93,7 +99,7 @@ function clearElo(userId, mode) {
     return eloData.delete(userId);
   }
   if (!MODES.includes(mode)) return false;
-  entry[mode] = { elo: null, rank: 'Unranked' };
+  entry[mode] = { elo: null, rank: 'Unranked', wins: 0, losses: 0 };
   eloData.set(userId, entry);
   return true;
 }
@@ -102,20 +108,28 @@ function restoreEloData(saved) {
   eloData.clear();
   for (const [userId, data] of saved) {
     if (data && typeof data === 'object' && (data['3v3'] || data['5v5'])) {
-      // Format mới
       eloData.set(userId, {
         ign: data.ign || null,
-        '3v3': { elo: data['3v3']?.elo ?? null, rank: data['3v3']?.rank || 'Unranked' },
-        '5v5': { elo: data['5v5']?.elo ?? null, rank: data['5v5']?.rank || 'Unranked' },
+        '3v3': {
+          elo: data['3v3']?.elo ?? null,
+          rank: data['3v3']?.rank || 'Unranked',
+          wins: data['3v3']?.wins || 0,
+          losses: data['3v3']?.losses || 0,
+        },
+        '5v5': {
+          elo: data['5v5']?.elo ?? null,
+          rank: data['5v5']?.rank || 'Unranked',
+          wins: data['5v5']?.wins || 0,
+          losses: data['5v5']?.losses || 0,
+        },
       });
     } else if (data && typeof data.elo !== 'undefined') {
-      // Format cũ (1 elo chung) -> nhân bản sang cả 2 mode
       const eloVal = data.elo ?? null;
       const rankVal = data.rank || getRankFromElo(eloVal);
       eloData.set(userId, {
         ign: data.ign || null,
-        '3v3': { elo: eloVal, rank: rankVal },
-        '5v5': { elo: eloVal, rank: rankVal },
+        '3v3': { elo: eloVal, rank: rankVal, wins: 0, losses: 0 },
+        '5v5': { elo: eloVal, rank: rankVal, wins: 0, losses: 0 },
       });
     }
   }
@@ -145,6 +159,30 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
 
   const newElo = currentElo + Math.round(rawChange);
   return Math.max(0, Math.min(3000, newElo));
+}
+
+// Ước lượng số win còn lại để lên tier kế tiếp (giả định trung bình ~25 ELO/win).
+function estimateWinsToNextTier(userId, mode) {
+  const cur = getElo(userId, mode);
+  const tiers = config.RANK_TIERS;
+  if (cur.elo === null || cur.elo === undefined) {
+    const first = tiers[0];
+    return {
+      needElo: first.minElo,
+      estimatedWins: Math.max(1, Math.ceil(first.minElo / 25)),
+      nextTierName: first.name,
+      isMax: false,
+    };
+  }
+  const currentIdx = cur.rankIndex;
+  if (currentIdx >= tiers.length - 1) {
+    return { needElo: 0, estimatedWins: 0, nextTierName: null, isMax: true };
+  }
+  const nextTier = tiers[currentIdx + 1];
+  const needElo = Math.max(0, nextTier.minElo - cur.elo);
+  const AVG_PER_WIN = 25;
+  const estimatedWins = needElo > 0 ? Math.max(1, Math.ceil(needElo / AVG_PER_WIN)) : 0;
+  return { needElo, estimatedWins, nextTierName: nextTier.name, isMax: false };
 }
 
 // ===== ROOM FUNCTIONS =====
@@ -193,11 +231,9 @@ function restoreRooms(savedRooms) {
   rooms.clear();
   for (const saved of savedRooms) {
     if (!saved || !saved.mode || !saved.index) continue;
-
     const room = saved.isRank
       ? buildRankRoom(saved.mode, saved.index)
       : buildInitialRoom(saved.mode, saved.index);
-
     room.status = saved.status || 'waiting';
     room.code = saved.code || null;
     room.revealedAt = saved.revealedAt || null;
@@ -206,31 +242,23 @@ function restoreRooms(savedRooms) {
     room.panelChannelId = saved.panelChannelId || null;
     room.panelMessageId = saved.panelMessageId || null;
     room.timeoutMs = saved.timeoutMs || config.DEFAULT_ROOM_TIMEOUT_MS;
-    room.players = new Map(
-      (saved.players || []).map((p) => {
-        const { id, ...rest } = p;
-        return [id, rest];
-      })
-    );
+    room.players = new Map((saved.players || []).map((p) => {
+      const { id, ...rest } = p;
+      return [id, rest];
+    }));
     room.bannedUsers = new Set(saved.bannedUsers || []);
-
     if (room.isRank) {
       room.resultMap = new Map(saved.resultMap || []);
       room.resultWindowEnd = saved.resultWindowEnd || null;
     }
-
     rooms.set(room.id, room);
   }
-
   for (const mode of Object.keys(config.CAPACITY)) {
     for (let i = 1; i <= config.ROOMS_PER_MODE; i++) {
       const id = `${mode}-${i}`;
-      if (!rooms.has(id)) {
-        rooms.set(id, buildInitialRoom(mode, i));
-      }
+      if (!rooms.has(id)) rooms.set(id, buildInitialRoom(mode, i));
     }
   }
-
   return rooms;
 }
 
@@ -464,7 +492,7 @@ function formatPersonalCode(room, userId) {
 }
 
 // ============================================================
-// ===== HÀM OCR – ƯU TIÊN TÌM KDA TRÊN CÙNG DÒNG ============
+// ===== HÀM OCR =============================================
 // ============================================================
 function extractAllKDAResult(text, room, opts = {}) {
   const skipCodeCheck = !!opts.skipCodeCheck;
@@ -477,34 +505,24 @@ function extractAllKDAResult(text, room, opts = {}) {
   console.log('📝 OCR Text:', text);
   console.log('👥 Players:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
   if (skipCodeCheck) {
-    console.warn('🧪 extractAllKDAResult: ADMIN TESTING MODE — bỏ qua xác thực mã phòng (chỉ nên dùng khi admin test).');
+    console.warn('🧪 extractAllKDAResult: ADMIN TESTING MODE — bỏ qua xác thực mã phòng.');
   } else if (!roomCode) {
-    console.warn('⚠️ extractAllKDAResult: không có room.code để đối chiếu -> dùng chế độ so khớp tên "mở" (KHÔNG khuyến khích, dễ bị ăn gian bằng ảnh trận khác).');
+    console.warn('⚠️ extractAllKDAResult: không có room.code để đối chiếu.');
   }
 
-  // Tách dòng
   let lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
-  // ===== FIX OCR (phần 1): gộp dòng "prefix" bị tách rời khỏi tên =====
-  // OCR đôi khi tách rời "prefix slot" và "tên người chơi" thành 2 dòng riêng,
-  // ví dụ "<code>_<team>_" và "<username>" (như "1600-1_" + "NaNi"). Điều này
-  // làm cho việc đếm slot bị lệch (đếm 2 slot cho 1 người), khiến chiến lược
-  // "đọc theo cột" gán sai KDA (thường lấy KDA của người đứng trước trong ảnh).
-  // → Gộp lại thành 1 dòng trước khi xử lý tiếp.
+  // Gộp dòng prefix bị tách rời khỏi tên (vd "1600-1_" + "NaNi")
   for (let i = 0; i < lines.length - 1; i++) {
     const onlyPrefix = /^\d+[\s\-_]+\d+[\s\-_]*$/.test(lines[i]);
     const nextStartsWithLetter = /^[A-Za-z]/.test(lines[i + 1]);
     if (onlyPrefix && nextStartsWithLetter) {
       lines[i] = lines[i] + lines[i + 1];
       lines.splice(i + 1, 1);
-      // Không tăng i để có thể gộp tiếp nếu cần (thường 1 lần là đủ)
     }
   }
 
-  // ===== FIX OCR (phần 2): rebuild `text` cho khớp với `lines` đã gộp =====
-  // Nếu không làm bước này, text.indexOf(foundLine) sẽ trả -1 với những dòng
-  // đã gộp (vì text gốc còn newline giữa prefix và tên) → anchor bị loại →
-  // bot báo "Không tìm thấy dòng nào chứa tên ...".
+  // Rebuild text cho khớp lines đã gộp
   text = lines.join('\n');
 
   const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
@@ -527,27 +545,14 @@ function extractAllKDAResult(text, room, opts = {}) {
 
     let foundLine = null;
     for (let i = 0; i < lines.length; i++) {
-      if (nameRegex.test(lines[i])) {
-        foundLine = lines[i];
-        break;
-      }
+      if (nameRegex.test(lines[i])) { foundLine = lines[i]; break; }
     }
-
     const linePos = foundLine ? text.indexOf(foundLine) : -1;
     anchors.push({ userId, searchName, foundLine, linePos });
   }
 
-  const foundAnchors = anchors
-    .filter(a => a.linePos !== -1)
-    .sort((a, b) => a.linePos - b.linePos);
+  const foundAnchors = anchors.filter(a => a.linePos !== -1).sort((a, b) => a.linePos - b.linePos);
 
-  // ===== FIX OCR (phần 3): slotPrefixRegex chặt hơn =====
-  // Regex cũ: /^\d+[\s\-_]+(\d+[\s\-_]+)?/ — chấp nhận cả space, nên match
-  // nhầm dòng như "14 Chiến thắng" (14 + space + chữ). Khi đó lastSlotIdx bị
-  // đẩy xuống dưới block KDA → contiguousBlock = [] → chiến lược cột fail →
-  // fallback window lấy KDA gần vị trí tên nhất theo ký tự → dễ sai.
-  // Regex mới: BẮT BUỘC có "-" hoặc "_" ngay sau số đầu tiên, rồi đến chữ/số.
-  // Nhờ vậy "14 Chiến thắng" (space giữa 14 và Chiến) không còn match.
   const slotPrefixRegex = (roomCode && !skipCodeCheck)
     ? new RegExp(`^${escapeRe(roomCode)}${SEP}\\d+_`)
     : /^\d+[\-_][A-Za-z0-9]/;
@@ -569,7 +574,7 @@ function extractAllKDAResult(text, room, opts = {}) {
       const death = parseInt(sameLineMatch[2], 10);
       const assist = parseInt(sameLineMatch[3], 10);
       resultMap.set(userId, { kill, death, assist });
-      console.log(`✅ Map KDA cho ${searchName}: ${kill}/${death}/${assist} (trên dòng "${foundLine}")`);
+      console.log(`✅ Map KDA cho ${searchName}: ${kill}/${death}/${assist}`);
       continue;
     }
 
@@ -588,21 +593,18 @@ function extractAllKDAResult(text, room, opts = {}) {
       for (let i = 0; i < lines.length; i++) {
         if (slotPrefixRegex.test(lines[i])) slotLines.push(i);
       }
-
       const lastSlotIdx = slotLines[slotLines.length - 1];
       let blockStart = -1;
       for (let i = lastSlotIdx + 1; i < lines.length; i++) {
         if (pureKdaLineRegex.test(lines[i])) { blockStart = i; break; }
         if (slotPrefixRegex.test(lines[i])) break;
       }
-
       let contiguousBlock = [];
       if (blockStart !== -1) {
         for (let i = blockStart; i < lines.length && pureKdaLineRegex.test(lines[i]); i++) {
           contiguousBlock.push(i);
         }
       }
-
       const slotRank = slotLines.indexOf(slotLineIdx);
       if (slotRank !== -1 && contiguousBlock.length >= slotLines.length && slotRank < contiguousBlock.length) {
         kdaRegex.lastIndex = 0;
@@ -613,7 +615,7 @@ function extractAllKDAResult(text, room, opts = {}) {
           const death = parseInt(slotMatch[2], 10);
           const assist = parseInt(slotMatch[3], 10);
           resultMap.set(userId, { kill, death, assist });
-          console.log(`✅ Map KDA (theo vị trí cột, hạng ${slotRank}) cho ${searchName}: ${kill}/${death}/${assist} (dòng "${kdaLineText}")`);
+          console.log(`✅ Map KDA (cột, hạng ${slotRank}) cho ${searchName}: ${kill}/${death}/${assist}`);
           continue;
         }
       }
@@ -625,7 +627,7 @@ function extractAllKDAResult(text, room, opts = {}) {
       ? foundAnchors[ownIndex + 1].linePos
       : text.length;
 
-    console.warn(`⚠️ Không tìm thấy KDA trên dòng của "${searchName}", tìm trong phạm vi riêng của người này [${windowStart}, ${windowEnd})...`);
+    console.log(`ℹ️ Fallback window cho "${searchName}" [${windowStart}, ${windowEnd})`);
 
     const windowKda = [];
     const windowRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
@@ -647,11 +649,11 @@ function extractAllKDAResult(text, room, opts = {}) {
         return dist < closestDist ? kda : closest;
       });
       resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
-      console.log(`✅ Map KDA (trong phạm vi riêng) cho ${searchName}: ${best.kill}/${best.death}/${best.assist}`);
+      console.log(`✅ Map KDA (window) cho ${searchName}: ${best.kill}/${best.death}/${best.assist}`);
       continue;
     }
 
-    console.warn(`⚠️ Không tìm thấy KDA nào trong phạm vi riêng của "${searchName}". Bỏ qua để tránh gán nhầm.`);
+    console.warn(`⚠️ Không tìm thấy KDA nào cho "${searchName}".`);
   }
 
   console.log('📊 Kết quả map KDA:', Array.from(resultMap.entries()));
@@ -696,6 +698,7 @@ module.exports = {
   clearElo,
   calculateNewElo,
   registerIGN,
+  estimateWinsToNextTier,
   // Rank rooms
   buildRankRoom,
   addRankRoomsToMode,
