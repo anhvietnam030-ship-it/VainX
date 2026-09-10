@@ -93,7 +93,6 @@ function registerIGN(userId, ign) {
 }
 
 // Reset ELO về 0, GIỮ NGUYÊN IGN.
-// mode rỗng -> reset cả 2 mode. mode có giá trị -> chỉ reset mode đó.
 function clearElo(userId, mode) {
   const entry = eloData.get(userId);
   if (!entry) return false;
@@ -169,25 +168,20 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
 }
 
 // Ước lượng số win còn lại để lên tier kế tiếp.
-// Tier thấp giả định ~70 ELO/win, tier cao giảm dần (~25 ELO/win).
+// Coi ELO null = 0 (tier 0, đang ở Unranked) → next tier là tier kế tiếp.
 function estimateWinsToNextTier(userId, mode) {
   const cur = getElo(userId, mode);
   const tiers = config.RANK_TIERS;
-  if (cur.elo === null || cur.elo === undefined) {
-    const first = tiers[0];
-    return {
-      needElo: first.minElo,
-      estimatedWins: Math.max(1, Math.ceil(first.minElo / 70)),
-      nextTierName: first.name,
-      isMax: false,
-    };
-  }
-  const currentIdx = cur.rankIndex;
+
+  const eloVal = (cur.elo === null || cur.elo === undefined) ? 0 : cur.elo;
+  const currentIdx = getRankIndex(eloVal);
+
   if (currentIdx >= tiers.length - 1) {
     return { needElo: 0, estimatedWins: 0, nextTierName: null, isMax: true };
   }
+
   const nextTier = tiers[currentIdx + 1];
-  const needElo = Math.max(0, nextTier.minElo - cur.elo);
+  const needElo = Math.max(0, nextTier.minElo - eloVal);
   const avgPerWin = currentIdx <= 2 ? 70 : (currentIdx <= 4 ? 52 : (currentIdx <= 6 ? 35 : 25));
   const estimatedWins = needElo > 0 ? Math.max(1, Math.ceil(needElo / avgPerWin)) : 0;
   return { needElo, estimatedWins, nextTierName: nextTier.name, isMax: false };
@@ -520,7 +514,6 @@ function extractAllKDAResult(text, room, opts = {}) {
 
   let lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
-  // Gộp dòng prefix bị tách rời khỏi tên (vd "1600-1_" + "NaNi")
   for (let i = 0; i < lines.length - 1; i++) {
     const onlyPrefix = /^\d+[\s\-_]+\d+[\s\-_]*$/.test(lines[i]);
     const nextStartsWithLetter = /^[A-Za-z]/.test(lines[i + 1]);
@@ -530,7 +523,6 @@ function extractAllKDAResult(text, room, opts = {}) {
     }
   }
 
-  // Rebuild text cho khớp lines đã gộp
   text = lines.join('\n');
 
   const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;

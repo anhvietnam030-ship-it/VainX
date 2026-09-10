@@ -750,7 +750,7 @@ async function handleSlashCommand(interaction) {
       .setDescription(`**IGN:** ${ign}\n\n${formatLine('3v3', eloObj3)}\n\n${formatLine('5v5', eloObj5)}`)
       .setColor(0x5865f2)
       .setThumbnail(target.displayAvatarURL({ size: 128 }))
-      .setFooter({ text: '* Ước tính dựa trên ~25 ELO mỗi win' })
+      .setFooter({ text: '* Ước tính gần đúng — thay đổi theo tier (K-factor) và KDA' })
       .setTimestamp();
 
     return interaction.reply({ embeds: [embed], ephemeral: true });
