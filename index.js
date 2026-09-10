@@ -77,8 +77,11 @@ function autoBalanceRankTeams(room) {
   const entries = Array.from(room.players.entries());
   if (entries.length === 0) return false;
 
-  // Chỉ chia team khi TẤT CẢ đã bấm Sẵn sàng.
-  if (!allReady(room)) {
+  // Chỉ chia team khi phòng ĐÃ ĐẦY và TẤT CẢ đã bấm Sẵn sàng.
+  // (Trước đây chỉ check allReady(), nên phòng chưa đầy nhưng những người
+  // đang có mặt đều "ready" — ví dụ bot test-fill-rank mặc định ready:true —
+  // vẫn bị chia team sớm. Thêm isFull() để khớp điều kiện với canRevealCode.)
+  if (!isFull(room) || !allReady(room)) {
     for (const [, p] of entries) p.team = null;
     return false;
   }
