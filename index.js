@@ -73,10 +73,6 @@ const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 const rankSessions = require('./src/rankSessions');
 
 // ===== HOÀN TẤT PHIÊN RANK KHI ĐỦ ĐIỀU KIỆN =====
-// - Bỏ qua hoàn toàn "người chơi" giả tạo bởi /test-fill-rank (đánh dấu isBot: true khi tạo).
-// - Nếu có kdaMap (OCR): chỉ cần MỘT người chơi THẬT gửi kết quả là đủ.
-// - Nếu KHÔNG có kdaMap (/admin-submit-result nhập tay): chờ đủ tất cả người THẬT.
-// - ELO được tính RIÊNG theo room.mode ('3v3' hoặc '5v5').
 async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
   if (!session) return null;
 
@@ -205,7 +201,6 @@ function saveImageHistory(history) {
   fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
 }
 
-// Băm theo NỘI DUNG FILE ảnh (sha256), không phải URL.
 function hashImageBuffer(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
@@ -308,6 +303,40 @@ function t(interaction, vi, en) {
 
 function bi(vi, en) {
   return `${vi}\n🌐 ${en}`;
+}
+
+// ===== PARSE KẾT QUẢ TRẬN ĐẤU TỪ OCR TEXT =====
+// Vainglory VN hiển thị "Chiến thắng" / "Bại trận" hoặc "Thắng trận" / "Thất bại",
+// bản quốc tế hiển thị "VICTORY" / "DEFEAT". Hỗ trợ luôn các biến thể ngắn
+// (Thắng / Bại / Thua) và các trường hợp OCR mất dấu.
+function parseMatchResult(ocrText) {
+  const resultMatch = ocrText.match(
+    /\b(VICTORY|DEFEAT|WIN|LOSE|Chiến\s*thắng|Thắng\s*trận|Thất\s*bại|Bại\s*trận|Thắng|Bại|Thua|Chien\s*thang|Thang\s*tran|That\s*bai|Bai\s*tran)\b/i
+  );
+  if (!resultMatch) return null;
+  const raw = resultMatch[1].toLowerCase();
+  if (
+    raw.includes('victory') ||
+    raw === 'win' ||
+    raw.includes('chiến') ||
+    raw.includes('chien') ||
+    raw.includes('thắng') ||
+    raw.includes('thang')
+  ) {
+    return 'win';
+  }
+  if (
+    raw.includes('defeat') ||
+    raw === 'lose' ||
+    raw.includes('thất') ||
+    raw.includes('that') ||
+    raw.includes('bại') ||
+    raw.includes('bai') ||
+    raw === 'thua'
+  ) {
+    return 'loss';
+  }
+  return null;
 }
 
 // ===== ANNOUNCEMENT FUNCTIONS =====
@@ -1593,16 +1622,10 @@ async function handleSlashCommand(interaction) {
       });
     }
 
-    let result = null;
-    const resultMatch = ocrText.match(/(VICTORY|DEFEAT|victory|defeat|Chiến thắng|Thất bại|CHIẾN THẮNG|THẤT BẠI|WIN|LOSE)/);
-    if (resultMatch) {
-      const raw = resultMatch[1].toLowerCase();
-      if (raw.includes('victory') || raw.includes('chiến thắng') || raw === 'win') result = 'win';
-      else if (raw.includes('defeat') || raw.includes('thất bại') || raw === 'lose') result = 'loss';
-    }
+    const result = parseMatchResult(ocrText);
     if (!result) {
       return interaction.editReply({
-        content: '❌ Không tìm thấy kết quả trận đấu (VICTORY/DEFEAT) trong ảnh.',
+        content: '❌ Không tìm thấy kết quả trận đấu (Chiến thắng / Bại trận / VICTORY / DEFEAT) trong ảnh.',
       });
     }
 
@@ -2308,16 +2331,10 @@ async function handleModalSubmit(interaction) {
     });
   }
 
-  let result = null;
-  const resultMatch = ocrText.match(/(VICTORY|DEFEAT|victory|defeat|Chiến thắng|Thất bại|CHIẾN THẮNG|THẤT BẠI|WIN|LOSE)/);
-  if (resultMatch) {
-    const raw = resultMatch[1].toLowerCase();
-    if (raw.includes('victory') || raw.includes('chiến thắng') || raw === 'win') result = 'win';
-    else if (raw.includes('defeat') || raw.includes('thất bại') || raw === 'lose') result = 'loss';
-  }
+  const result = parseMatchResult(ocrText);
   if (!result) {
     return interaction.editReply({
-      content: '❌ Không tìm thấy kết quả trận đấu (VICTORY/DEFEAT) trong ảnh.',
+      content: '❌ Không tìm thấy kết quả trận đấu (Chiến thắng / Bại trận / VICTORY / DEFEAT) trong ảnh.',
     });
   }
 
