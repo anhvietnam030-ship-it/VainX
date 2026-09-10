@@ -77,11 +77,7 @@ function autoBalanceRankTeams(room) {
   const entries = Array.from(room.players.entries());
   if (entries.length === 0) return false;
 
-  // Chỉ chia team khi phòng ĐÃ ĐẦY và TẤT CẢ đã bấm Sẵn sàng.
-  // (Trước đây chỉ check allReady(), nên phòng chưa đầy nhưng những người
-  // đang có mặt đều "ready" — ví dụ bot test-fill-rank mặc định ready:true —
-  // vẫn bị chia team sớm. Thêm isFull() để khớp điều kiện với canRevealCode.)
-  if (!isFull(room) || !allReady(room)) {
+  if (!allReady(room)) {
     for (const [, p] of entries) p.team = null;
     return false;
   }
@@ -308,7 +304,6 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
 
   return eloUpdates;
 }
-
 // ===== COOLDOWN =====
 const cooldowns = new Map();
 function checkCooldown(userId) {
@@ -884,7 +879,6 @@ async function handleSlashCommand(interaction) {
     catch (e) { console.error(`[${commandName}] deferReply thất bại:`, e.message); }
     if (deferred) interaction.reply = (opts) => interaction.editReply(opts);
   }
-
   if (commandName === 'lobby') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     const statsFor = (mode) => {
@@ -1334,6 +1328,16 @@ async function handleSlashCommand(interaction) {
 
   if (commandName === 'submit-result') {
     console.log(`✅ /submit-result từ ${interaction.user.tag}`);
+
+    // ✅ Chỉ cho phép dùng trong kênh rank-result (chặn cả Admin/Owner)
+    const RANK_RESULT_CHANNEL_ID = '1547239567302860840';
+    if (interaction.channelId !== RANK_RESULT_CHANNEL_ID) {
+      return interaction.reply({
+        content: `❌ Lệnh này chỉ dùng được trong <#${RANK_RESULT_CHANNEL_ID}>.`,
+        ephemeral: true,
+      });
+    }
+
     try { await interaction.deferReply({ ephemeral: true }); }
     catch (err) { try { await interaction.reply({ content: '⚠️ Bot quá tải.', ephemeral: true }); } catch (_) {} return; }
 
@@ -1939,8 +1943,6 @@ async function toggleReady(interaction, roomId) {
   }
 
   player.ready = !player.ready;
-  // Phòng rank: rebalance team theo ready status. Nếu chưa all-ready,
-  // autoBalanceRankTeams sẽ reset toàn bộ team về null ("Chưa chọn").
   if (room.isRank) autoBalanceRankTeams(room);
   const channel = interaction.channel;
   await renderRoom(room, channel);
