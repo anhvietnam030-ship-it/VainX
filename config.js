@@ -15,11 +15,8 @@ module.exports = {
   // ----- CẤU HÌNH MẶC ĐỊNH -----
   JOIN_ROLE_ID: process.env.JOIN_ROLE_ID || null,
   LOG_CHANNEL_ID: process.env.LOG_CHANNEL_ID || null,
-  ANNOUNCE_CHANNEL_ID: process.env.ANNOUNCE_CHANNEL_ID || null, // Kênh thông báo tự động
+  ANNOUNCE_CHANNEL_ID: process.env.ANNOUNCE_CHANNEL_ID || null,
 
-  // Kênh cố định để tự động đăng lại panel phòng mỗi khi bot khởi động (không cần /setup tay nữa).
-  // Lấy ID kênh: bật Developer Mode trong Discord -> chuột phải kênh -> Copy Channel ID,
-  // rồi set các biến môi trường tương ứng trên Render (tab Environment).
   PANEL_CHANNELS: {
     normal: {
       '3v3': process.env.PANEL_CHANNEL_3V3 || null,
@@ -36,10 +33,10 @@ module.exports = {
     '5v5': 10,
   },
 
-  ROOMS_PER_MODE: 2,               // Số phòng thường mặc định mỗi chế độ (khi chưa có state cũ)
-  DEFAULT_RANK_ROOMS_PER_MODE: 2,  // Số phòng rank mặc định mỗi chế độ (khi chưa có state cũ)
-  MAX_ROOMS_PER_MODE: 10,          // Số phòng thường tối đa mỗi chế độ
-  MAX_RANK_ROOMS_PER_MODE: 10,     // Số phòng rank tối đa mỗi chế độ
+  ROOMS_PER_MODE: 2,
+  DEFAULT_RANK_ROOMS_PER_MODE: 2,
+  MAX_ROOMS_PER_MODE: 10,
+  MAX_RANK_ROOMS_PER_MODE: 10,
 
   DEFAULT_ROOM_TIMEOUT_MS: 60 * 60 * 1000,  // 1 giờ
   READY_COUNTDOWN_MS: 2 * 60 * 1000,        // 2 phút
@@ -68,43 +65,43 @@ module.exports = {
   // =============================================
   // ====== CẤU HÌNH HỆ THỐNG RANK ==============
   // =============================================
+  // Ngưỡng ELO mỗi tier: 200 ELO / bậc (trước đây 300)
   RANK_TIERS: [
-    { name: 'Unranked', minElo: 0, maxElo: 299 },
-    { name: 'Working on It', minElo: 300, maxElo: 599 },
-    { name: 'Getting There', minElo: 600, maxElo: 899 },
-    { name: 'Not Bad', minElo: 900, maxElo: 1199 },
-    { name: 'Decent-ish', minElo: 1200, maxElo: 1499 },
-    { name: 'Pretty Good', minElo: 1500, maxElo: 1799 },
-    { name: 'The Hotness', minElo: 1800, maxElo: 2099 },
-    { name: 'Simply Amazing', minElo: 2100, maxElo: 2399 },
-    { name: 'Pinnacle of Awesome', minElo: 2400, maxElo: 2699 },
-    { name: 'Vainglorious', minElo: 2700, maxElo: 3000 },
+    { name: 'Unranked', minElo: 0, maxElo: 199 },
+    { name: 'Working on It', minElo: 200, maxElo: 399 },
+    { name: 'Getting There', minElo: 400, maxElo: 599 },
+    { name: 'Not Bad', minElo: 600, maxElo: 799 },
+    { name: 'Decent-ish', minElo: 800, maxElo: 999 },
+    { name: 'Pretty Good', minElo: 1000, maxElo: 1199 },
+    { name: 'The Hotness', minElo: 1200, maxElo: 1399 },
+    { name: 'Simply Amazing', minElo: 1400, maxElo: 1599 },
+    { name: 'Pinnacle of Awesome', minElo: 1600, maxElo: 1799 },
+    { name: 'Vainglorious', minElo: 1800, maxElo: 3000 },
   ],
 
+  // K-factor cao cho tier thấp (lên rank nhanh), giảm dần cho tier cao
   RANK_K_FACTORS: {
-    0: 44,  // Unranked
-    1: 44,  // Working on It
-    2: 44,  // Getting There
-    3: 40,  // Not Bad
-    4: 40,  // Decent-ish
-    5: 36,  // Pretty Good
-    6: 36,  // The Hotness
-    7: 33,  // Simply Amazing
-    8: 33,  // Pinnacle of Awesome
-    9: 30,  // Vainglorious
+    0: 140,  // Unranked
+    1: 120,  // Working on It
+    2: 105,  // Getting There
+    3: 90,   // Not Bad
+    4: 75,   // Decent-ish
+    5: 60,   // Pretty Good
+    6: 50,   // The Hotness
+    7: 42,   // Simply Amazing
+    8: 35,   // Pinnacle of Awesome
+    9: 30,   // Vainglorious
   },
 
   RANK_DEFAULT_ELO: 0,
-  RANK_RESULT_WINDOW_MS: 45 * 60 * 1000,  // 45 phút
+  RANK_RESULT_WINDOW_MS: 45 * 60 * 1000,
   MAX_RANK_ROOMS_PER_MODE: 10,
 
-  // Biểu tượng và màu cho các bậc (Đồng, Bạc, Vàng)
   RANK_MEDALS: ['🥉', '🥈', '🥇'],
   RANK_COLORS: ['#CD7F32', '#C0C0C0', '#FFD700'],
 
   // =============================================
   // ====== API OCR ==============================
   // =============================================
-  // Lấy key từ biến môi trường .env
   OCR_API_KEY: process.env.OCR_API_KEY || null,
 };

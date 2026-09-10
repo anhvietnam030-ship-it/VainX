@@ -168,7 +168,8 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
   return Math.max(0, Math.min(3000, newElo));
 }
 
-// Ước lượng số win còn lại để lên tier kế tiếp (giả định ~25 ELO/win).
+// Ước lượng số win còn lại để lên tier kế tiếp.
+// Tier thấp giả định ~70 ELO/win, tier cao giảm dần (~25 ELO/win).
 function estimateWinsToNextTier(userId, mode) {
   const cur = getElo(userId, mode);
   const tiers = config.RANK_TIERS;
@@ -176,7 +177,7 @@ function estimateWinsToNextTier(userId, mode) {
     const first = tiers[0];
     return {
       needElo: first.minElo,
-      estimatedWins: Math.max(1, Math.ceil(first.minElo / 25)),
+      estimatedWins: Math.max(1, Math.ceil(first.minElo / 70)),
       nextTierName: first.name,
       isMax: false,
     };
@@ -187,8 +188,8 @@ function estimateWinsToNextTier(userId, mode) {
   }
   const nextTier = tiers[currentIdx + 1];
   const needElo = Math.max(0, nextTier.minElo - cur.elo);
-  const AVG_PER_WIN = 25;
-  const estimatedWins = needElo > 0 ? Math.max(1, Math.ceil(needElo / AVG_PER_WIN)) : 0;
+  const avgPerWin = currentIdx <= 2 ? 70 : (currentIdx <= 4 ? 52 : (currentIdx <= 6 ? 35 : 25));
+  const estimatedWins = needElo > 0 ? Math.max(1, Math.ceil(needElo / avgPerWin)) : 0;
   return { needElo, estimatedWins, nextTierName: nextTier.name, isMax: false };
 }
 
