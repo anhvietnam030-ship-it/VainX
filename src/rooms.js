@@ -477,11 +477,10 @@ function isBanned(room, userId) {
   return room.bannedUsers.has(userId);
 }
 function generateCode() {
-  let code;
-  do {
-    code = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
-  } while (code === '0000');
-  return code;
+  // Chữ số đầu tiên luôn >= 3 (3-9), 3 số sau random 0-9.
+  const firstDigit = Math.floor(Math.random() * 7) + 3; // 3..9
+  const rest = String(Math.floor(Math.random() * 1000)).padStart(3, '0'); // 000..999
+  return `${firstDigit}${rest}`;
 }
 function formatPersonalCode(room, userId) {
   if (!room.code) return null;
