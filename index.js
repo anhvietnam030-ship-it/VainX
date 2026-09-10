@@ -208,14 +208,16 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
         const total = (upd.wins || 0) + (upd.losses || 0);
         const wr = total > 0 ? Math.round(100 * upd.wins / total) + '%' : '—';
 
+        // Bậc rank + mức con (Đồng/Bạc/Vàng) — mỗi tier 300 ELO, chia 3 mức 100 điểm.
+        // Unranked không chia bậc con.
         const eloObj = getElo(upd.userId, room.mode);
         const rankName = eloObj.rank || 'Unranked';
         let rankStr;
         if (rankName === 'Unranked') {
           rankStr = '🏅 **Unranked**';
         } else {
-          const eloInTier = Math.max(0, (upd.newElo ?? 0) % 200);
-          const subIdx = Math.min(2, Math.floor(eloInTier / (200 / 3)));
+          const eloInTier = Math.max(0, (upd.newElo ?? 0) % 300);
+          const subIdx = Math.min(2, Math.floor(eloInTier / 100));
           const subName = ['Đồng', 'Bạc', 'Vàng'][subIdx];
           rankStr = `🏅 **${rankName}** (${subName})`;
         }
@@ -914,8 +916,8 @@ async function handleSlashCommand(interaction) {
       if (rankName === 'Unranked') {
         rankStr = '🏅 **Unranked**';
       } else {
-        const eloInTier = Math.max(0, p.elo % 200);
-        const subIdx = Math.min(2, Math.floor(eloInTier / (200 / 3)));
+        const eloInTier = Math.max(0, p.elo % 300);
+        const subIdx = Math.min(2, Math.floor(eloInTier / 100));
         const subName = ['Đồng', 'Bạc', 'Vàng'][subIdx];
         rankStr = `🏅 **${rankName}** (${subName})`;
       }
@@ -964,8 +966,8 @@ async function handleSlashCommand(interaction) {
       if (rankName === 'Unranked') {
         rankStr = '🏅 **Unranked**';
       } else {
-        const eloInTier = Math.max(0, elo % 200);
-        const subIdx = Math.min(2, Math.floor(eloInTier / (200 / 3)));
+        const eloInTier = Math.max(0, elo % 300);
+        const subIdx = Math.min(2, Math.floor(eloInTier / 100));
         const subName = ['Đồng', 'Bạc', 'Vàng'][subIdx];
         rankStr = `🏅 **${rankName}** (${subName})`;
       }
@@ -1284,7 +1286,6 @@ async function handleSlashCommand(interaction) {
   if (commandName === 'submit-result') {
     console.log(`✅ /submit-result từ ${interaction.user.tag}`);
 
-    // ✅ Đọc ID kênh rank-result từ ENV (Render Environment Variable)
     const RANK_RESULT_CHANNEL_ID = String(process.env.RANK_RESULT_CHANNEL_ID || '').trim();
     if (!RANK_RESULT_CHANNEL_ID) {
       console.error('❌ Thiếu ENV RANK_RESULT_CHANNEL_ID — không thể check kênh!');
@@ -1964,6 +1965,7 @@ async function bootstrap() {
   }
   console.log(`ℹ️ Đã khởi tạo ${rooms.size} phòng.`);
   console.log(`ℹ️ RANK_RESULT_CHANNEL_ID (env) = ${process.env.RANK_RESULT_CHANNEL_ID || '(chưa set!)'}`);
+  console.log(`ℹ️ PUBLIC_RESULT_CHANNEL_ID (env) = ${process.env.PUBLIC_RESULT_CHANNEL_ID || '(chưa set!)'}`);
 
   const eloMap = await eloStore.loadAllElo();
   if (eloStore.isEnabled()) {

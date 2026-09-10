@@ -65,32 +65,38 @@ module.exports = {
   // =============================================
   // ====== CẤU HÌNH HỆ THỐNG RANK ==============
   // =============================================
-  // Ngưỡng ELO mỗi tier: 200 ELO / bậc (trước đây 300)
+  // Ngưỡng ELO mỗi tier: 300 ELO / bậc.
+  // Mỗi tier chia 3 mức con: 0-99 Đồng · 100-199 Bạc · 200-299 Vàng.
   RANK_TIERS: [
-    { name: 'Unranked', minElo: 0, maxElo: 199 },
-    { name: 'Working on It', minElo: 200, maxElo: 399 },
-    { name: 'Getting There', minElo: 400, maxElo: 599 },
-    { name: 'Not Bad', minElo: 600, maxElo: 799 },
-    { name: 'Decent-ish', minElo: 800, maxElo: 999 },
-    { name: 'Pretty Good', minElo: 1000, maxElo: 1199 },
-    { name: 'The Hotness', minElo: 1200, maxElo: 1399 },
-    { name: 'Simply Amazing', minElo: 1400, maxElo: 1599 },
-    { name: 'Pinnacle of Awesome', minElo: 1600, maxElo: 1799 },
-    { name: 'Vainglorious', minElo: 1800, maxElo: 3000 },
+    { name: 'Unranked',            minElo: 0,    maxElo: 299 },
+    { name: 'Working on It',       minElo: 300,  maxElo: 599 },
+    { name: 'Getting There',       minElo: 600,  maxElo: 899 },
+    { name: 'Not Bad',             minElo: 900,  maxElo: 1199 },
+    { name: 'Decent-ish',          minElo: 1200, maxElo: 1499 },
+    { name: 'Pretty Good',         minElo: 1500, maxElo: 1799 },
+    { name: 'The Hotness',         minElo: 1800, maxElo: 2099 },
+    { name: 'Simply Amazing',      minElo: 2100, maxElo: 2399 },
+    { name: 'Pinnacle of Awesome', minElo: 2400, maxElo: 2699 },
+    { name: 'Vainglorious',        minElo: 2700, maxElo: 3000 },
   ],
 
-  // K-factor cao cho tier thấp (lên rank nhanh), giảm dần cho tier cao
+  // K-factor — cấu hình để:
+  //   Tier 0-2: ~4 ván/tier  (K = 150)
+  //   Tier 3-5: ~5 ván/tier  (K = 120)
+  //   Tier 6-8: ~7 ván/tier  (K = 85)
+  //   Tier 9:   ~9 ván/tier  (K = 65)
+  // Thua dùng nửa K → không sốc. KDA cao khi thua còn bớt mất điểm.
   RANK_K_FACTORS: {
-    0: 140,  // Unranked
-    1: 120,  // Working on It
-    2: 105,  // Getting There
-    3: 90,   // Not Bad
-    4: 75,   // Decent-ish
-    5: 60,   // Pretty Good
-    6: 50,   // The Hotness
-    7: 42,   // Simply Amazing
-    8: 35,   // Pinnacle of Awesome
-    9: 30,   // Vainglorious
+    0: 150,  // Unranked
+    1: 150,  // Working on It
+    2: 150,  // Getting There
+    3: 120,  // Not Bad
+    4: 120,  // Decent-ish
+    5: 120,  // Pretty Good
+    6: 85,   // The Hotness
+    7: 85,   // Simply Amazing
+    8: 85,   // Pinnacle of Awesome
+    9: 65,   // Vainglorious
   },
 
   RANK_DEFAULT_ELO: 0,

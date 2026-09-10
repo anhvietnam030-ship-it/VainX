@@ -142,13 +142,26 @@ function restoreEloData(saved) {
   return eloData;
 }
 
+// ============================================================
+// ===== TÍNH ELO KHI KẾT THÚC TRẬN ===========================
+// Yếu tố ảnh hưởng:
+//   1. Team mạnh/yếu (expected): địch ELO cao → thắng được nhiều, thua mất ít.
+//   2. K factor theo tier: thắng dùng full K, thua dùng nửa K → thua không sốc.
+//   3. KDA:
+//      - Thắng: KDA cao → thưởng thêm (×1.5), KDA thấp → thưởng ít (×0.5).
+//      - Thua : KDA cao → giảm hình phạt (÷1.5 = −33%, ÷1.2 = −17%),
+//               KDA ≤ 2.0 → không phạt thêm.
+// ============================================================
 function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
   if (!opponentElos || opponentElos.length === 0) return userElo;
   const currentElo = (userElo === null || userElo === undefined) ? config.RANK_DEFAULT_ELO : userElo;
+
   const avgOppElo = opponentElos.reduce((a, b) => a + b, 0) / opponentElos.length;
   const expected = 1 / (1 + Math.pow(10, (avgOppElo - currentElo) / 400));
+
   const S = result === 'win' ? 1 : 0;
-  const K = config.RANK_K_FACTORS[userRankIndex] || 32;
+  const baseK = config.RANK_K_FACTORS[userRankIndex] || 150;
+  const K = (S === 1) ? baseK : baseK * 0.5;
   let rawChange = K * (S - expected);
 
   if (kda !== undefined && kda !== null) {
@@ -159,8 +172,13 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
     else if (kdaValue >= 2) kdaFactor = 1.0;
     else if (kdaValue >= 1) kdaFactor = 0.8;
     else kdaFactor = 0.5;
-    if (S === 1) rawChange = rawChange * kdaFactor;
-    else rawChange = rawChange * (1 / kdaFactor);
+
+    if (S === 1) {
+      rawChange = rawChange * kdaFactor;
+    } else {
+      const lossFactor = kdaFactor > 1.0 ? (1 / kdaFactor) : 1.0;
+      rawChange = rawChange * lossFactor;
+    }
   }
 
   const newElo = currentElo + Math.round(rawChange);
@@ -168,7 +186,6 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
 }
 
 // Ước lượng số win còn lại để lên tier kế tiếp.
-// Coi ELO null = 0 (tier 0, đang ở Unranked) → next tier là tier kế tiếp.
 function estimateWinsToNextTier(userId, mode) {
   const cur = getElo(userId, mode);
   const tiers = config.RANK_TIERS;
@@ -182,7 +199,7 @@ function estimateWinsToNextTier(userId, mode) {
 
   const nextTier = tiers[currentIdx + 1];
   const needElo = Math.max(0, nextTier.minElo - eloVal);
-  const avgPerWin = currentIdx <= 2 ? 70 : (currentIdx <= 4 ? 52 : (currentIdx <= 6 ? 35 : 25));
+  const avgPerWin = currentIdx <= 2 ? 75 : (currentIdx <= 5 ? 60 : (currentIdx <= 8 ? 43 : 33));
   const estimatedWins = needElo > 0 ? Math.max(1, Math.ceil(needElo / avgPerWin)) : 0;
   return { needElo, estimatedWins, nextTierName: nextTier.name, isMax: false };
 }
@@ -477,9 +494,8 @@ function isBanned(room, userId) {
   return room.bannedUsers.has(userId);
 }
 function generateCode() {
-  // Chữ số đầu tiên luôn >= 3 (3-9), 3 số sau random 0-9.
-  const firstDigit = Math.floor(Math.random() * 7) + 3; // 3..9
-  const rest = String(Math.floor(Math.random() * 1000)).padStart(3, '0'); // 000..999
+  const firstDigit = Math.floor(Math.random() * 7) + 3;
+  const rest = String(Math.floor(Math.random() * 1000)).padStart(3, '0');
   return `${firstDigit}${rest}`;
 }
 function formatPersonalCode(room, userId) {
@@ -497,10 +513,6 @@ function formatPersonalCode(room, userId) {
 // ============================================================
 function extractAllKDAResult(text, room, opts = {}) {
   const skipCodeCheck = !!opts.skipCodeCheck;
-  // Dòng overlay (toạ độ) trả về từ OCR.space (isOverlayRequired=true).
-  // Dùng để đối chiếu theo VỊ TRÍ DỌC (Top) thực tế trong ảnh, vì thứ tự
-  // của ParsedText thuần không đáng tin khi giao diện có icon/nút xen giữa
-  // các cột (tên & KDA có thể "gần nhau" trong text nhưng khác hàng trong ảnh).
   const overlayLines = Array.isArray(opts.overlayLines) ? opts.overlayLines : [];
   const resultMap = new Map();
   const players = Array.from(room.players.entries());
@@ -508,7 +520,6 @@ function extractAllKDAResult(text, room, opts = {}) {
   const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const SEP = '[\\s\\-_]{0,3}';
 
-  // Gom KDA + toạ độ Top từ overlay (mỗi dòng overlay có thể chứa 1 KDA).
   const overlayKdaCandidates = [];
   if (overlayLines.length > 0) {
     const kdaLineRe = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/;
@@ -530,9 +541,6 @@ function extractAllKDAResult(text, room, opts = {}) {
     }
   }
 
-  // Ngưỡng khoảng cách Top hợp lệ, tính động theo khoảng cách trung bình
-  // giữa các hàng KDA phát hiện được (thay vì số cố định), để không phụ
-  // thuộc vào độ phân giải ảnh.
   let maxTopDist = 60;
   if (overlayKdaCandidates.length >= 2) {
     const sortedTops = overlayKdaCandidates.map(c => c.top).sort((a, b) => a - b);
@@ -557,8 +565,6 @@ function extractAllKDAResult(text, room, opts = {}) {
 
   console.log('📝 OCR Text:', text);
 
-  // Log danh sách người chơi kèm TÊN (ưu tiên IGN > username Discord) — thay
-  // vì chỉ in userId khiến log khó đọc.
   console.log('👥 Players:', players.map(([id, p]) => {
     const ign = getElo(id, room.mode).ign;
     return ign && ign !== p.username ? `${ign} (${p.username}) [${id}]` : `${p.username} [${id}]`;
@@ -679,9 +685,6 @@ function extractAllKDAResult(text, room, opts = {}) {
       }
     }
 
-    // ✅ Ưu tiên đối chiếu theo toạ độ Top thực tế (overlay OCR) trước khi
-    // dùng heuristic "gần theo vị trí ký tự trong text", vì text order có
-    // thể không khớp với thứ tự hàng trong ảnh khi có icon/nút xen giữa.
     if (overlayKdaCandidates.length > 0) {
       const nameOverlayTop = findOverlayTopForName(nameRegex);
       if (nameOverlayTop != null) {
@@ -690,8 +693,6 @@ function extractAllKDAResult(text, room, opts = {}) {
           const closestDist = closest ? Math.abs(closest.top - nameOverlayTop) : Infinity;
           return dist < closestDist ? kda : closest;
         }, null);
-        // Chỉ chấp nhận nếu đủ gần theo chiều dọc (tránh vơ đại dòng xa
-        // nhất trong toàn ảnh khi có nhiều hàng người chơi).
         if (best && Math.abs(best.top - nameOverlayTop) <= maxTopDist) {
           resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
           console.log(`✅ Map KDA (overlay Top) cho ${searchName}: ${best.kill}/${best.death}/${best.assist}`);
@@ -736,7 +737,6 @@ function extractAllKDAResult(text, room, opts = {}) {
     console.warn(`⚠️ Không tìm thấy KDA nào cho "${searchName}".`);
   }
 
-  // In KDA kèm TÊN người chơi (ưu tiên IGN > username Discord) thay vì chỉ userId.
   const playersLookup = new Map(players);
   const kdaEntries = Array.from(resultMap.entries()).map(([id, k]) => {
     const p = playersLookup.get(id);
