@@ -1531,8 +1531,10 @@ async function handleSlashCommand(interaction) {
       return interaction.editReply({ content: '❌ Không tải được ảnh đính kèm. Vui lòng thử lại.' });
     }
     const imageHash = hashImageBuffer(imageBuffer);
+    const submitterIsAdmin = await isAdminUserId(interaction.user.id).catch(() => false);
 
-    if (isImageHashUsedRecently(imageHash, interaction.user.id)) {
+    // Admin test: bỏ qua kiểm tra trùng ảnh
+    if (!submitterIsAdmin && isImageHashUsedRecently(imageHash, interaction.user.id)) {
       return interaction.editReply({
         content: '❌ Ảnh này đã được sử dụng trong vòng 90 ngày qua (kể cả nếu bạn tải lại/đổi link). Vui lòng chụp ảnh mới!'
       });
@@ -1553,7 +1555,10 @@ async function handleSlashCommand(interaction) {
       }
     }
 
-    addImageHistory(imageHash, attachment.url, interaction.user.id, room.id);
+    // Admin test: không ghi hash vào history để lần test sau không bị chặn
+    if (!submitterIsAdmin) {
+      addImageHistory(imageHash, attachment.url, interaction.user.id, room.id);
+    }
 
     console.log(`🔍 Bắt đầu OCR cho file: ${attachment.name} (${attachment.contentType}, ${attachment.size} bytes)`);
 
@@ -1575,8 +1580,7 @@ async function handleSlashCommand(interaction) {
       });
     }
 
-    // Admin test: bỏ qua xác thực mã phòng
-    const submitterIsAdmin = await isAdminUserId(interaction.user.id).catch(() => false);
+    // Admin test: bỏ qua xác thực mã phòng (submitterIsAdmin đã khai báo ở trên)
     const fakeRoom = { players: new Map(session.players), code: session.code };
     const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin });
     if (submitterIsAdmin) {
@@ -2238,8 +2242,9 @@ async function handleModalSubmit(interaction) {
     });
   }
   const imageHash = hashImageBuffer(imageBuffer);
+  const submitterIsAdmin = await isAdminUserId(interaction.user.id).catch(() => false);
 
-  if (isImageHashUsedRecently(imageHash, interaction.user.id)) {
+  if (!submitterIsAdmin && isImageHashUsedRecently(imageHash, interaction.user.id)) {
     return interaction.editReply({
       content: '❌ Ảnh này đã được sử dụng trong vòng 90 ngày qua (kể cả nếu bạn tải lại/đổi link). Vui lòng chụp ảnh mới!',
     });
@@ -2260,7 +2265,9 @@ async function handleModalSubmit(interaction) {
     }
   }
 
-  addImageHistory(imageHash, imageUrl, interaction.user.id, room.id);
+  if (!submitterIsAdmin) {
+    addImageHistory(imageHash, imageUrl, interaction.user.id, room.id);
+  }
 
   let ocrText = '';
   try {
@@ -2288,7 +2295,7 @@ async function handleModalSubmit(interaction) {
     return interaction.editReply({ content: '❌ Phiên chơi này đã hết hạn hoặc không tồn tại.' });
   }
 
-  const submitterIsAdmin = await isAdminUserId(interaction.user.id).catch(() => false);
+  // submitterIsAdmin đã khai báo ở trên
   const fakeRoom = { players: new Map(session.players), code: session.code };
   const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin });
   if (submitterIsAdmin) {
