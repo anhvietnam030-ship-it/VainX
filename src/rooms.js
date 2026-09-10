@@ -92,12 +92,19 @@ function registerIGN(userId, ign) {
   return { ok: true };
 }
 
+// Reset ELO về 0, GIỮ NGUYÊN IGN.
+// mode rỗng -> reset cả 2 mode. mode có giá trị -> chỉ reset mode đó.
 function clearElo(userId, mode) {
   const entry = eloData.get(userId);
   if (!entry) return false;
+
   if (!mode) {
-    return eloData.delete(userId);
+    entry['3v3'] = { elo: null, rank: 'Unranked', wins: 0, losses: 0 };
+    entry['5v5'] = { elo: null, rank: 'Unranked', wins: 0, losses: 0 };
+    eloData.set(userId, entry);
+    return true;
   }
+
   if (!MODES.includes(mode)) return false;
   entry[mode] = { elo: null, rank: 'Unranked', wins: 0, losses: 0 };
   eloData.set(userId, entry);
@@ -161,7 +168,7 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
   return Math.max(0, Math.min(3000, newElo));
 }
 
-// Ước lượng số win còn lại để lên tier kế tiếp (giả định trung bình ~25 ELO/win).
+// Ước lượng số win còn lại để lên tier kế tiếp (giả định ~25 ELO/win).
 function estimateWinsToNextTier(userId, mode) {
   const cur = getElo(userId, mode);
   const tiers = config.RANK_TIERS;

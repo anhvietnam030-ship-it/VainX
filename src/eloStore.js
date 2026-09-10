@@ -94,19 +94,25 @@ async function upsertElo(userId, fullData) {
   }
 }
 
+// Reset ELO về 0, GIỮ NGUYÊN ign. Không xóa row khỏi DB.
+// mode rỗng -> reset cả 2 mode. mode có giá trị -> chỉ reset mode đó.
 async function deleteElo(userId, mode) {
   if (!supabase) return;
   try {
-    let q = supabase.from(TABLE).delete().eq('user_id', userId);
+    const now = new Date().toISOString();
+    const reset = { elo: null, rank: 'Unranked', wins: 0, losses: 0, updated_at: now };
+
+    let q = supabase.from(TABLE).update(reset).eq('user_id', userId);
     if (mode) q = q.eq('mode', mode);
+
     const { error } = await q;
     if (error) {
-      console.error(`❌ Lỗi xóa ELO của ${userId}:`, error.message);
+      console.error(`❌ Lỗi reset ELO của ${userId}:`, error.message);
     } else {
-      console.log(`✅ Đã xóa ELO của ${userId}${mode ? ` (mode=${mode})` : ' (cả 2 mode)'}`);
+      console.log(`✅ Đã reset ELO của ${userId}${mode ? ` (mode=${mode})` : ' (cả 2 mode)'} — giữ nguyên IGN`);
     }
   } catch (err) {
-    console.error(`❌ Lỗi xóa ELO của ${userId}:`, err.message);
+    console.error(`❌ Lỗi reset ELO của ${userId}:`, err.message);
   }
 }
 
