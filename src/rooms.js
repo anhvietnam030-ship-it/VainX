@@ -556,7 +556,14 @@ function extractAllKDAResult(text, room, opts = {}) {
   }
 
   console.log('📝 OCR Text:', text);
-  console.log('👥 Players:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
+
+  // Log danh sách người chơi kèm TÊN (ưu tiên IGN > username Discord) — thay
+  // vì chỉ in userId khiến log khó đọc.
+  console.log('👥 Players:', players.map(([id, p]) => {
+    const ign = getElo(id, room.mode).ign;
+    return ign && ign !== p.username ? `${ign} (${p.username}) [${id}]` : `${p.username} [${id}]`;
+  }).join(', '));
+
   if (skipCodeCheck) {
     console.warn('🧪 extractAllKDAResult: ADMIN TESTING MODE — bỏ qua xác thực mã phòng.');
   } else if (!roomCode) {
@@ -729,7 +736,24 @@ function extractAllKDAResult(text, room, opts = {}) {
     console.warn(`⚠️ Không tìm thấy KDA nào cho "${searchName}".`);
   }
 
-  console.log('📊 Kết quả map KDA:', Array.from(resultMap.entries()));
+  // In KDA kèm TÊN người chơi (ưu tiên IGN > username Discord) thay vì chỉ userId.
+  const playersLookup = new Map(players);
+  const kdaEntries = Array.from(resultMap.entries()).map(([id, k]) => {
+    const p = playersLookup.get(id);
+    const ign = getElo(id, room.mode).ign;
+    const userTag = p ? p.username : null;
+    let label;
+    if (ign && userTag && ign !== userTag) label = `${ign} (${userTag})`;
+    else if (ign) label = ign;
+    else if (userTag) label = userTag;
+    else label = 'Unknown';
+    return `${label} [${id}] → ${k.kill}/${k.death}/${k.assist}`;
+  });
+  console.log(
+    `📊 Kết quả map KDA (${kdaEntries.length}/${players.length} người):\n  ` +
+    (kdaEntries.length ? kdaEntries.join('\n  ') : '(trống — không match được ai)')
+  );
+
   return resultMap;
 }
 

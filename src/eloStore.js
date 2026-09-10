@@ -58,9 +58,10 @@ async function loadAllElo() {
 }
 
 // fullData = { ign, '3v3': {elo, rank, wins, losses}, '5v5': {...} }
-async function upsertElo(userId, fullData) {
+// displayName (optional) = tên hiển thị để log dễ đọc (IGN / username Discord)
+async function upsertElo(userId, fullData, displayName) {
   if (!supabase) {
-    console.warn('⚠️ Supabase chưa cấu hình, không lưu ELO cho', userId);
+    console.warn('⚠️ Supabase chưa cấu hình, không lưu ELO cho', displayName || userId);
     return;
   }
   try {
@@ -78,8 +79,10 @@ async function upsertElo(userId, fullData) {
     const { error } = await supabase
       .from(TABLE)
       .upsert(rows, { onConflict: 'user_id,mode' });
+
+    const label = `${displayName || 'Unknown'} [${userId}]`;
     if (error) {
-      console.error(`❌ Lỗi lưu ELO của ${userId}:`, error.message);
+      console.error(`❌ Lỗi lưu ELO của ${label}:`, error.message);
     } else {
       const e3 = fullData?.['3v3']?.elo ?? 'null';
       const e5 = fullData?.['5v5']?.elo ?? 'null';
@@ -87,10 +90,10 @@ async function upsertElo(userId, fullData) {
       const l3 = fullData?.['3v3']?.losses || 0;
       const w5 = fullData?.['5v5']?.wins || 0;
       const l5 = fullData?.['5v5']?.losses || 0;
-      console.log(`✅ Đã lưu ELO của ${userId} (3v3=${e3} ${w3}W-${l3}L, 5v5=${e5} ${w5}W-${l5}L)`);
+      console.log(`✅ Đã lưu ELO của ${label} (3v3=${e3} ${w3}W-${l3}L, 5v5=${e5} ${w5}W-${l5}L)`);
     }
   } catch (err) {
-    console.error(`❌ Lỗi lưu ELO của ${userId}:`, err.message);
+    console.error(`❌ Lỗi lưu ELO của ${displayName || userId} [${userId}]:`, err.message);
   }
 }
 
