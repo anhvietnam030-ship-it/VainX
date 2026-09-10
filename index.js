@@ -257,21 +257,35 @@ async function ocrImage(imageUrl) {
     const imageBuffer = Buffer.from(imageResponse.data, 'binary');
     console.log(`✅ Đã tải ảnh thành công (${imageBuffer.length} bytes)`);
 
-    const formData = new FormData();
-    formData.append('apikey', OCR_API_KEY);
-    formData.append('file', imageBuffer, { filename: 'screenshot.png' });
-    formData.append('language', 'eng');
-    formData.append('isOverlayRequired', 'false');
-    formData.append('detectOrientation', 'true');
-    formData.append('scale', 'true');
+    // OCR.space (đặc biệt là gói miễn phí) đôi khi xử lý ảnh khá lâu, có thể
+    // vượt quá 30s trong lúc server họ tải cao -> gây timeout dù ảnh và mạng
+    // đều bình thường. Tăng thời gian chờ lên 60s, đồng thời thử lại 1 lần
+    // nếu lần đầu bị timeout/lỗi mạng tạm thời, trước khi báo lỗi hẳn cho
+    // người dùng.
+    const postOnce = () => {
+      const formData = new FormData();
+      formData.append('apikey', OCR_API_KEY);
+      formData.append('file', imageBuffer, { filename: 'screenshot.png' });
+      formData.append('language', 'eng');
+      formData.append('isOverlayRequired', 'false');
+      formData.append('detectOrientation', 'true');
+      formData.append('scale', 'true');
+      return axios.post('https://api.ocr.space/parse/image', formData, {
+        headers: { ...formData.getHeaders() },
+        timeout: 60000,
+      });
+    };
 
     console.log('📤 Đang gửi lên OCR.space...');
-    const response = await axios.post('https://api.ocr.space/parse/image', formData, {
-      headers: {
-        ...formData.getHeaders(),
-      },
-      timeout: 30000,
-    });
+    let response;
+    try {
+      response = await postOnce();
+    } catch (err) {
+      const retryable = err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || err.code === 'ECONNRESET' || (err.response && err.response.status >= 500);
+      if (!retryable) throw err;
+      console.warn(`⚠️ Gửi lên OCR.space lần 1 thất bại (${err.message}), thử lại lần 2...`);
+      response = await postOnce();
+    }
 
     const data = response.data;
     console.log('📡 OCR.space response:', JSON.stringify(data, null, 2));
