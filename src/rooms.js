@@ -501,6 +501,12 @@ function extractAllKDAResult(text, room, opts = {}) {
     }
   }
 
+  // QUAN TRỌNG: rebuild lại `text` cho khớp với `lines` đã gộp.
+  // Nếu không làm bước này, text.indexOf(foundLine) sẽ trả -1 với những
+  // dòng đã gộp (vì text gốc còn newline giữa prefix và tên) → anchor bị
+  // loại → bot báo "Không tìm thấy dòng nào chứa tên ...".
+  text = lines.join('\n');
+
   const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
 
   const anchors = [];
