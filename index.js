@@ -52,6 +52,7 @@ const {
   // Rank exports
   eloData,
   getElo,
+  getFullElo,
   updateElo,
   calculateNewElo,
   registerIGN,
@@ -73,16 +74,9 @@ const rankSessions = require('./src/rankSessions');
 
 // ===== HOÀN TẤT PHIÊN RANK KHI ĐỦ ĐIỀU KIỆN =====
 // - Bỏ qua hoàn toàn "người chơi" giả tạo bởi /test-fill-rank (đánh dấu isBot: true khi tạo).
-//   Những người này KHÔNG BAO GIỜ được tính vào danh sách "phải gửi kết quả" và
-//   KHÔNG BAO GIỜ nhận ELO.
-// - Nếu có kdaMap (đọc được từ ảnh OCR của người gửi), chỉ cần MỘT người chơi THẬT
-//   gửi kết quả là đủ: hệ thống sẽ tự suy ra thắng/thua + KDA cho những người thật
-//   còn lại nếu tên họ cũng xuất hiện trong ảnh (dựa vào team so với người đã gửi:
-//   cùng team = cùng kết quả, khác team = kết quả ngược lại; nếu không rõ team thì
-//   mặc định lấy theo kết quả của người gửi). Ai không tìm thấy trong ảnh thì đơn
-//   giản là không được tính ELO lần đó — không có gì để chặn cả phòng nữa.
-// - Nếu KHÔNG có kdaMap (trường hợp /admin-submit-result nhập tay từng người), vẫn
-//   giữ hành vi cũ là chờ đủ tất cả người THẬT (không tính bot) tự gửi.
+// - Nếu có kdaMap (OCR): chỉ cần MỘT người chơi THẬT gửi kết quả là đủ.
+// - Nếu KHÔNG có kdaMap (/admin-submit-result nhập tay): chờ đủ tất cả người THẬT.
+// - ELO được tính RIÊNG theo room.mode ('3v3' hoặc '5v5').
 async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
   if (!session) return null;
 
@@ -97,7 +91,7 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
       const sampleTeam = samplePlayerEntry ? samplePlayerEntry[1].team : null;
 
       for (const id of realPlayers) {
-        if (session.resultMap.has(id)) continue; // đã tự gửi rồi, giữ nguyên
+        if (session.resultMap.has(id)) continue;
         const playerEntry = session.players.find(([pid]) => pid === id);
         const playerData = playerEntry ? playerEntry[1] : null;
         const kda = kdaMap.get(id);
@@ -131,23 +125,17 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
 
   const eloUpdates = [];
   for (const [userId, resultData] of finalSession.resultMap) {
-    if (!realPlayers.includes(userId)) continue; // an toàn: không bao giờ tính ELO cho bot giả
-    const userEloObj = getElo(userId);
+    if (!realPlayers.includes(userId)) continue;
+    const userEloObj = getElo(userId, room.mode);
     const userElo = userEloObj.elo ?? config.RANK_DEFAULT_ELO;
     const opponentIds = realPlayers.filter(id => id !== userId);
     let opponentElos = opponentIds.map(id => {
-      const e = getElo(id).elo;
+      const e = getElo(id, room.mode).elo;
       return e === null ? config.RANK_DEFAULT_ELO : e;
     });
 
-    // Trường hợp phòng không có đối thủ thật nào khác (vd: phòng test chỉ
-    // toàn bot giả từ /test-fill-rank). CHỈ áp dụng riêng cho tài khoản
-    // ADMIN: coi như có 1 đối thủ ở mức ELO mặc định để vẫn tính điểm khi
-    // admin tự test. Người chơi thường trong tình huống này vẫn giữ nguyên
-    // hành vi cũ (KHÔNG cộng/trừ điểm), để tránh bị lợi dụng lập phòng toàn
-    // bot nhằm ăn gian ELO. Khi có người chơi thật khác trong phòng (kể cả
-    // khi admin cũng tham gia cùng), opponentElos đã có dữ liệu thật nên
-    // nhánh này không kích hoạt -> vẫn tính như bình thường.
+    // Trường hợp phòng không có đối thủ thật nào khác — CHỈ admin test mới
+    // được cộng/trừ điểm, người chơi thường giữ nguyên để tránh farm ELO.
     if (opponentElos.length === 0) {
       const adminTesting = await isAdminUserId(userId).catch(() => false);
       if (adminTesting) {
@@ -158,10 +146,9 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
 
     const userRankIndex = userEloObj.rankIndex || 0;
     const newElo = calculateNewElo(userElo, opponentElos, resultData.result, resultData.kda, userRankIndex);
-    updateElo(userId, newElo);
-    const updatedData = getElo(userId);
-    eloStore.upsertElo(userId, updatedData)
-      .then(() => console.log(`✅ Đã cập nhật ELO cho ${userId} lên Supabase: ${newElo}`))
+    updateElo(userId, room.mode, newElo);
+    eloStore.upsertElo(userId, getFullElo(userId))
+      .then(() => console.log(`✅ Đã cập nhật ELO [${room.mode}] cho ${userId} lên Supabase: ${newElo}`))
       .catch((err) => console.error(`❌ Lỗi upsert ELO cho ${userId}:`, err));
     eloUpdates.push({
       userId,
@@ -177,9 +164,9 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
   if (resultChannelId) {
     const resultChannel = await client.channels.fetch(resultChannelId).catch(() => null);
     if (resultChannel) {
-      let msg = `📊 **${room.label} (${roomId})** - KẾT QUẢ ELO (đã điều chỉnh KDA):\n`;
+      let msg = `📊 **${room.label} (${roomId})** [${room.mode}] - KẾT QUẢ ELO (đã điều chỉnh KDA):\n`;
       for (const upd of eloUpdates) {
-        const rank = getElo(upd.userId).rank;
+        const rank = getElo(upd.userId, room.mode).rank;
         const kdaStr = typeof upd.kda === 'number' ? upd.kda.toFixed(2) : 'N/A';
         msg += `<@${upd.userId}>: ${upd.oldElo} → ${upd.newElo} (${upd.result}) | KDA: ${kdaStr} | Rank: ${rank}\n`;
       }
@@ -220,9 +207,7 @@ function saveImageHistory(history) {
   fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
 }
 
-// Băm theo NỘI DUNG FILE ảnh (sha256), không phải theo URL — bắt được cả
-// trường hợp người dùng tải ảnh cũ lên lại (URL đính kèm Discord mới, hoặc
-// dùng link trực tiếp khác) nhưng thực chất vẫn là đúng file ảnh đã dùng.
+// Băm theo NỘI DUNG FILE ảnh (sha256), không phải URL.
 function hashImageBuffer(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
@@ -268,11 +253,6 @@ async function ocrImageBuffer(imageBuffer) {
     throw new Error('MISSING_OCR_API_KEY');
   }
   try {
-    // OCR.space (đặc biệt là gói miễn phí) đôi khi xử lý ảnh khá lâu, có thể
-    // vượt quá 30s trong lúc server họ tải cao -> gây timeout dù ảnh và mạng
-    // đều bình thường. Tăng thời gian chờ lên 60s, đồng thời thử lại 1 lần
-    // nếu lần đầu bị timeout/lỗi mạng tạm thời, trước khi báo lỗi hẳn cho
-    // người dùng.
     const postOnce = () => {
       const formData = new FormData();
       formData.append('apikey', OCR_API_KEY);
@@ -318,9 +298,6 @@ async function ocrImageBuffer(imageBuffer) {
   }
 }
 
-// Giữ lại cho tương thích ngược (tải + OCR trong 1 bước). Những chỗ cần
-// băm nội dung ảnh trước khi OCR nên gọi downloadImageBuffer() +
-// ocrImageBuffer() riêng để không phải tải cùng 1 ảnh 2 lần.
 async function ocrImage(imageUrl) {
   const buffer = await downloadImageBuffer(imageUrl);
   return ocrImageBuffer(buffer);
@@ -335,12 +312,12 @@ function bi(vi, en) {
   return `${vi}\n🌐 ${en}`;
 }
 
-// ===== ANNOUNCEMENT FUNCTIONS (khi có người join phòng) =====
+// ===== ANNOUNCEMENT FUNCTIONS =====
 const ANNOUNCE_CHANNEL_ID = config.ANNOUNCE_CHANNEL_ID;
 
 async function startAnnouncement(room) {
   if (!['3v3', '5v5'].includes(room.mode)) return;
-  if (room.isRank) return; // KHÔNG BẬT CHO PHÒNG RANK
+  if (room.isRank) return;
   if (room.timers.announceInterval) return;
   if (!ANNOUNCE_CHANNEL_ID) return;
 
@@ -373,7 +350,6 @@ function stopAnnouncement(room) {
   }
 }
 
-// ===== RESET PHÒNG VÀ DỪNG THÔNG BÁO =====
 function resetRoomWithCleanup(room) {
   if (!room) return;
   stopAnnouncement(room);
@@ -687,7 +663,7 @@ async function tryRevealCode(room, channel) {
     renderRoom(room, channel).catch(() => {});
   }, config.BLINK_INTERVAL_MS);
 
-  // ===== XỬ LÝ RANK: TẠO SESSION TRƯỚC, VẪN GIỮ CODE 2 PHÚT =====
+  // ===== XỬ LÝ RANK =====
   if (room.isRank) {
     const playersSnapshot = new Map(room.players);
     const sessionId = rankSessions.createSession(room.id, playersSnapshot, room.mode, room.code);
@@ -699,7 +675,7 @@ async function tryRevealCode(room, channel) {
       if (resultChannel) {
         const playerMentions = Array.from(playersSnapshot.keys()).map(id => `<@${id}>`).join(' ');
         await resultChannel.send({
-          content: `🎮 **${room.label}** đã bắt đầu!\n` +
+          content: `🎮 **${room.label}** [${room.mode}] đã bắt đầu!\n` +
                    `Người chơi: ${playerMentions}\n` +
                    `Sau khi chơi xong, hãy gửi ảnh kết quả (VICTORY/DEFEAT + KDA) qua lệnh \`/submit-result phong:${room.id}\` (hoặc nút trên panel).\n` +
                    `⏰ Hạn gửi kết quả: 45 phút.`
@@ -1427,7 +1403,7 @@ async function handleSlashCommand(interaction) {
     if (!result.ok) {
       return interaction.reply({ content: `❌ ${result.reason}`, ephemeral: true });
     }
-    eloStore.upsertElo(interaction.user.id, getElo(interaction.user.id)).catch(() => {});
+    eloStore.upsertElo(interaction.user.id, getFullElo(interaction.user.id)).catch(() => {});
     persistence.saveState(rooms, eloData);
     return interaction.reply({ content: `✅ Đã đăng ký IGN thành công: **${ign}**\nBot sẽ dùng IGN này để tìm KDA của bạn trong ảnh.`, ephemeral: true });
   }
@@ -1438,13 +1414,14 @@ async function handleSlashCommand(interaction) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const targetUser = interaction.options.getUser('user', true);
+    const mode = interaction.options.getString('che_do', true);
     const diem = interaction.options.getInteger('diem', true);
     const clamped = Math.max(0, Math.min(3000, diem));
-    const data = updateElo(targetUser.id, clamped);
-    eloStore.upsertElo(targetUser.id, getElo(targetUser.id)).catch(() => {});
+    const data = updateElo(targetUser.id, mode, clamped);
+    eloStore.upsertElo(targetUser.id, getFullElo(targetUser.id)).catch(() => {});
     persistence.saveState(rooms, eloData);
     return interaction.reply({
-      content: `✅ Đã đặt ELO của <@${targetUser.id}> thành **${clamped}** (${data.rank}).`,
+      content: `✅ Đã đặt ELO **${mode}** của <@${targetUser.id}> thành **${clamped}** (${data.rank}).`,
       ephemeral: true,
     });
   }
@@ -1455,14 +1432,15 @@ async function handleSlashCommand(interaction) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const targetUser = interaction.options.getUser('user', true);
+    const mode = interaction.options.getString('che_do', true);
     const diem = interaction.options.getInteger('diem', true);
-    const currentElo = getElo(targetUser.id).elo ?? config.RANK_DEFAULT_ELO;
+    const currentElo = getElo(targetUser.id, mode).elo ?? config.RANK_DEFAULT_ELO;
     const newElo = Math.max(0, Math.min(3000, currentElo + diem));
-    const data = updateElo(targetUser.id, newElo);
-    eloStore.upsertElo(targetUser.id, getElo(targetUser.id)).catch(() => {});
+    const data = updateElo(targetUser.id, mode, newElo);
+    eloStore.upsertElo(targetUser.id, getFullElo(targetUser.id)).catch(() => {});
     persistence.saveState(rooms, eloData);
     return interaction.reply({
-      content: `✅ Đã ${diem >= 0 ? 'cộng' : 'trừ'} **${Math.abs(diem)}** điểm cho <@${targetUser.id}>. ELO: ${currentElo} → **${newElo}** (${data.rank}).`,
+      content: `✅ Đã ${diem >= 0 ? 'cộng' : 'trừ'} **${Math.abs(diem)}** điểm ELO **${mode}** cho <@${targetUser.id}>. ${mode}: ${currentElo} → **${newElo}** (${data.rank}).`,
       ephemeral: true,
     });
   }
@@ -1473,11 +1451,14 @@ async function handleSlashCommand(interaction) {
       return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     }
     const targetUser = interaction.options.getUser('user', true);
-    clearElo(targetUser.id);
-    eloStore.deleteElo(targetUser.id).catch(() => {});
+    const mode = interaction.options.getString('che_do');
+    clearElo(targetUser.id, mode);
+    eloStore.deleteElo(targetUser.id, mode).catch(() => {});
     persistence.saveState(rooms, eloData);
     return interaction.reply({
-      content: `✅ Đã xóa ELO của <@${targetUser.id}>, trở về **Unranked**.`,
+      content: mode
+        ? `✅ Đã xóa ELO **${mode}** của <@${targetUser.id}>, mode đó trở về **Unranked**.`
+        : `✅ Đã xóa ELO **cả 2 chế độ** của <@${targetUser.id}>, trở về **Unranked**.`,
       ephemeral: true,
     });
   }
@@ -1519,10 +1500,6 @@ async function handleSlashCommand(interaction) {
       return interaction.editReply({ content: '❌ File đính kèm không phải là ảnh hợp lệ.' });
     }
 
-    // Tải ảnh 1 LẦN DUY NHẤT, dùng chung buffer để: (1) băm nội dung file
-    // chống dùng lại ảnh cũ, (2) gửi OCR. Băm theo NỘI DUNG FILE (không phải
-    // URL) để bắt được cả trường hợp upload lại từ máy khác hoặc link khác
-    // nhưng vẫn là đúng file ảnh đó.
     let imageBuffer;
     try {
       imageBuffer = await downloadImageBuffer(attachment.url);
@@ -1575,7 +1552,7 @@ async function handleSlashCommand(interaction) {
       });
     }
 
-    // ===== [PATCH] Admin test: bỏ qua xác thực mã phòng =====
+    // Admin test: bỏ qua xác thực mã phòng
     const submitterIsAdmin = await isAdminUserId(interaction.user.id).catch(() => false);
     const fakeRoom = { players: new Map(session.players), code: session.code };
     const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin });
@@ -2228,10 +2205,6 @@ async function handleModalSubmit(interaction) {
     return;
   }
 
-  // Tải ảnh 1 LẦN DUY NHẤT (buffer dùng chung cho việc băm chống trùng lẫn
-  // OCR). Việc kiểm tra trùng ảnh phải xảy ra SAU khi tải xong vì giờ đây
-  // dựa trên hash nội dung file, không còn dựa trên URL người dùng dán vào
-  // (URL rất dễ đổi mà nội dung ảnh vẫn y hệt).
   let imageBuffer;
   try {
     imageBuffer = await downloadImageBuffer(imageUrl);
@@ -2292,7 +2265,7 @@ async function handleModalSubmit(interaction) {
     return interaction.editReply({ content: '❌ Phiên chơi này đã hết hạn hoặc không tồn tại.' });
   }
 
-  // ===== [PATCH] Admin test: bỏ qua xác thực mã phòng =====
+  // Admin test: bỏ qua xác thực mã phòng
   const submitterIsAdmin = await isAdminUserId(interaction.user.id).catch(() => false);
   const fakeRoom = { players: new Map(session.players), code: session.code };
   const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin });
@@ -2456,7 +2429,7 @@ async function handleButton(interaction) {
     });
   }
 
-  // ===== NÚT GỬI KẾT QUẢ (CẢI TIẾN UX) =====
+  // ===== NÚT GỬI KẾT QUẢ =====
   if (customId.startsWith('submit_result_')) {
     const roomId = customId.replace('submit_result_', '');
     const room = getRoom(roomId);
@@ -2840,7 +2813,7 @@ async function giveCode(interaction, roomId) {
   }
   const personal = formatPersonalCode(room, interaction.user.id);
   if (!personal) {
-        return interaction.reply({ content: t(interaction, '⚠️ Bạn không nằm trong phòng này.', '⚠️ You are not in this room.'), ephemeral: true });
+    return interaction.reply({ content: t(interaction, '⚠️ Bạn không nằm trong phòng này.', '⚠️ You are not in this room.'), ephemeral: true });
   }
   await interaction.reply({
     content: t(interaction,

@@ -33,9 +33,10 @@ function saveState(rooms, eloData) {
   try {
     ensureDataDir();
     const roomData = Array.from(rooms.values()).map(serializeRoom);
-    const eloDataObj = Object.fromEntries(
-      Array.from(eloData.entries()).map(([userId, data]) => [userId, data])
-    );
+    const eloDataObj = {};
+    for (const [userId, entry] of eloData.entries()) {
+      eloDataObj[userId] = entry;
+    }
     const payload = { rooms: roomData, eloData: eloDataObj };
     fs.writeFileSync(config.STATE_FILE, JSON.stringify(payload, null, 2), 'utf-8');
   } catch (err) {

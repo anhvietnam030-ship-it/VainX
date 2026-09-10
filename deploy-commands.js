@@ -192,21 +192,39 @@ const commands = [
          .setMaxLength(20)
     ),
 
-  // ----- QUẢN LÝ ELO (ADMIN) -----
+  // ----- QUẢN LÝ ELO (ADMIN, THEO CHẾ ĐỘ) -----
   new SlashCommandBuilder()
     .setName('set-elo')
-    .setDescription('[Admin] Đặt ELO chính xác cho 1 người chơi')
+    .setDescription('[Admin] Đặt ELO chính xác cho 1 người chơi (theo chế độ)')
     .addUserOption(opt => opt.setName('user').setDescription('Người chơi').setRequired(true))
+    .addStringOption(opt =>
+      opt.setName('che_do').setDescription('Chế độ xếp hạng').setRequired(true).addChoices(
+        { name: '3v3', value: '3v3' },
+        { name: '5v5', value: '5v5' }
+      )
+    )
     .addIntegerOption(opt => opt.setName('diem').setDescription('Giá trị ELO mới').setMinValue(0).setMaxValue(3000).setRequired(true)),
   new SlashCommandBuilder()
     .setName('them-elo')
-    .setDescription('[Admin] Cộng/trừ điểm ELO cho 1 người chơi (dùng số âm để trừ)')
+    .setDescription('[Admin] Cộng/trừ điểm ELO cho 1 người chơi (theo chế độ, số âm để trừ)')
     .addUserOption(opt => opt.setName('user').setDescription('Người chơi').setRequired(true))
+    .addStringOption(opt =>
+      opt.setName('che_do').setDescription('Chế độ xếp hạng').setRequired(true).addChoices(
+        { name: '3v3', value: '3v3' },
+        { name: '5v5', value: '5v5' }
+      )
+    )
     .addIntegerOption(opt => opt.setName('diem').setDescription('Số điểm cộng (âm để trừ)').setRequired(true)),
   new SlashCommandBuilder()
     .setName('xoa-elo')
-    .setDescription('[Admin] Xóa ELO của 1 người chơi, đưa về Unranked')
-    .addUserOption(opt => opt.setName('user').setDescription('Người chơi').setRequired(true)),
+    .setDescription('[Admin] Xóa ELO của 1 người chơi (bỏ trống che_do = xóa cả 2 chế độ)')
+    .addUserOption(opt => opt.setName('user').setDescription('Người chơi').setRequired(true))
+    .addStringOption(opt =>
+      opt.setName('che_do').setDescription('Để trống = xóa cả 3v3 lẫn 5v5').setRequired(false).addChoices(
+        { name: '3v3', value: '3v3' },
+        { name: '5v5', value: '5v5' }
+      )
+    ),
 ];
 
 const rest = new REST({ version: '10' }).setToken(config.TOKEN);

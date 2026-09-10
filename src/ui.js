@@ -33,14 +33,14 @@ function unixSeconds(ms) {
 
 // ===== HÀM LẤY ICON TRẠNG THÁI PHÒNG =====
 function getRoomStatusIcon(room) {
-  if (room.status === 'revealed') return '🟣'; // Tím - đã phát code
+  if (room.status === 'revealed') return '🟣';
   if (isFull(room)) {
     const check = canRevealCode(room);
-    if (check.ok) return '🟡'; // Vàng - đủ người, chờ sẵn sàng
-    return '🔴'; // Đỏ - đủ nhưng kẹt (team lệch)
+    if (check.ok) return '🟡';
+    return '🔴';
   }
-  if (room.players.size > 0) return '🟢'; // Xanh - có người
-  return '⚪'; // Trắng - trống
+  if (room.players.size > 0) return '🟢';
+  return '⚪';
 }
 
 // ===== Bảng chọn chế độ =====
@@ -164,7 +164,8 @@ function statusText(room) {
 function playerLine(player, room) {
   let displayName = player.username;
   if (room.isRank) {
-    const eloObj = getElo(player.id);
+    // ELO được tách theo chế độ của phòng (3v3 hoặc 5v5)
+    const eloObj = getElo(player.id, room.mode);
     const elo = eloObj?.elo ?? 0;
     const rank = eloObj?.rank || 'Unranked';
     const medalIndex = Math.floor((elo % 300) / 100);
@@ -191,14 +192,14 @@ function noneTeamFieldValue(room) {
 
 function roomEmbed(room) {
   const modeEmoji = MODE_EMOJI[room.mode] || '🎮';
-  const statusIcon = getRoomStatusIcon(room); // <-- THÊM ICON TRẠNG THÁI
-  
+  const statusIcon = getRoomStatusIcon(room);
+
   const { team1, team2, none } = teamCounts(room);
   const usingTeams = team1 > 0 || team2 > 0;
 
   const embed = new EmbedBuilder()
     .setColor(roomColor(room))
-    .setTitle(`${statusIcon} ${modeEmoji} ${room.label}`) // <-- THÊM ICON VÀO TIÊU ĐỀ
+    .setTitle(`${statusIcon} ${modeEmoji} ${room.label}`)
     .setDescription(
       `${progressBar(room.players.size, room.capacity)}\n` +
       bi(`**${room.players.size} / ${room.capacity}** người`, `**${room.players.size} / ${room.capacity}** players`) +
