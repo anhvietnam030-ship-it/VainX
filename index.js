@@ -478,7 +478,20 @@ async function renderHiddenRoom(room) {
       if (!ch) continue;
       if (target.messageId) {
         const msg = await ch.messages.fetch(target.messageId).catch(() => null);
-        if (msg) { await msg.edit({ embeds: [embed], components: rowsUi }); continue; }
+        if (msg) {
+          try {
+            await msg.edit({ embeds: [embed], components: rowsUi });
+            continue;
+          } catch (editErr) {
+            // Message đã bị xoá trước khi edit xong (Unknown Message 10008)
+            // -> reset ID để gửi panel mới thay vì báo lỗi.
+            if (editErr.code === 10008) {
+              target.messageId = null;
+            } else {
+              throw editErr;
+            }
+          }
+        }
       }
       const sent = await ch.send({ embeds: [embed], components: rowsUi });
       target.messageId = sent.id;
@@ -496,9 +509,20 @@ async function renderRoom(room, channel) {
       if (ch) {
         const msg = await ch.messages.fetch(room.panelMessageId).catch(() => null);
         if (msg) {
-          await msg.edit({ embeds: [embed], components: rowsUi });
-          persistence.saveState(rooms, eloData);
-          return msg;
+          try {
+            await msg.edit({ embeds: [embed], components: rowsUi });
+            persistence.saveState(rooms, eloData);
+            return msg;
+          } catch (editErr) {
+            // Message đã bị xoá trước khi edit xong (Unknown Message 10008)
+            // -> reset ID để gửi panel mới thay vì báo lỗi.
+            if (editErr.code === 10008) {
+              room.panelChannelId = null;
+              room.panelMessageId = null;
+            } else {
+              throw editErr;
+            }
+          }
         }
       }
     }
