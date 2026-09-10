@@ -464,7 +464,7 @@ function formatPersonalCode(room, userId) {
 }
 
 // ============================================================
-// ===== HÀM OCR =============================================
+// ===== HÀM OCR – ƯU TIÊN TÌM KDA TRÊN CÙNG DÒNG ============
 // ============================================================
 function extractAllKDAResult(text, room, opts = {}) {
   const skipCodeCheck = !!opts.skipCodeCheck;
@@ -482,7 +482,25 @@ function extractAllKDAResult(text, room, opts = {}) {
     console.warn('⚠️ extractAllKDAResult: không có room.code để đối chiếu -> dùng chế độ so khớp tên "mở" (KHÔNG khuyến khích, dễ bị ăn gian bằng ảnh trận khác).');
   }
 
-  const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+  // Tách dòng
+  let lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+
+  // ===== FIX OCR =====
+  // OCR đôi khi tách rời "prefix slot" và "tên người chơi" thành 2 dòng riêng,
+  // ví dụ "<code>_<team>_" và "<username>" (như "1600-1_" + "NaNi"). Điều này
+  // làm cho việc đếm slot bị lệch (đếm 2 slot cho 1 người), khiến chiến lược
+  // "đọc theo cột" gán sai KDA (thường lấy KDA của người đứng trước trong ảnh).
+  // → Gộp lại thành 1 dòng trước khi xử lý tiếp.
+  for (let i = 0; i < lines.length - 1; i++) {
+    const onlyPrefix = /^\d+[\s\-_]+\d+[\s\-_]*$/.test(lines[i]);
+    const nextStartsWithLetter = /^[A-Za-z]/.test(lines[i + 1]);
+    if (onlyPrefix && nextStartsWithLetter) {
+      lines[i] = lines[i] + lines[i + 1];
+      lines.splice(i + 1, 1);
+      // Không tăng i để có thể gộp tiếp nếu cần (thường 1 lần là đủ)
+    }
+  }
+
   const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
 
   const anchors = [];
