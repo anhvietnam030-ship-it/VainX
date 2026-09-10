@@ -72,45 +72,28 @@ const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 const rankSessions = require('./src/rankSessions');
 
 // ===== AUTO-BALANCE TEAM CHO PHÒNG RANK =====
-// Ghép team theo ELO sao cho tổng ELO 2 team chênh lệch nhỏ nhất.
-// Chỉ áp dụng cho phòng rank (room.isRank === true). Số người tối đa
-// là 10 -> C(10,5) = 252 tổ hợp, duyệt hết vẫn nhanh trong vài ms.
-// Trả về true nếu đã gán team thành công.
 function autoBalanceRankTeams(room) {
   if (!room || !room.isRank) return false;
   const entries = Array.from(room.players.entries());
   if (entries.length === 0) return false;
-
-  // Chỉ 1 người -> cho vào Team 1 luôn, khỏi tính toán.
-  if (entries.length === 1) {
-    entries[0][1].team = 1;
-    return true;
-  }
+  if (entries.length === 1) { entries[0][1].team = 1; return true; }
 
   const n = entries.length;
-  const team1Size = Math.floor(n / 2); // team1 nhỏ hơn hoặc bằng team2
-
+  const team1Size = Math.floor(n / 2);
   const players = entries.map(([id, data]) => ({
-    id,
-    data,
+    id, data,
     elo: getElo(id, room.mode).elo ?? config.RANK_DEFAULT_ELO,
   }));
 
-  // Sinh tất cả tổ hợp chọn team1Size người trong n người.
   const combos = [];
   (function gen(start, cur) {
     if (cur.length === team1Size) { combos.push([...cur]); return; }
-    for (let i = start; i < n; i++) {
-      cur.push(i);
-      gen(i + 1, cur);
-      cur.pop();
-    }
+    for (let i = start; i < n; i++) { cur.push(i); gen(i + 1, cur); cur.pop(); }
   })(0, []);
 
   const totalElo = players.reduce((s, p) => s + p.elo, 0);
   let bestDiff = Infinity;
   let bestCombo = combos[0] || [];
-
   for (const combo of combos) {
     const sum1 = combo.reduce((s, i) => s + players[i].elo, 0);
     const diff = Math.abs(totalElo - 2 * sum1);
@@ -203,19 +186,14 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
     const discordUsername = playerEntry ? playerEntry[1].username : 'Unknown';
 
     eloUpdates.push({
-      userId,
-      username: discordUsername,
-      oldElo: userElo,
-      newElo,
-      result: resultData.result,
-      kda: resultData.kda,
-      wins: updatedData.wins,
-      losses: updatedData.losses,
+      userId, username: discordUsername,
+      oldElo: userElo, newElo,
+      result: resultData.result, kda: resultData.kda,
+      wins: updatedData.wins, losses: updatedData.losses,
     });
   }
   persistence.saveState(rooms, eloData);
 
-  // ===== Kết quả ELO chỉ gửi vào kênh SẢNH CHUNG (PUBLIC_RESULT_CHANNEL_ID) =====
   const publicChannelId = process.env.PUBLIC_RESULT_CHANNEL_ID;
   console.log(`ℹ️ [${roomId}] PUBLIC_RESULT_CHANNEL_ID = ${publicChannelId || '(chưa set)'}`);
   if (publicChannelId) {
@@ -313,9 +291,9 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
 
       await publicChannel.send({ embeds: [embed] })
         .then(() => console.log(`✅ [${roomId}] Đã gửi thông báo kết quả vào kênh sảnh chung.`))
-        .catch((err) => console.error(`❌ [${roomId}] Gửi thông báo kết quả vào sảnh chung THẤT BẠI (có thể do bot thiếu quyền View Channel/Send Messages/Embed Links trong kênh đó):`, err.message));
+        .catch((err) => console.error(`❌ [${roomId}] Gửi thông báo kết quả vào sảnh chung THẤT BẠI:`, err.message));
     } else {
-      console.warn(`⚠️ Không tìm thấy kênh sảnh chung: ${publicChannelId} (kiểm tra lại ID kênh, và bot đã được add vào kênh/server đó chưa).`);
+      console.warn(`⚠️ Không tìm thấy kênh sảnh chung: ${publicChannelId}.`);
     }
   } else {
     console.warn('⚠️ Chưa set PUBLIC_RESULT_CHANNEL_ID — kết quả ELO sẽ không được đăng.');
@@ -345,23 +323,19 @@ function loadImageHistory() {
     return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf-8'));
   } catch { return []; }
 }
-
 function saveImageHistory(history) {
   const dir = path.dirname(HISTORY_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
 }
-
 function hashImageBuffer(buffer) {
   return crypto.createHash('sha256').update(buffer).digest('hex');
 }
-
 function isImageHashUsedRecently(hash, userId, days = 90) {
   const history = loadImageHistory();
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   return history.some(entry => entry.hash === hash && entry.userId === userId && entry.submittedAt > cutoff);
 }
-
 function addImageHistory(hash, url, userId, roomId) {
   const history = loadImageHistory();
   history.push({ hash, url, userId, roomId, submittedAt: Date.now() });
@@ -392,11 +366,6 @@ async function ocrImageBuffer(imageBuffer) {
       formData.append('apikey', OCR_API_KEY);
       formData.append('file', imageBuffer, { filename: 'screenshot.png' });
       formData.append('language', 'eng');
-      // ✅ Bật overlay để lấy toạ độ (Top) của từng dòng. ParsedText thuần
-      // không đảm bảo đúng thứ tự theo chiều dọc của ảnh khi giao diện có
-      // nhiều icon/nút xen giữa các cột -> dùng toạ độ Top để đối chiếu
-      // tên người chơi với đúng dòng K/D/A của họ, tránh map nhầm sang
-      // hàng bên cạnh (VD: NaNi bị gán nhầm KDA của Peckkk).
       formData.append('isOverlayRequired', 'true');
       formData.append('detectOrientation', 'true');
       formData.append('scale', 'true');
@@ -548,13 +517,8 @@ async function renderHiddenRoom(room) {
             await msg.edit({ embeds: [embed], components: rowsUi });
             continue;
           } catch (editErr) {
-            // Message đã bị xoá trước khi edit xong (Unknown Message 10008)
-            // -> reset ID để gửi panel mới thay vì báo lỗi.
-            if (editErr.code === 10008) {
-              target.messageId = null;
-            } else {
-              throw editErr;
-            }
+            if (editErr.code === 10008) { target.messageId = null; }
+            else { throw editErr; }
           }
         }
       }
@@ -579,8 +543,6 @@ async function renderRoom(room, channel) {
             persistence.saveState(rooms, eloData);
             return msg;
           } catch (editErr) {
-            // Message đã bị xoá trước khi edit xong (Unknown Message 10008)
-            // -> reset ID để gửi panel mới thay vì báo lỗi.
             if (editErr.code === 10008) {
               room.panelChannelId = null;
               room.panelMessageId = null;
@@ -681,8 +643,6 @@ async function handleReadyCountdownExpire(room, channel) {
   room.fullAt = null;
   if (room.timers.blink) { clearInterval(room.timers.blink); room.timers.blink = null; room._flashColor = null; }
 
-  // ✅ Nếu là phòng rank: sau khi đá người không sẵn sàng, ghép lại team
-  // theo ELO cho những người còn lại (nếu còn từ 1 người trở lên).
   if (room.isRank && room.players.size > 0) {
     autoBalanceRankTeams(room);
   }
@@ -813,8 +773,6 @@ client.once('ready', async () => {
     const channel = await client.channels.fetch(room.panelChannelId).catch(() => null);
     if (!channel) continue;
 
-    // Nếu là phòng rank và còn người chơi (khôi phục sau restart) -> ghép
-    // lại team theo ELO để đảm bảo tính cân bằng.
     if (room.isRank && room.players.size > 0) {
       autoBalanceRankTeams(room);
     }
@@ -879,6 +837,26 @@ const ADMIN_ONLY_COMMANDS = new Set([
   'xoa-phong-rank', 'xoa-tat-ca-phong-rank',
 ]);
 
+// ✅ Các lệnh nặng (gọi nhiều API Discord + Supabase) -> phải defer NGAY
+// để tránh lỗi "Ứng dụng không phản hồi" (10062) vì vượt 3s.
+const DEFER_FIRST_COMMANDS = new Set([
+  'lobby',
+  'set-timeout', 'ready', 'gia-han-phong',
+  'ban-phong', 'unban-phong', 'kick-room', 'kick-group',
+  'moi-ban',
+  'setup', 'setup-rank',
+  'setup-phong-an', 'moi-phong-an', 'danh-sach-phong-an',
+  'xoa-phong-an', 'xoa-tat-ca-phong-an',
+  'register-ign',
+  'set-elo', 'them-elo', 'xoa-elo',
+  'admin-submit-result',
+  'xoa-phong-rank', 'xoa-tat-ca-phong-rank',
+  'test-fill', 'test-fill-rank', 'test-fill-an',
+  'xoa-setup-phong', 'don-rac', 'xoa-tin-nhan-bot',
+  'xoa-phong-thuong', 'xoa-tat-ca-phong-thuong',
+  'reset-tat-ca-phong', 'reset-room',
+]);
+
 const ADMIN_MSG_AUTO_DELETE_MS = 2 * 60 * 1000;
 
 function wrapAdminEphemeralAutoDelete(interaction) {
@@ -901,6 +879,22 @@ async function handleSlashCommand(interaction) {
   const { commandName } = interaction;
 
   if (ADMIN_ONLY_COMMANDS.has(commandName)) wrapAdminEphemeralAutoDelete(interaction);
+
+  // ✅ Defer NGAY với các lệnh nặng. Sau khi defer thành công, mọi
+  // interaction.reply() phía sau được tự động chuyển thành editReply()
+  // để không bị Discord từ chối với "Interaction has already been acknowledged".
+  if (DEFER_FIRST_COMMANDS.has(commandName)) {
+    let deferred = false;
+    try {
+      await interaction.deferReply({ ephemeral: true });
+      deferred = true;
+    } catch (e) {
+      console.error(`[${commandName}] deferReply thất bại:`, e.message);
+    }
+    if (deferred) {
+      interaction.reply = (opts) => interaction.editReply(opts);
+    }
+  }
 
   if (commandName === 'lobby') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
@@ -925,12 +919,20 @@ async function handleSlashCommand(interaction) {
       const losses = e.losses || 0;
       const total = wins + losses;
       const wr = total > 0 ? Math.round(100 * wins / total) + '%' : '—';
-      const est = estimateWinsToNextTier(target.id, mode);
-      let estStr;
-      if (est.isMax) estStr = '🏆 Đã đạt tier cao nhất';
-      else if (est.estimatedWins === 0) estStr = `⚡ Đủ điểm lên **${est.nextTierName}**`;
-      else estStr = `🎯 Cần ~**${est.estimatedWins}** win nữa tới **${est.nextTierName}** (+${est.needElo} ELO)`;
-      return `**${mode.toUpperCase()}** — \`${elo} ELO\` · **${e.rank}**\n> 🏆 **${wins}W - ${losses}L** (${wr} trên ${total} trận)\n> ${estStr}`;
+
+      // ✅ Bậc rank hiện tại + mức con (Đồng/Bạc/Vàng) trong tier.
+      const rankName = e.rank || 'Unranked';
+      let rankStr;
+      if (rankName === 'Unranked') {
+        rankStr = '🏅 **Unranked**';
+      } else {
+        const eloInTier = Math.max(0, elo % 200);
+        const subIdx = Math.min(2, Math.floor(eloInTier / (200 / 3)));
+        const subName = ['Đồng', 'Bạc', 'Vàng'][subIdx];
+        rankStr = `🏅 **${rankName}** (${subName})`;
+      }
+
+      return `**${mode.toUpperCase()}** — \`${elo} ELO\` · **${rankName}**\n> 🏆 **${wins}W - ${losses}L** (${wr} trên ${total} trận)\n> ${rankStr}`;
     };
 
     const embed = new EmbedBuilder()
@@ -938,7 +940,7 @@ async function handleSlashCommand(interaction) {
       .setDescription(`**IGN:** ${ign}\n\n${formatLine('3v3', eloObj3)}\n\n${formatLine('5v5', eloObj5)}`)
       .setColor(0x5865f2)
       .setThumbnail(target.displayAvatarURL({ size: 128 }))
-      .setFooter({ text: '* Ước tính gần đúng — thay đổi theo tier (K-factor) và KDA' })
+      .setFooter({ text: '* Thay đổi theo tier (K-factor) và KDA' })
       .setTimestamp();
 
     return interaction.reply({ embeds: [embed], ephemeral: true });
@@ -1048,7 +1050,6 @@ async function handleSlashCommand(interaction) {
     if (!room) return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
     if (!room.players.has(targetUser.id)) return interaction.reply({ content: `ℹ️ <@${targetUser.id}> không ở trong **${room.label}**.`, ephemeral: true });
     room.players.delete(targetUser.id);
-    // Phòng rank: ghép lại team theo ELO cho người còn lại.
     if (room.isRank && room.players.size > 0) autoBalanceRankTeams(room);
     persistence.saveState(rooms, eloData);
     const channel = (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) || interaction.channel;
@@ -1297,12 +1298,12 @@ async function handleSlashCommand(interaction) {
     if (kdaMap.size === 0) return interaction.editReply({ content: '❌ Không tìm thấy KDA.' });
 
     const result = parseMatchResult(ocrText);
-    if (!result) return interaction.editReply({ content: '❌ Không tìm thấy kết quả trận (Chiến thắng/Bại trận/VICTORY/DEFEAT).' });
-    if (result === 'surrender') return interaction.editReply({ content: '⚠️ Trận này kết thúc bằng **ĐẦU HÀNG** — bot **không tính ELO**. Không cần làm gì thêm.' });
+    if (!result) return interaction.editReply({ content: '❌ Không tìm thấy kết quả trận.' });
+    if (result === 'surrender') return interaction.editReply({ content: '⚠️ Trận này kết thúc bằng **ĐẦU HÀNG** — bot **không tính ELO**.' });
 
     const senderId = interaction.user.id;
     const senderKDA = kdaMap.get(senderId);
-    if (!senderKDA) return interaction.editReply({ content: `⚠️ Không tìm thấy IGN của bạn trong ảnh. Đăng ký bằng \`/register-ign\`.` });
+    if (!senderKDA) return interaction.editReply({ content: `⚠️ Không tìm thấy IGN của bạn trong ảnh.` });
 
     const saved = rankSessions.addResult(session.id, senderId, {
       result,
@@ -1408,7 +1409,6 @@ async function handleSlashCommand(interaction) {
       const fakeId = `9${Date.now()}${i}`.slice(0, 18);
       room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true, isBot: true });
     }
-    // Phòng rank: ghép lại team theo ELO (bot dùng ELO mặc định).
     autoBalanceRankTeams(room);
     const channel = interaction.channel;
     if (wasEmpty) { room.firstJoinAt = Date.now(); scheduleInactivityTimeout(room, channel); }
@@ -1634,7 +1634,7 @@ async function handleModalSubmit(interaction) {
 
   const result = parseMatchResult(ocrText);
   if (!result) return interaction.editReply({ content: '❌ Không tìm thấy kết quả trận.' });
-  if (result === 'surrender') return interaction.editReply({ content: '⚠️ Trận này kết thúc bằng **ĐẦU HÀNG** — bot **không tính ELO**. Không cần làm gì thêm.' });
+  if (result === 'surrender') return interaction.editReply({ content: '⚠️ Trận này kết thúc bằng **ĐẦU HÀNG** — bot **không tính ELO**.' });
 
   const senderId = interaction.user.id;
   const senderKDA = kdaMap.get(senderId);
@@ -1741,217 +1741,4 @@ async function handleUserSelectMenu(interaction) {
   const room = getRoom(roomId);
   if (!room) return interaction.update({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), components: [] });
   const targets = interaction.users;
-  if (!targets || targets.size === 0) return interaction.update({ content: t(interaction, '❌ Chưa chọn ai.', "❌ Nobody picked."), components: [] });
-  if (room.status === 'revealed') return interaction.update({ content: t(interaction, '❌ Phòng đã phát code.', '❌ Code revealed.'), components: [] });
-  if (isFull(room)) return interaction.update({ content: t(interaction, '❌ Phòng đã đầy.', '❌ Room full.'), components: [] });
-
-  const invitedIds = [], skipped = [];
-  for (const targetUser of targets.values()) {
-    if (targetUser.id === interaction.user.id) { skipped.push(t(interaction, `<@${targetUser.id}> (chính bạn)`, `<@${targetUser.id}> (yourself)`)); continue; }
-    if (isBanned(room, targetUser.id)) { skipped.push(t(interaction, `<@${targetUser.id}> (bị cấm)`, `<@${targetUser.id}> (banned)`)); continue; }
-    invitedIds.push(targetUser.id);
-  }
-  if (invitedIds.length === 0) return interaction.update({ content: t(interaction, '❌ Không mời được ai.', '❌ Could not invite.') + (skipped.length ? `\n${t(interaction, 'Bỏ qua', 'Skipped')}: ${skipped.join(', ')}` : ''), components: [] });
-
-  const joinRow = new ActionRowBuilder().addComponents(
-    new ButtonBuilder().setCustomId(`join_${room.id}`).setLabel('Tham gia ngay').setStyle(ButtonStyle.Success).setEmoji('➕')
-  );
-  const mentionList = invitedIds.map((id) => `<@${id}>`).join(' ');
-  await interaction.channel.send({
-    content: t(interaction,
-      `📨 <@${interaction.user.id}> mời ${mentionList} vào **${room.label}** (${room.players.size}/${room.capacity})!`,
-      `📨 <@${interaction.user.id}> invited ${mentionList} to **${room.label}**!`
-    ),
-    components: [joinRow],
-  });
-  let summary = t(interaction, `✅ Đã mời **${invitedIds.length}** người.`, `✅ Invited **${invitedIds.length}** people.`);
-  if (skipped.length) summary += `\n⚠️ ${t(interaction, 'Bỏ qua', 'Skipped')}: ${skipped.join(', ')}`;
-  return interaction.update({ content: summary, components: [] });
-}
-
-// ===== HELPERS =====
-async function sendHiddenRoomDM(room, targetUser, introText) {
-  const dm = await targetUser.createDM();
-  const embed = roomEmbed(room);
-  const rowsUi = roomActionRows(room);
-  const sent = await dm.send({ content: introText, embeds: [embed], components: rowsUi });
-  room.panelTargets.push({ userId: targetUser.id, channelId: dm.id, messageId: sent.id });
-  return sent;
-}
-
-function splitTeamCustomId(customId) {
-  if (customId.startsWith('team1_')) return [1, customId.replace('team1_', '')];
-  if (customId.startsWith('team2_')) return [2, customId.replace('team2_', '')];
-  return [null, customId.replace('teamnone_', '')];
-}
-
-async function joinRoom(interaction, roomId) {
-  const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
-  if (isBanned(room, interaction.user.id)) return interaction.reply({ content: t(interaction, `❌ Bạn bị cấm khỏi **${room.label}**.`, `❌ You're banned from **${room.label}**.`), ephemeral: true });
-  if (interaction.member && config.JOIN_ROLE_ID && !interaction.member.roles?.cache?.has(config.JOIN_ROLE_ID)) {
-    return interaction.reply({ content: t(interaction, `❌ Cần role <@&${config.JOIN_ROLE_ID}>.`, `❌ Need <@&${config.JOIN_ROLE_ID}> role.`), ephemeral: true });
-  }
-  const existing = findRoomOfUser(interaction.user.id);
-  if (existing && existing.id !== room.id) return interaction.reply({ content: t(interaction, `⚠️ Bạn đang ở **${existing.label}**.`, `⚠️ You're in **${existing.label}**.`), ephemeral: true });
-  if (existing && existing.id === room.id) return interaction.reply({ content: t(interaction, 'ℹ️ Bạn đã ở trong phòng này.', 'ℹ️ Already in room.'), ephemeral: true });
-  if (isFull(room)) return interaction.reply({ content: t(interaction, '❌ Phòng đã đầy.', '❌ Room full.'), ephemeral: true });
-  if (room.status === 'revealed') return interaction.reply({ content: t(interaction, '❌ Phòng đã bắt đầu.', '❌ Room started.'), ephemeral: true });
-
-  const wasEmpty = room.players.size === 0;
-  room.players.set(interaction.user.id, {
-    username: interaction.member?.displayName || interaction.user.username,
-    team: null,
-    ready: false,
-  });
-  // ✅ Phòng rank: tự động ghép lại team theo ELO mỗi khi có người join.
-  // Điều này giúp team luôn cân bằng theo ELO hiện tại (thay vì để user
-  // tự chọn Team 1 / Team 2 / Bỏ team như phòng thường).
-  if (room.isRank) {
-    autoBalanceRankTeams(room);
-  }
-  const channel = interaction.channel;
-  if (wasEmpty) { room.firstJoinAt = Date.now(); scheduleInactivityTimeout(room, channel); }
-  await renderRoom(room, channel);
-  if (['3v3', '5v5'].includes(room.mode) && !room.isRank) startAnnouncement(room);
-  if (isFull(room)) { await announceRoomFull(room, channel); scheduleReadyCountdown(room, channel); }
-  return interaction.reply({ content: t(interaction, `✅ Đã gia nhập **${room.label}**.`, `✅ Joined **${room.label}**.`), ephemeral: true });
-}
-
-async function leaveRoom(interaction, roomId) {
-  const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
-  if (!room.players.has(interaction.user.id)) return interaction.reply({ content: t(interaction, 'ℹ️ Bạn không ở trong phòng.', 'ℹ️ Not in room.'), ephemeral: true });
-  if (room.status === 'revealed') return interaction.reply({ content: t(interaction, '❌ Phòng đã phát code, không thể rời.', '❌ Code revealed, cannot leave.'), ephemeral: true });
-
-  room.players.delete(interaction.user.id);
-  // ✅ Phòng rank: ghép lại team theo ELO cho những người còn lại.
-  if (room.isRank && room.players.size > 0) {
-    autoBalanceRankTeams(room);
-  }
-  const channel = interaction.channel;
-  if (room.timers.readyCountdown && !isFull(room)) {
-    clearTimeout(room.timers.readyCountdown); room.timers.readyCountdown = null; room.fullAt = null;
-    if (room.timers.blink) { clearInterval(room.timers.blink); room.timers.blink = null; room._flashColor = null; }
-  }
-  if (room.players.size === 0) { stopAnnouncement(room); resetRoomWithCleanup(room); }
-  await renderRoom(room, channel);
-  return interaction.reply({ content: t(interaction, `✅ Đã rời **${room.label}**.`, `✅ Left **${room.label}**.`), ephemeral: true });
-}
-
-async function toggleReady(interaction, roomId) {
-  const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
-  const player = room.players.get(interaction.user.id);
-  if (!player) return interaction.reply({ content: t(interaction, '⚠️ Cần Gia nhập trước.', '⚠️ Join first.'), ephemeral: true });
-  if (room.status === 'revealed') return interaction.reply({ content: t(interaction, 'ℹ️ Đã phát code.', 'ℹ️ Code revealed.'), ephemeral: true });
-  if (!isFull(room)) return interaction.reply({ content: t(interaction, `⚠️ Chưa đủ người (${room.players.size}/${room.capacity}).`, `⚠️ Not full yet (${room.players.size}/${room.capacity}).`), ephemeral: true });
-  if (!checkCooldown(interaction.user.id)) return interaction.reply({ content: t(interaction, '⏳ Đợi 1-2 giây.', '⏳ Wait 1-2 seconds.'), ephemeral: true });
-
-  // ✅ Ack ngay trong 3s đầu tiên, TRƯỚC khi làm renderRoom/tryRevealCode —
-  // 2 hàm này có thể gọi nhiều API Discord/Supabase liên tiếp (edit panel,
-  // channel.send, logAdmin, tạo rank session, gửi kênh kết quả...), cộng dồn
-  // dễ vượt 3s -> interaction.reply() cuối cùng bị Discord từ chối với lỗi
-  // "Unknown interaction" (10062) vì token đã hết hạn. Defer trước rồi
-  // editReply sau thì có tới 15 phút để hoàn tất, không còn bị lỗi này.
-  try { await interaction.deferReply({ ephemeral: true }); }
-  catch (err) {
-    console.error('❗ toggleReady: deferReply thất bại (token có thể đã hết hạn):', err.message);
-    return;
-  }
-
-  player.ready = !player.ready;
-  const channel = interaction.channel;
-  await renderRoom(room, channel);
-  await tryRevealCode(room, channel);
-  let extra = t(interaction, '', '');
-  if (room.status === 'waiting' && isFull(room) && allReady(room)) extra = t(interaction, '\n⚖️ Team chưa cân bằng.', "\n⚖️ Teams aren't balanced.");
-  return interaction.editReply({ content: t(interaction, player.ready ? '✅ Bạn đã sẵn sàng.' : '↩️ Bạn bỏ sẵn sàng.', player.ready ? '✅ Ready.' : '↩️ No longer ready.') + extra }).catch((err) => {
-    console.error('❗ toggleReady: editReply thất bại:', err.message);
-  });
-}
-
-async function setTeam(interaction, roomId, team) {
-  const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
-
-  // ✅ Phòng RANK: hệ thống tự ghép team cân bằng theo ELO. Non-admin
-  // KHÔNG được phép đổi team bằng tay; chỉ admin mới override được.
-  if (room.isRank) {
-    const allowed = await isAdminAnywhere(interaction);
-    if (!allowed) {
-      return interaction.reply({
-        content: t(interaction,
-          '🔒 **Phòng Rank tự động ghép team cân bằng theo ELO.**\n' +
-          'Bạn không cần (và không thể) chọn team bằng tay.\n' +
-          'Chỉ **admin** mới đổi team thủ công khi cần.',
-          '🔒 **Rank rooms auto-balance teams by ELO.**\n' +
-          'You don\'t need (and can\'t) pick a team manually.\n' +
-          'Only **admins** can override teams.'),
-        ephemeral: true,
-      });
-    }
-  }
-
-  const player = room.players.get(interaction.user.id);
-  if (!player) return interaction.reply({ content: t(interaction, '⚠️ Cần Gia nhập trước.', '⚠️ Join first.'), ephemeral: true });
-  if (room.status === 'revealed') return interaction.reply({ content: t(interaction, 'ℹ️ Đã phát code, không đổi team.', 'ℹ️ Code revealed, cannot change team.'), ephemeral: true });
-  if (!checkCooldown(interaction.user.id)) return interaction.reply({ content: t(interaction, '⏳ Đợi 1-2 giây.', '⏳ Wait 1-2 seconds.'), ephemeral: true });
-
-  // ✅ Cùng lý do như toggleReady(): defer trước khi làm renderRoom/tryRevealCode
-  // để tránh lỗi "Unknown interaction" (10062) nếu chọn team này vừa khớp làm
-  // team cân bằng -> kích hoạt phát code (chuỗi việc tốn thời gian).
-  try { await interaction.deferReply({ ephemeral: true }); }
-  catch (err) {
-    console.error('❗ setTeam: deferReply thất bại (token có thể đã hết hạn):', err.message);
-    return;
-  }
-
-  player.team = team;
-  const channel = interaction.channel;
-  await renderRoom(room, channel);
-  await tryRevealCode(room, channel);
-  return interaction.editReply({ content: team ? t(interaction, `✅ Đã chọn **Team ${team}**.`, `✅ Picked **Team ${team}**.`) : t(interaction, '✅ Bỏ chọn team.', '✅ Cleared team.') }).catch((err) => {
-    console.error('❗ setTeam: editReply thất bại:', err.message);
-  });
-}
-
-async function giveCode(interaction, roomId) {
-  const room = getRoom(roomId);
-  if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
-  if (room.status !== 'revealed' || !room.code) return interaction.reply({ content: t(interaction, 'ℹ️ Chưa có code.', 'ℹ️ No code yet.'), ephemeral: true });
-  const personal = formatPersonalCode(room, interaction.user.id);
-  if (!personal) return interaction.reply({ content: t(interaction, '⚠️ Bạn không ở trong phòng.', '⚠️ Not in room.'), ephemeral: true });
-  await interaction.reply({ content: t(interaction, '🔑 Code của bạn (bấm giữ để copy):', '🔑 Your code (tap and hold to copy):'), ephemeral: true });
-  return interaction.followUp({ content: personal, ephemeral: true });
-}
-
-// ===== KEEP-ALIVE + BOOTSTRAP =====
-startKeepAliveServer();
-startSelfPing();
-
-async function bootstrap() {
-  initRooms();
-  const rankDefault = config.DEFAULT_RANK_ROOMS_PER_MODE || 0;
-  if (rankDefault > 0) {
-    for (const mode of Object.keys(config.CAPACITY)) addRankRoomsToMode(mode, rankDefault);
-  }
-  console.log(`ℹ️ Đã khởi tạo ${rooms.size} phòng.`);
-
-  const eloMap = await eloStore.loadAllElo();
-  if (eloStore.isEnabled()) {
-    console.log(`✅ Đã kết nối Supabase (${eloMap.size} người có ELO).`);
-    if (eloMap.size > 0) restoreEloData(eloMap);
-  } else {
-    console.warn('⚠️ Supabase chưa cấu hình.');
-  }
-
-  await client.login(config.TOKEN);
-  console.log(`=== BOT DISCORD ĐÃ ONLINE THÀNH CÔNG: ${client.user.tag} ===`);
-}
-
-bootstrap().catch((err) => console.error('=== LỖI KHỞI ĐỘNG BOT ===', err));
-
-process.on('unhandledRejection', (err) => {
-  console.error('=== UNHANDLED REJECTION ===', err);
-});
+  if (!targets || targets.size === 0) return interaction
