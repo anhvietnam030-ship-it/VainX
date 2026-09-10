@@ -168,7 +168,6 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
 }
 
 // Ước lượng số win còn lại để lên tier kế tiếp.
-// Coi ELO null = 0 (tier 0, đang ở Unranked) → next tier là tier kế tiếp.
 function estimateWinsToNextTier(userId, mode) {
   const cur = getElo(userId, mode);
   const tiers = config.RANK_TIERS;
@@ -514,6 +513,7 @@ function extractAllKDAResult(text, room, opts = {}) {
 
   let lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
+  // Gộp dòng prefix bị tách rời khỏi tên (vd "1600-1_" + "NaNi")
   for (let i = 0; i < lines.length - 1; i++) {
     const onlyPrefix = /^\d+[\s\-_]+\d+[\s\-_]*$/.test(lines[i]);
     const nextStartsWithLetter = /^[A-Za-z]/.test(lines[i + 1]);
@@ -523,6 +523,7 @@ function extractAllKDAResult(text, room, opts = {}) {
     }
   }
 
+  // Rebuild text cho khớp lines đã gộp
   text = lines.join('\n');
 
   const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
@@ -579,6 +580,30 @@ function extractAllKDAResult(text, room, opts = {}) {
     }
 
     const foundLineIdx = lines.indexOf(foundLine);
+
+    // ===== FIX OCR: KDA tách ra dòng riêng ngay sau tên =====
+    // Ví dụ ảnh kết quả Vainglory có dạng:
+    //   6789_NaNi
+    //   9/10/10
+    // Thay vì nhảy vào slot strategy (dễ sai khi OCR đọc dấu _ thành space),
+    // kiểm tra dòng NGAY SAU dòng chứa tên: nếu nó là KDA thuần (chỉ có
+    // dạng x/y/z, không có text khác) thì gán luôn.
+    if (foundLineIdx !== -1 && foundLineIdx + 1 < lines.length) {
+      const nextLine = lines[foundLineIdx + 1].trim();
+      if (/^\d+\s*\/\s*\d+\s*\/\s*\d+$/.test(nextLine)) {
+        kdaRegex.lastIndex = 0;
+        const m = kdaRegex.exec(nextLine);
+        if (m) {
+          const kill = parseInt(m[1], 10);
+          const death = parseInt(m[2], 10);
+          const assist = parseInt(m[3], 10);
+          resultMap.set(userId, { kill, death, assist });
+          console.log(`✅ Map KDA (dòng kế tiếp) cho ${searchName}: ${kill}/${death}/${assist}`);
+          continue;
+        }
+      }
+    }
+
     let slotLineIdx = -1;
     if (foundLineIdx !== -1) {
       if (slotPrefixRegex.test(lines[foundLineIdx])) {
