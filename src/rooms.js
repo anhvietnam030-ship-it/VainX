@@ -1,3 +1,710 @@
-console.log('🔍 [DEBUG] slotLines =', JSON.stringify(slotLines.map(i => `[${i}] ${lines[i]}`)));
-console.log('🔍 [DEBUG] foundLineIdx =', foundLineIdx, '| slotLineIdx =', slotLineIdx);
-console.log('🔍 [DEBUG] blockStart =', blockStart, '| contiguousBlock =', JSON.stringify(contiguousBlock.map(i => `[${i}] ${lines[i]}`)));
+const config = require('../config');
+
+// roomId dạng "3v3-1", "3v3-2", ... "5v5-4"
+const rooms = new Map();
+
+// Phòng ẨN — không nằm trong danh sách công khai
+const hiddenRooms = new Map();
+
+// === ELO DATA (PER-MODE) ===
+// Map<userId, { ign: string|null, '3v3': { elo, rank }, '5v5': { elo, rank } }>
+const eloData = new Map();
+
+const MODES = ['3v3', '5v5'];
+
+function emptyEloEntry(ign = null) {
+  return {
+    ign,
+    '3v3': { elo: null, rank: 'Unranked' },
+    '5v5': { elo: null, rank: 'Unranked' },
+  };
+}
+
+function getRankFromElo(elo) {
+  if (elo === null || elo === undefined) return 'Unranked';
+  for (const tier of config.RANK_TIERS) {
+    if (elo >= tier.minElo && elo < tier.maxElo) return tier.name;
+  }
+  return 'Unranked';
+}
+
+function getRankIndex(elo) {
+  if (elo === null || elo === undefined) return 0;
+  for (let i = 0; i < config.RANK_TIERS.length; i++) {
+    if (elo >= config.RANK_TIERS[i].minElo && elo <= config.RANK_TIERS[i].maxElo) {
+      return i;
+    }
+  }
+  return 0;
+}
+
+function getElo(userId, mode) {
+  if (!MODES.includes(mode)) mode = '5v5';
+  const entry = eloData.get(userId);
+  if (!entry) {
+    return { elo: null, rank: 'Unranked', rankIndex: 0, ign: null };
+  }
+  const modeData = entry[mode] || { elo: null, rank: 'Unranked' };
+  const rankIndex = getRankIndex(modeData.elo);
+  return {
+    elo: modeData.elo,
+    rank: modeData.rank || getRankFromElo(modeData.elo),
+    rankIndex,
+    ign: entry.ign || null,
+  };
+}
+
+function getFullElo(userId) {
+  const entry = eloData.get(userId);
+  if (!entry) return emptyEloEntry();
+  return {
+    ign: entry.ign || null,
+    '3v3': { ...entry['3v3'] },
+    '5v5': { ...entry['5v5'] },
+  };
+}
+
+function updateElo(userId, mode, newElo) {
+  if (!MODES.includes(mode)) throw new Error(`Mode không hợp lệ: ${mode}`);
+  const entry = eloData.get(userId) || emptyEloEntry();
+  const rank = getRankFromElo(newElo);
+  entry[mode] = { elo: newElo, rank };
+  eloData.set(userId, entry);
+  return { elo: newElo, rank };
+}
+
+function registerIGN(userId, ign) {
+  for (const [id, entry] of eloData) {
+    if (entry.ign && entry.ign.toLowerCase() === ign.toLowerCase() && id !== userId) {
+      return { ok: false, reason: 'IGN này đã được đăng ký bởi người khác.' };
+    }
+  }
+  const entry = eloData.get(userId) || emptyEloEntry();
+  entry.ign = ign;
+  eloData.set(userId, entry);
+  return { ok: true };
+}
+
+// Nếu mode rỗng -> xóa cả entry (cả 2 mode). Nếu có mode -> chỉ reset mode đó.
+function clearElo(userId, mode) {
+  const entry = eloData.get(userId);
+  if (!entry) return false;
+  if (!mode) {
+    return eloData.delete(userId);
+  }
+  if (!MODES.includes(mode)) return false;
+  entry[mode] = { elo: null, rank: 'Unranked' };
+  eloData.set(userId, entry);
+  return true;
+}
+
+function restoreEloData(saved) {
+  eloData.clear();
+  for (const [userId, data] of saved) {
+    if (data && typeof data === 'object' && (data['3v3'] || data['5v5'])) {
+      // Format mới
+      eloData.set(userId, {
+        ign: data.ign || null,
+        '3v3': { elo: data['3v3']?.elo ?? null, rank: data['3v3']?.rank || 'Unranked' },
+        '5v5': { elo: data['5v5']?.elo ?? null, rank: data['5v5']?.rank || 'Unranked' },
+      });
+    } else if (data && typeof data.elo !== 'undefined') {
+      // Format cũ (1 elo chung) -> nhân bản sang cả 2 mode
+      const eloVal = data.elo ?? null;
+      const rankVal = data.rank || getRankFromElo(eloVal);
+      eloData.set(userId, {
+        ign: data.ign || null,
+        '3v3': { elo: eloVal, rank: rankVal },
+        '5v5': { elo: eloVal, rank: rankVal },
+      });
+    }
+  }
+  return eloData;
+}
+
+function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
+  if (!opponentElos || opponentElos.length === 0) return userElo;
+  const currentElo = (userElo === null || userElo === undefined) ? config.RANK_DEFAULT_ELO : userElo;
+  const avgOppElo = opponentElos.reduce((a, b) => a + b, 0) / opponentElos.length;
+  const expected = 1 / (1 + Math.pow(10, (avgOppElo - currentElo) / 400));
+  const S = result === 'win' ? 1 : 0;
+  const K = config.RANK_K_FACTORS[userRankIndex] || 32;
+  let rawChange = K * (S - expected);
+
+  if (kda !== undefined && kda !== null) {
+    const kdaValue = Math.min(kda, 10);
+    let kdaFactor;
+    if (kdaValue >= 4) kdaFactor = 1.5;
+    else if (kdaValue >= 3) kdaFactor = 1.2;
+    else if (kdaValue >= 2) kdaFactor = 1.0;
+    else if (kdaValue >= 1) kdaFactor = 0.8;
+    else kdaFactor = 0.5;
+    if (S === 1) rawChange = rawChange * kdaFactor;
+    else rawChange = rawChange * (1 / kdaFactor);
+  }
+
+  const newElo = currentElo + Math.round(rawChange);
+  return Math.max(0, Math.min(3000, newElo));
+}
+
+// ===== ROOM FUNCTIONS =====
+function buildInitialRoom(mode, index) {
+  return {
+    id: `${mode}-${index}`,
+    mode,
+    index,
+    label: `Phòng ${mode.toUpperCase()} #${index}`,
+    capacity: config.CAPACITY[mode],
+    players: new Map(),
+    bannedUsers: new Set(),
+    status: 'waiting',
+    code: null,
+    revealedAt: null,
+    firstJoinAt: null,
+    fullAt: null,
+    panelChannelId: null,
+    panelMessageId: null,
+    timers: {
+      inactivity: null,
+      readyCountdown: null,
+      resetAfterCode: null,
+      blink: null,
+      resultWindow: null,
+    },
+    timeoutMs: config.DEFAULT_ROOM_TIMEOUT_MS,
+    _blinkOn: false,
+    isRank: false,
+    resultMap: new Map(),
+    resultWindowEnd: null,
+  };
+}
+
+function initRooms() {
+  for (const mode of Object.keys(config.CAPACITY)) {
+    for (let i = 1; i <= config.ROOMS_PER_MODE; i++) {
+      const room = buildInitialRoom(mode, i);
+      rooms.set(room.id, room);
+    }
+  }
+  return rooms;
+}
+
+function restoreRooms(savedRooms) {
+  rooms.clear();
+  for (const saved of savedRooms) {
+    if (!saved || !saved.mode || !saved.index) continue;
+
+    const room = saved.isRank
+      ? buildRankRoom(saved.mode, saved.index)
+      : buildInitialRoom(saved.mode, saved.index);
+
+    room.status = saved.status || 'waiting';
+    room.code = saved.code || null;
+    room.revealedAt = saved.revealedAt || null;
+    room.firstJoinAt = saved.firstJoinAt || null;
+    room.fullAt = saved.fullAt || null;
+    room.panelChannelId = saved.panelChannelId || null;
+    room.panelMessageId = saved.panelMessageId || null;
+    room.timeoutMs = saved.timeoutMs || config.DEFAULT_ROOM_TIMEOUT_MS;
+    room.players = new Map(
+      (saved.players || []).map((p) => {
+        const { id, ...rest } = p;
+        return [id, rest];
+      })
+    );
+    room.bannedUsers = new Set(saved.bannedUsers || []);
+
+    if (room.isRank) {
+      room.resultMap = new Map(saved.resultMap || []);
+      room.resultWindowEnd = saved.resultWindowEnd || null;
+    }
+
+    rooms.set(room.id, room);
+  }
+
+  for (const mode of Object.keys(config.CAPACITY)) {
+    for (let i = 1; i <= config.ROOMS_PER_MODE; i++) {
+      const id = `${mode}-${i}`;
+      if (!rooms.has(id)) {
+        rooms.set(id, buildInitialRoom(mode, i));
+      }
+    }
+  }
+
+  return rooms;
+}
+
+function getRoom(roomId) {
+  return rooms.get(roomId) || hiddenRooms.get(roomId);
+}
+
+function ensureRoom(mode, index) {
+  const id = `${mode}-${index}`;
+  let room = rooms.get(id);
+  if (!room) {
+    room = buildInitialRoom(mode, index);
+    rooms.set(id, room);
+  }
+  return room;
+}
+
+function addRoomsToMode(mode, count) {
+  const existing = getRoomsByMode(mode);
+  const maxAllowed = config.MAX_ROOMS_PER_MODE;
+  const usedIndices = new Set(existing.map(r => r.index));
+  const canAdd = Math.max(0, maxAllowed - existing.length);
+  const toAdd = Math.min(count, canAdd);
+  const created = [];
+  let idx = 1;
+  while (created.length < toAdd && idx <= maxAllowed) {
+    if (!usedIndices.has(idx)) {
+      const room = buildInitialRoom(mode, idx);
+      rooms.set(room.id, room);
+      created.push(room);
+      usedIndices.add(idx);
+    }
+    idx++;
+  }
+  return { created, requested: count, capped: count > toAdd, currentTotal: existing.length + created.length, maxAllowed };
+}
+
+function removeExtraRoom(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return { ok: false, reason: 'not_found' };
+  if (room.index <= config.ROOMS_PER_MODE) return { ok: false, reason: 'protected', room };
+  clearRoomTimers(room);
+  rooms.delete(roomId);
+  return { ok: true, room };
+}
+
+function getAllRooms() {
+  return Array.from(rooms.values());
+}
+
+function getRoomsByMode(mode) {
+  return getAllRooms().filter(r => r.mode === mode);
+}
+
+function getAllNormalRooms() {
+  return getAllRooms().filter(r => !r.isRank);
+}
+function getNormalRoomsByMode(mode) {
+  return getAllNormalRooms().filter(r => r.mode === mode);
+}
+function getAllRankRooms() {
+  return getAllRooms().filter(r => r.isRank);
+}
+function getRankRoomsByMode(mode) {
+  return getAllRankRooms().filter(r => r.mode === mode);
+}
+
+function createHiddenRoom(mode) {
+  const room = buildInitialRoom(mode, 0);
+  room.id = `${mode}-an-${Date.now()}`;
+  room.hidden = true;
+  room.label = `Phòng ${mode.toUpperCase()} (Ẩn) #${room.id.slice(-4)}`;
+  room.panelTargets = [];
+  hiddenRooms.set(room.id, room);
+  return room;
+}
+function getHiddenRoom(roomId) {
+  return hiddenRooms.get(roomId);
+}
+function getAllHiddenRooms() {
+  return Array.from(hiddenRooms.values());
+}
+function deleteHiddenRoom(roomId) {
+  const room = hiddenRooms.get(roomId);
+  if (room) clearRoomTimers(room);
+  hiddenRooms.delete(roomId);
+  return !!room;
+}
+
+function buildRankRoom(mode, index) {
+  const room = buildInitialRoom(mode, index);
+  room.id = `${mode}-rank-${index}`;
+  room.label = `Phòng ${mode.toUpperCase()} Rank #${index}`;
+  room.isRank = true;
+  room.status = 'waiting';
+  room.resultMap = new Map();
+  room.resultWindowEnd = null;
+  room.timers.resultWindow = null;
+  return room;
+}
+function addRankRoomsToMode(mode, count) {
+  const existing = getRankRoomsByMode(mode);
+  const maxAllowed = config.MAX_RANK_ROOMS_PER_MODE || config.MAX_ROOMS_PER_MODE;
+  const usedIndices = new Set(existing.map(r => r.index));
+  const canAdd = Math.max(0, maxAllowed - existing.length);
+  const toAdd = Math.min(count, canAdd);
+  const created = [];
+  let idx = 1;
+  while (created.length < toAdd && idx <= maxAllowed) {
+    if (!usedIndices.has(idx)) {
+      const room = buildRankRoom(mode, idx);
+      rooms.set(room.id, room);
+      created.push(room);
+      usedIndices.add(idx);
+    }
+    idx++;
+  }
+  return { created, requested: count, capped: count > toAdd, currentTotal: existing.length + created.length, maxAllowed };
+}
+function removeRankRoom(roomId) {
+  const room = rooms.get(roomId);
+  if (!room || !room.isRank) return { ok: false, reason: 'not_found' };
+  clearRoomTimers(room);
+  rooms.delete(roomId);
+  return { ok: true, room };
+}
+
+function findRoomOfUser(userId) {
+  for (const room of rooms.values()) {
+    if (room.players.has(userId)) return room;
+  }
+  for (const room of hiddenRooms.values()) {
+    if (room.players.has(userId)) return room;
+  }
+  return null;
+}
+function findRoomOfUserInMode(userId, mode) {
+  for (const room of rooms.values()) {
+    if (room.mode === mode && room.players.has(userId)) return room;
+  }
+  for (const room of hiddenRooms.values()) {
+    if (room.mode === mode && room.players.has(userId)) return room;
+  }
+  return null;
+}
+
+function clearRoomTimers(room) {
+  if (room.timers.inactivity) clearTimeout(room.timers.inactivity);
+  if (room.timers.readyCountdown) clearTimeout(room.timers.readyCountdown);
+  if (room.timers.resetAfterCode) clearTimeout(room.timers.resetAfterCode);
+  if (room.timers.blink) clearInterval(room.timers.blink);
+  if (room.timers.resultWindow) clearTimeout(room.timers.resultWindow);
+  room.timers.inactivity = null;
+  room.timers.readyCountdown = null;
+  room.timers.resetAfterCode = null;
+  room.timers.blink = null;
+  room.timers.resultWindow = null;
+}
+
+function resetRoom(room) {
+  clearRoomTimers(room);
+  room.players.clear();
+  room.status = 'waiting';
+  room.code = null;
+  room.revealedAt = null;
+  room.firstJoinAt = null;
+  room.fullAt = null;
+  room._blinkOn = false;
+  if (room.isRank) {
+    room.resultMap.clear();
+    room.resultWindowEnd = null;
+  }
+}
+
+function isFull(room) {
+  return room.players.size >= room.capacity;
+}
+function allReady(room) {
+  if (room.players.size === 0) return false;
+  for (const p of room.players.values()) {
+    if (!p.ready) return false;
+  }
+  return true;
+}
+function teamCounts(room) {
+  let team1 = 0, team2 = 0, none = 0;
+  for (const p of room.players.values()) {
+    if (p.team === 1) team1++;
+    else if (p.team === 2) team2++;
+    else none++;
+  }
+  return { team1, team2, none };
+}
+function canRevealCode(room) {
+  if (!isFull(room)) return { ok: false, reason: 'not_full' };
+  if (!allReady(room)) return { ok: false, reason: 'not_all_ready' };
+  if (!config.ENFORCE_TEAM_BALANCE) return { ok: true };
+  const { team1, team2, none } = teamCounts(room);
+  if (none === room.players.size) return { ok: true };
+  if (none > 0) return { ok: false, reason: 'team_incomplete' };
+  const half = room.capacity / 2;
+  if (team1 !== half || team2 !== half) return { ok: false, reason: 'team_unbalanced' };
+  return { ok: true };
+}
+
+function banUser(room, userId) {
+  room.bannedUsers.add(userId);
+  room.players.delete(userId);
+}
+function unbanUser(room, userId) {
+  room.bannedUsers.delete(userId);
+}
+function isBanned(room, userId) {
+  return room.bannedUsers.has(userId);
+}
+function generateCode() {
+  let code;
+  do {
+    code = String(Math.floor(Math.random() * 10000)).padStart(4, '0');
+  } while (code === '0000');
+  return code;
+}
+function formatPersonalCode(room, userId) {
+  if (!room.code) return null;
+  const player = room.players.get(userId);
+  if (!player) return null;
+  if (player.team) {
+    return `${room.code}-${player.team}_${player.username}`;
+  }
+  return `${room.code}-${player.username}`;
+}
+
+// ============================================================
+// ===== HÀM OCR – ƯU TIÊN TÌM KDA TRÊN CÙNG DÒNG ============
+// ============================================================
+function extractAllKDAResult(text, room, opts = {}) {
+  const skipCodeCheck = !!opts.skipCodeCheck;
+  const resultMap = new Map();
+  const players = Array.from(room.players.entries());
+  const roomCode = room.code || null;
+  const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const SEP = '[\\s\\-_]{0,3}';
+
+  console.log('📝 OCR Text:', text);
+  console.log('👥 Players:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
+  if (skipCodeCheck) {
+    console.warn('🧪 extractAllKDAResult: ADMIN TESTING MODE — bỏ qua xác thực mã phòng (chỉ nên dùng khi admin test).');
+  } else if (!roomCode) {
+    console.warn('⚠️ extractAllKDAResult: không có room.code để đối chiếu -> dùng chế độ so khớp tên "mở" (KHÔNG khuyến khích, dễ bị ăn gian bằng ảnh trận khác).');
+  }
+
+  // Tách dòng
+  let lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+
+  // ===== FIX OCR (phần 1): gộp dòng "prefix" bị tách rời khỏi tên =====
+  // OCR đôi khi tách rời "prefix slot" và "tên người chơi" thành 2 dòng riêng,
+  // ví dụ "<code>_<team>_" và "<username>" (như "1600-1_" + "NaNi"). Điều này
+  // làm cho việc đếm slot bị lệch (đếm 2 slot cho 1 người), khiến chiến lược
+  // "đọc theo cột" gán sai KDA (thường lấy KDA của người đứng trước trong ảnh).
+  // → Gộp lại thành 1 dòng trước khi xử lý tiếp.
+  for (let i = 0; i < lines.length - 1; i++) {
+    const onlyPrefix = /^\d+[\s\-_]+\d+[\s\-_]*$/.test(lines[i]);
+    const nextStartsWithLetter = /^[A-Za-z]/.test(lines[i + 1]);
+    if (onlyPrefix && nextStartsWithLetter) {
+      lines[i] = lines[i] + lines[i + 1];
+      lines.splice(i + 1, 1);
+      // Không tăng i để có thể gộp tiếp nếu cần (thường 1 lần là đủ)
+    }
+  }
+
+  // ===== FIX OCR (phần 2): rebuild `text` cho khớp với `lines` đã gộp =====
+  // Nếu không làm bước này, text.indexOf(foundLine) sẽ trả -1 với những dòng
+  // đã gộp (vì text gốc còn newline giữa prefix và tên) → anchor bị loại →
+  // bot báo "Không tìm thấy dòng nào chứa tên ...".
+  text = lines.join('\n');
+
+  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
+
+  const anchors = [];
+  for (const [userId, playerData] of players) {
+    const eloObj = getElo(userId, room.mode);
+    const searchName = eloObj.ign || playerData.username;
+    const nameEsc = escapeRe(searchName);
+
+    let nameRegex;
+    if (roomCode && !skipCodeCheck) {
+      const codeEsc = escapeRe(roomCode);
+      nameRegex = playerData.team
+        ? new RegExp(`${codeEsc}${SEP}${escapeRe(playerData.team)}${SEP}${nameEsc}`, 'i')
+        : new RegExp(`${codeEsc}${SEP}${nameEsc}`, 'i');
+    } else {
+      nameRegex = new RegExp(nameEsc, 'i');
+    }
+
+    let foundLine = null;
+    for (let i = 0; i < lines.length; i++) {
+      if (nameRegex.test(lines[i])) {
+        foundLine = lines[i];
+        break;
+      }
+    }
+
+    const linePos = foundLine ? text.indexOf(foundLine) : -1;
+    anchors.push({ userId, searchName, foundLine, linePos });
+  }
+
+  const foundAnchors = anchors
+    .filter(a => a.linePos !== -1)
+    .sort((a, b) => a.linePos - b.linePos);
+
+  // ===== FIX OCR (phần 3): slotPrefixRegex chặt hơn =====
+  // Regex cũ: /^\d+[\s\-_]+(\d+[\s\-_]+)?/ — chấp nhận cả space, nên match
+  // nhầm dòng như "14 Chiến thắng" (14 + space + chữ). Khi đó lastSlotIdx bị
+  // đẩy xuống dưới block KDA → contiguousBlock = [] → chiến lược cột fail →
+  // fallback window lấy KDA gần vị trí tên nhất theo ký tự → dễ sai.
+  // Regex mới: BẮT BUỘC có "-" hoặc "_" ngay sau số đầu tiên, rồi đến chữ/số.
+  // Nhờ vậy "14 Chiến thắng" (space giữa 14 và Chiến) không còn match.
+  const slotPrefixRegex = (roomCode && !skipCodeCheck)
+    ? new RegExp(`^${escapeRe(roomCode)}${SEP}\\d+_`)
+    : /^\d+[\-_][A-Za-z0-9]/;
+  const pureKdaLineRegex = /^\d+\s*\/\s*\d+\s*\/\s*\d+$/;
+
+  for (const anchor of anchors) {
+    const { userId, searchName, foundLine, linePos } = anchor;
+    console.log(`🔎 Tìm IGN: "${searchName}"`);
+
+    if (!foundLine || linePos === -1) {
+      console.warn(`⚠️ Không tìm thấy dòng nào chứa tên "${searchName}"`);
+      continue;
+    }
+
+    kdaRegex.lastIndex = 0;
+    const sameLineMatch = kdaRegex.exec(foundLine);
+    if (sameLineMatch) {
+      const kill = parseInt(sameLineMatch[1], 10);
+      const death = parseInt(sameLineMatch[2], 10);
+      const assist = parseInt(sameLineMatch[3], 10);
+      resultMap.set(userId, { kill, death, assist });
+      console.log(`✅ Map KDA cho ${searchName}: ${kill}/${death}/${assist} (trên dòng "${foundLine}")`);
+      continue;
+    }
+
+    const foundLineIdx = lines.indexOf(foundLine);
+    let slotLineIdx = -1;
+    if (foundLineIdx !== -1) {
+      if (slotPrefixRegex.test(lines[foundLineIdx])) {
+        slotLineIdx = foundLineIdx;
+      } else if (foundLineIdx > 0 && slotPrefixRegex.test(lines[foundLineIdx - 1])) {
+        slotLineIdx = foundLineIdx - 1;
+      }
+    }
+
+    if (slotLineIdx !== -1) {
+      const slotLines = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (slotPrefixRegex.test(lines[i])) slotLines.push(i);
+      }
+
+      const lastSlotIdx = slotLines[slotLines.length - 1];
+      let blockStart = -1;
+      for (let i = lastSlotIdx + 1; i < lines.length; i++) {
+        if (pureKdaLineRegex.test(lines[i])) { blockStart = i; break; }
+        if (slotPrefixRegex.test(lines[i])) break;
+      }
+
+      let contiguousBlock = [];
+      if (blockStart !== -1) {
+        for (let i = blockStart; i < lines.length && pureKdaLineRegex.test(lines[i]); i++) {
+          contiguousBlock.push(i);
+        }
+      }
+
+      const slotRank = slotLines.indexOf(slotLineIdx);
+      if (slotRank !== -1 && contiguousBlock.length >= slotLines.length && slotRank < contiguousBlock.length) {
+        kdaRegex.lastIndex = 0;
+        const kdaLineText = lines[contiguousBlock[slotRank]];
+        const slotMatch = kdaRegex.exec(kdaLineText);
+        if (slotMatch) {
+          const kill = parseInt(slotMatch[1], 10);
+          const death = parseInt(slotMatch[2], 10);
+          const assist = parseInt(slotMatch[3], 10);
+          resultMap.set(userId, { kill, death, assist });
+          console.log(`✅ Map KDA (theo vị trí cột, hạng ${slotRank}) cho ${searchName}: ${kill}/${death}/${assist} (dòng "${kdaLineText}")`);
+          continue;
+        }
+      }
+    }
+
+    const ownIndex = foundAnchors.findIndex(a => a.userId === userId);
+    const windowStart = linePos;
+    const windowEnd = (ownIndex !== -1 && ownIndex + 1 < foundAnchors.length)
+      ? foundAnchors[ownIndex + 1].linePos
+      : text.length;
+
+    console.warn(`⚠️ Không tìm thấy KDA trên dòng của "${searchName}", tìm trong phạm vi riêng của người này [${windowStart}, ${windowEnd})...`);
+
+    const windowKda = [];
+    const windowRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
+    const windowText = text.slice(windowStart, windowEnd);
+    let wm;
+    while ((wm = windowRegex.exec(windowText)) !== null) {
+      windowKda.push({
+        kill: parseInt(wm[1], 10),
+        death: parseInt(wm[2], 10),
+        assist: parseInt(wm[3], 10),
+        index: windowStart + wm.index,
+      });
+    }
+
+    if (windowKda.length > 0) {
+      const best = windowKda.reduce((closest, kda) => {
+        const dist = Math.abs(kda.index - linePos);
+        const closestDist = Math.abs(closest.index - linePos);
+        return dist < closestDist ? kda : closest;
+      });
+      resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
+      console.log(`✅ Map KDA (trong phạm vi riêng) cho ${searchName}: ${best.kill}/${best.death}/${best.assist}`);
+      continue;
+    }
+
+    console.warn(`⚠️ Không tìm thấy KDA nào trong phạm vi riêng của "${searchName}". Bỏ qua để tránh gán nhầm.`);
+  }
+
+  console.log('📊 Kết quả map KDA:', Array.from(resultMap.entries()));
+  return resultMap;
+}
+
+module.exports = {
+  rooms,
+  eloData,
+  MODES,
+  initRooms,
+  restoreRooms,
+  restoreEloData,
+  getRoom,
+  getAllRooms,
+  getRoomsByMode,
+  ensureRoom,
+  addRoomsToMode,
+  removeExtraRoom,
+  findRoomOfUser,
+  findRoomOfUserInMode,
+  clearRoomTimers,
+  resetRoom,
+  isFull,
+  allReady,
+  teamCounts,
+  canRevealCode,
+  generateCode,
+  formatPersonalCode,
+  banUser,
+  unbanUser,
+  isBanned,
+  createHiddenRoom,
+  getHiddenRoom,
+  getAllHiddenRooms,
+  deleteHiddenRoom,
+  // ELO
+  getElo,
+  getFullElo,
+  getRankFromElo,
+  updateElo,
+  clearElo,
+  calculateNewElo,
+  registerIGN,
+  // Rank rooms
+  buildRankRoom,
+  addRankRoomsToMode,
+  removeRankRoom,
+  getAllRankRooms,
+  getRankRoomsByMode,
+  // Filter
+  getAllNormalRooms,
+  getNormalRoomsByMode,
+  // OCR
+  extractAllKDAResult,
+};
