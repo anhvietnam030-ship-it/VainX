@@ -191,12 +191,33 @@ const commands = [
          .setMinLength(2)
          .setMaxLength(20)
     ),
+  new SlashCommandBuilder()
+    .setName('ign-list')
+    .setDescription('[Admin] Xem danh sách những người đã đăng ký IGN'),
 
   // ----- RANK STATS -----
   new SlashCommandBuilder()
     .setName('rank-stats')
     .setDescription('Xem ELO, W/L và ước tính số win cần để lên tier kế tiếp')
     .addUserOption(opt => opt.setName('user').setDescription('Người chơi (bỏ trống = xem chính mình)').setRequired(false)),
+  new SlashCommandBuilder()
+    .setName('rank-top')
+    .setDescription('[Admin] Bảng xếp hạng ELO toàn bộ người chơi')
+    .addStringOption(opt =>
+      opt.setName('che_do')
+        .setDescription('Chế độ (mặc định 5v5)')
+        .addChoices(
+          { name: '3v3', value: '3v3' },
+          { name: '5v5', value: '5v5' }
+        )
+        .setRequired(false)
+    )
+    .addIntegerOption(opt =>
+      opt.setName('so_luong')
+        .setDescription('Số người hiển thị (mặc định 20, tối đa 100)')
+        .setMinValue(1).setMaxValue(100)
+        .setRequired(false)
+    ),
 
   // ----- QUẢN LÝ ELO (ADMIN, THEO CHẾ ĐỘ) -----
   new SlashCommandBuilder()

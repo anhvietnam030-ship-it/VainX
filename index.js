@@ -77,8 +77,7 @@ function autoBalanceRankTeams(room) {
   const entries = Array.from(room.players.entries());
   if (entries.length === 0) return false;
 
-  // ✅ Chỉ chia team khi TẤT CẢ đã bấm Sẵn sàng.
-  // Nếu chưa all-ready -> reset team mọi người về null ("Chưa chọn").
+  // Chỉ chia team khi TẤT CẢ đã bấm Sẵn sàng.
   if (!allReady(room)) {
     for (const [, p] of entries) p.team = null;
     return false;
@@ -831,6 +830,7 @@ const ADMIN_ONLY_COMMANDS = new Set([
   'xoa-phong-thuong', 'xoa-tat-ca-phong-thuong',
   'reset-tat-ca-phong', 'reset-room',
   'xoa-phong-rank', 'xoa-tat-ca-phong-rank',
+  'ign-list', 'rank-top',
 ]);
 
 const DEFER_FIRST_COMMANDS = new Set([
@@ -849,6 +849,7 @@ const DEFER_FIRST_COMMANDS = new Set([
   'xoa-setup-phong', 'don-rac', 'xoa-tin-nhan-bot',
   'xoa-phong-thuong', 'xoa-tat-ca-phong-thuong',
   'reset-tat-ca-phong', 'reset-room',
+  'ign-list', 'rank-top',
 ]);
 
 const ADMIN_MSG_AUTO_DELETE_MS = 2 * 60 * 1000;
@@ -890,6 +891,110 @@ async function handleSlashCommand(interaction) {
     const stats = { '3v3': statsFor('3v3'), '5v5': statsFor('5v5') };
     await interaction.channel.send({ embeds: [mainMenuEmbed(stats)], components: [mainMenuRow()] });
     return interaction.reply({ content: '✅ Đã đăng bảng chọn phòng.', ephemeral: true });
+  }
+
+  if (commandName === 'ign-list') {
+    if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
+    const all = Array.from(eloData.entries())
+      .filter(([, e]) => e.ign)
+      .sort((a, b) => a[1].ign.localeCompare(b[1].ign));
+
+    if (all.length === 0) {
+      return interaction.reply({ content: 'ℹ️ Chưa có ai đăng ký IGN.', ephemeral: true });
+    }
+
+    const lines = all.map(([id, e], i) => {
+      const e3 = e['3v3']?.elo ?? null;
+      const e5 = e['5v5']?.elo ?? null;
+      const s3 = e3 === null ? '—' : e3;
+      const s5 = e5 === null ? '—' : e5;
+      return `**${i + 1}.** \`${e.ign}\` — <@${id}> · 3v3: \`${s3}\` · 5v5: \`${s5}\``;
+    });
+
+    const chunks = [];
+    let cur = '';
+    for (const ln of lines) {
+      if ((cur + '\n' + ln).length > 3800) { chunks.push(cur); cur = ln; }
+      else cur = cur ? cur + '\n' + ln : ln;
+    }
+    if (cur) chunks.push(cur);
+
+    const embeds = chunks.slice(0, 10).map((c, i) =>
+      new EmbedBuilder()
+        .setTitle(i === 0 ? `📋 Danh sách IGN đã đăng ký (${all.length} người)` : `📋 Danh sách IGN (tiếp theo ${i + 1})`)
+        .setDescription(c)
+        .setColor(0x5865f2)
+    );
+
+    return interaction.reply({ embeds, ephemeral: true });
+  }
+
+  if (commandName === 'rank-top') {
+    if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
+    const mode = interaction.options.getString('che_do') || '5v5';
+    const limit = interaction.options.getInteger('so_luong') || 20;
+
+    const all = Array.from(eloData.entries())
+      .map(([id, e]) => ({
+        id,
+        ign: e.ign || null,
+        elo: e[mode]?.elo ?? null,
+        rank: e[mode]?.rank || 'Unranked',
+        wins: e[mode]?.wins || 0,
+        losses: e[mode]?.losses || 0,
+      }))
+      .filter(p => p.elo !== null && p.elo !== undefined)
+      .sort((a, b) => b.elo - a.elo);
+
+    if (all.length === 0) {
+      return interaction.reply({ content: `ℹ️ Chưa có ai có ELO **${mode.toUpperCase()}**.`, ephemeral: true });
+    }
+
+    const top = all.slice(0, limit);
+
+    const MEDALS = ['🥇', '🥈', '🥉'];
+    const formatOne = (p, idx) => {
+      const medal = MEDALS[idx] || `#${idx + 1}`;
+      const name = p.ign ? `**${p.ign}**` : `<@${p.id}>`;
+      const total = p.wins + p.losses;
+      const wr = total > 0 ? Math.round(100 * p.wins / total) + '%' : '—';
+
+      let rankStr;
+      const rankName = p.rank || 'Unranked';
+      if (rankName === 'Unranked') {
+        rankStr = '🏅 **Unranked**';
+      } else {
+        const eloInTier = Math.max(0, p.elo % 200);
+        const subIdx = Math.min(2, Math.floor(eloInTier / (200 / 3)));
+        const subName = ['Đồng', 'Bạc', 'Vàng'][subIdx];
+        rankStr = `🏅 **${rankName}** (${subName})`;
+      }
+
+      return `> ${medal} ${name} — \`${p.elo} ELO\`\n> ${rankStr} · 🏆 **${p.wins}W - ${p.losses}L** (${wr})`;
+    };
+
+    const lines = top.map((p, i) => formatOne(p, i));
+
+    const chunks = [];
+    let cur = '';
+    for (const ln of lines) {
+      if ((cur + '\n\n' + ln).length > 3800) { chunks.push(cur); cur = ln; }
+      else cur = cur ? cur + '\n\n' + ln : ln;
+    }
+    if (cur) chunks.push(cur);
+
+    const embeds = chunks.slice(0, 10).map((c, i) =>
+      new EmbedBuilder()
+        .setTitle(i === 0
+          ? `🏆 Bảng xếp hạng ${mode.toUpperCase()} — Top ${top.length}/${all.length}`
+          : `🏆 Bảng xếp hạng ${mode.toUpperCase()} (tiếp theo ${i + 1})`)
+        .setDescription(c)
+        .setColor(0xffd700)
+        .setFooter({ text: `Tổng ${all.length} người có ELO ở ${mode.toUpperCase()}` })
+        .setTimestamp()
+    );
+
+    return interaction.reply({ embeds, ephemeral: true });
   }
 
   if (commandName === 'rank-stats') {
@@ -1831,7 +1936,7 @@ async function toggleReady(interaction, roomId) {
   }
 
   player.ready = !player.ready;
-  // ✅ Phòng rank: rebalance team theo ready status. Nếu chưa all-ready,
+  // Phòng rank: rebalance team theo ready status. Nếu chưa all-ready,
   // autoBalanceRankTeams sẽ reset toàn bộ team về null ("Chưa chọn").
   if (room.isRank) autoBalanceRankTeams(room);
   const channel = interaction.channel;
