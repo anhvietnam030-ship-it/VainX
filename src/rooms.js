@@ -423,9 +423,18 @@ function formatPersonalCode(room, userId) {
 function extractAllKDAResult(text, room) {
   const resultMap = new Map();
   const players = Array.from(room.players.entries());
+  const roomCode = room.code || null;
+  const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Cho phép OCR đọc lệch khoảng trắng / thiếu-thừa dấu "-", "_" quanh mã
+  // phòng và team (OCR hay đọc gạch dưới thành khoảng trắng hoặc mất hẳn),
+  // nhưng KHÔNG cho phép có ký tự lạ khác chen vào giữa.
+  const SEP = '[\\s\\-_]{0,3}';
 
   console.log('📝 OCR Text:', text);
   console.log('👥 Players:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
+  if (!roomCode) {
+    console.warn('⚠️ extractAllKDAResult: không có room.code để đối chiếu -> dùng chế độ so khớp tên "mở" (KHÔNG khuyến khích, dễ bị ăn gian bằng ảnh trận khác).');
+  }
 
   // Tách dòng
   const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
@@ -434,11 +443,31 @@ function extractAllKDAResult(text, room) {
   // ===== Bước 1: tìm vị trí (trong toàn văn bản) của tên từng người chơi =====
   // Vị trí này dùng để xác định "ranh giới dòng" của mỗi người, tránh việc
   // fallback theo khoảng cách ký tự vô tình lấy nhầm KDA của người khác.
+  //
+  // QUAN TRỌNG (chống gian lận): mã phòng (room.code) được random mỗi trận
+  // và chỉ người trong phòng biết. Nếu có room.code, BẮT BUỘC chuỗi
+  // "<code>-<team>_" (hoặc "<code>-" nếu không có team) phải đứng NGAY
+  // TRƯỚC tên trong ảnh mới được công nhận là anchor hợp lệ — đúng như tên
+  // riêng mà formatPersonalCode() đã cấp cho từng người để đặt làm tên
+  // trong game. Nhờ vậy ảnh của một trận khác (kể cả trận thật, chơi đúng
+  // người đó) sẽ không bao giờ khớp được mã ngẫu nhiên của trận hiện tại.
   const anchors = [];
   for (const [userId, playerData] of players) {
     const eloObj = getElo(userId);
     const searchName = eloObj.ign || playerData.username;
-    const nameRegex = new RegExp(searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    const nameEsc = escapeRe(searchName);
+
+    let nameRegex;
+    if (roomCode) {
+      const codeEsc = escapeRe(roomCode);
+      nameRegex = playerData.team
+        ? new RegExp(`${codeEsc}${SEP}${escapeRe(playerData.team)}${SEP}${nameEsc}`, 'i')
+        : new RegExp(`${codeEsc}${SEP}${nameEsc}`, 'i');
+    } else {
+      // Không có mã để đối chiếu (trường hợp cực hiếm / dữ liệu cũ) -> lùi
+      // về cách so khớp cũ, chỉ theo tên.
+      nameRegex = new RegExp(nameEsc, 'i');
+    }
 
     let foundLine = null;
     for (let i = 0; i < lines.length; i++) {
@@ -490,7 +519,12 @@ function extractAllKDAResult(text, room) {
     // (xem formatPersonalCode), ta có thể dùng các dòng khớp mẫu này làm
     // "vị trí" đáng tin cậy của từng người trong đội, rồi lấy KDA "thuần"
     // (dòng chỉ chứa số dạng x/y/z) ở đúng thứ hạng tương ứng.
-    const slotPrefixRegex = /^\d+-\d+_/;
+    // Trước đây chấp nhận BẤT KỲ chuỗi "<số>-<số>_" nào ở đầu dòng — điều
+    // này vô tình khiến ảnh của một trận KHÁC (có tên dạng tương tự) vẫn
+    // được nhận làm "cột hợp lệ". Giờ bắt buộc đúng mã phòng của trận này.
+    const slotPrefixRegex = roomCode
+      ? new RegExp(`^${escapeRe(roomCode)}${SEP}\\d+_`)
+      : /^\d+-\d+_/;
     const pureKdaLineRegex = /^\d+\s*\/\s*\d+\s*\/\s*\d+$/;
 
     // Tìm dòng "slot" của người này: có thể là chính dòng khớp tên (nếu nó

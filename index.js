@@ -6,6 +6,7 @@ const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const {
   Client,
   GatewayIntentBits,
@@ -219,19 +220,26 @@ function saveImageHistory(history) {
   fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
 }
 
-function isImageUsedRecently(url, userId, days = 90) {
+// Băm theo NỘI DUNG FILE ảnh (sha256), không phải theo URL — bắt được cả
+// trường hợp người dùng tải ảnh cũ lên lại (URL đính kèm Discord mới, hoặc
+// dùng link trực tiếp khác) nhưng thực chất vẫn là đúng file ảnh đã dùng.
+function hashImageBuffer(buffer) {
+  return crypto.createHash('sha256').update(buffer).digest('hex');
+}
+
+function isImageHashUsedRecently(hash, userId, days = 90) {
   const history = loadImageHistory();
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   return history.some(entry =>
-    entry.url === url &&
+    entry.hash === hash &&
     entry.userId === userId &&
     entry.submittedAt > cutoff
   );
 }
 
-function addImageHistory(url, userId, roomId) {
+function addImageHistory(hash, url, userId, roomId) {
   const history = loadImageHistory();
-  history.push({ url, userId, roomId, submittedAt: Date.now() });
+  history.push({ hash, url, userId, roomId, submittedAt: Date.now() });
   const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
   const filtered = history.filter(e => e.submittedAt > cutoff);
   saveImageHistory(filtered);
@@ -240,23 +248,26 @@ function addImageHistory(url, userId, roomId) {
 // ===== OCR HELPERS (OCR.space - upload file) =====
 const OCR_API_KEY = process.env.OCR_API_KEY || config.OCR_API_KEY;
 
-async function ocrImage(imageUrl) {
+async function downloadImageBuffer(imageUrl) {
+  console.log(`📥 Đang tải ảnh từ: ${imageUrl}`);
+  const imageResponse = await axios.get(imageUrl, {
+    responseType: 'arraybuffer',
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    },
+    timeout: 15000,
+  });
+  const imageBuffer = Buffer.from(imageResponse.data, 'binary');
+  console.log(`✅ Đã tải ảnh thành công (${imageBuffer.length} bytes)`);
+  return imageBuffer;
+}
+
+async function ocrImageBuffer(imageBuffer) {
   if (!OCR_API_KEY) {
     console.error('❌ OCR_API_KEY chưa được cấu hình trong .env hoặc config.js');
     throw new Error('MISSING_OCR_API_KEY');
   }
   try {
-    console.log(`📥 Đang tải ảnh từ: ${imageUrl}`);
-    const imageResponse = await axios.get(imageUrl, {
-      responseType: 'arraybuffer',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-      timeout: 15000,
-    });
-    const imageBuffer = Buffer.from(imageResponse.data, 'binary');
-    console.log(`✅ Đã tải ảnh thành công (${imageBuffer.length} bytes)`);
-
     // OCR.space (đặc biệt là gói miễn phí) đôi khi xử lý ảnh khá lâu, có thể
     // vượt quá 30s trong lúc server họ tải cao -> gây timeout dù ảnh và mạng
     // đều bình thường. Tăng thời gian chờ lên 60s, đồng thời thử lại 1 lần
@@ -305,6 +316,14 @@ async function ocrImage(imageUrl) {
     }
     throw err;
   }
+}
+
+// Giữ lại cho tương thích ngược (tải + OCR trong 1 bước). Những chỗ cần
+// băm nội dung ảnh trước khi OCR nên gọi downloadImageBuffer() +
+// ocrImageBuffer() riêng để không phải tải cùng 1 ảnh 2 lần.
+async function ocrImage(imageUrl) {
+  const buffer = await downloadImageBuffer(imageUrl);
+  return ocrImageBuffer(buffer);
 }
 
 // ===== CÁC HÀM TIỆN ÍCH =====
@@ -671,7 +690,7 @@ async function tryRevealCode(room, channel) {
   // ===== XỬ LÝ RANK: TẠO SESSION TRƯỚC, VẪN GIỮ CODE 2 PHÚT =====
   if (room.isRank) {
     const playersSnapshot = new Map(room.players);
-    const sessionId = rankSessions.createSession(room.id, playersSnapshot, room.mode);
+    const sessionId = rankSessions.createSession(room.id, playersSnapshot, room.mode, room.code);
     console.log(`📝 Đã tạo session ${sessionId} cho ${room.label}`);
 
     const resultChannelId = process.env.RANK_RESULT_CHANNEL_ID;
@@ -1500,9 +1519,22 @@ async function handleSlashCommand(interaction) {
       return interaction.editReply({ content: '❌ File đính kèm không phải là ảnh hợp lệ.' });
     }
 
-    if (isImageUsedRecently(attachment.url, interaction.user.id)) {
+    // Tải ảnh 1 LẦN DUY NHẤT, dùng chung buffer để: (1) băm nội dung file
+    // chống dùng lại ảnh cũ, (2) gửi OCR. Băm theo NỘI DUNG FILE (không phải
+    // URL) để bắt được cả trường hợp upload lại từ máy khác hoặc link khác
+    // nhưng vẫn là đúng file ảnh đó.
+    let imageBuffer;
+    try {
+      imageBuffer = await downloadImageBuffer(attachment.url);
+    } catch (err) {
+      console.error('❌ Lỗi khi tải ảnh:', err.message);
+      return interaction.editReply({ content: '❌ Không tải được ảnh đính kèm. Vui lòng thử lại.' });
+    }
+    const imageHash = hashImageBuffer(imageBuffer);
+
+    if (isImageHashUsedRecently(imageHash, interaction.user.id)) {
       return interaction.editReply({
-        content: '❌ Ảnh này đã được sử dụng trong vòng 90 ngày qua. Vui lòng chụp ảnh mới!'
+        content: '❌ Ảnh này đã được sử dụng trong vòng 90 ngày qua (kể cả nếu bạn tải lại/đổi link). Vui lòng chụp ảnh mới!'
       });
     }
 
@@ -1521,13 +1553,13 @@ async function handleSlashCommand(interaction) {
       }
     }
 
-    addImageHistory(attachment.url, interaction.user.id, room.id);
+    addImageHistory(imageHash, attachment.url, interaction.user.id, room.id);
 
     console.log(`🔍 Bắt đầu OCR cho file: ${attachment.name} (${attachment.contentType}, ${attachment.size} bytes)`);
 
     let ocrText = '';
     try {
-      ocrText = await ocrImage(attachment.url);
+      ocrText = await ocrImageBuffer(imageBuffer);
     } catch (err) {
       console.error('❌ Lỗi khi gọi OCR:', err.message, err.code ? `(code: ${err.code})` : '', err.response ? `(status: ${err.response.status})` : '');
       if (err.message === 'MISSING_OCR_API_KEY') {
@@ -1543,7 +1575,7 @@ async function handleSlashCommand(interaction) {
       });
     }
 
-    const fakeRoom = { players: new Map(session.players) };
+    const fakeRoom = { players: new Map(session.players), code: session.code };
     const kdaMap = extractAllKDAResult(ocrText, fakeRoom);
 
     if (kdaMap.size === 0) {
@@ -2175,13 +2207,6 @@ async function handleModalSubmit(interaction) {
     }
   }
 
-  if (isImageUsedRecently(imageUrl, interaction.user.id)) {
-    return interaction.reply({
-      content: '❌ Ảnh này đã được sử dụng trong vòng 90 ngày qua. Vui lòng chụp ảnh mới!',
-      ephemeral: true,
-    });
-  }
-
   try {
     await interaction.deferReply({ ephemeral: true });
     console.log('✅ Defer thành công, bắt đầu OCR...');
@@ -2196,6 +2221,27 @@ async function handleModalSubmit(interaction) {
       console.error('❌ Không thể gửi phản hồi:', e2);
     }
     return;
+  }
+
+  // Tải ảnh 1 LẦN DUY NHẤT (buffer dùng chung cho việc băm chống trùng lẫn
+  // OCR). Việc kiểm tra trùng ảnh phải xảy ra SAU khi tải xong vì giờ đây
+  // dựa trên hash nội dung file, không còn dựa trên URL người dùng dán vào
+  // (URL rất dễ đổi mà nội dung ảnh vẫn y hệt).
+  let imageBuffer;
+  try {
+    imageBuffer = await downloadImageBuffer(imageUrl);
+  } catch (err) {
+    console.error('❌ Lỗi khi tải ảnh:', err.message);
+    return interaction.editReply({
+      content: '❌ Không tải được ảnh từ link đã nhập. Vui lòng kiểm tra lại link (phải là link ảnh trực tiếp).',
+    });
+  }
+  const imageHash = hashImageBuffer(imageBuffer);
+
+  if (isImageHashUsedRecently(imageHash, interaction.user.id)) {
+    return interaction.editReply({
+      content: '❌ Ảnh này đã được sử dụng trong vòng 90 ngày qua (kể cả nếu bạn tải lại/đổi link). Vui lòng chụp ảnh mới!',
+    });
   }
 
   if (config.LOG_CHANNEL_ID) {
@@ -2213,12 +2259,12 @@ async function handleModalSubmit(interaction) {
     }
   }
 
-  addImageHistory(imageUrl, interaction.user.id, room.id);
+  addImageHistory(imageHash, imageUrl, interaction.user.id, room.id);
 
   let ocrText = '';
   try {
     console.log('📥 Gọi OCR.space...');
-    ocrText = await ocrImage(imageUrl);
+    ocrText = await ocrImageBuffer(imageBuffer);
     console.log('✅ OCR nhận được text dài:', ocrText ? ocrText.length : 0);
   } catch (err) {
     console.error('❌ OCR error:', err.message, err.code ? `(code: ${err.code})` : '', err.response ? `(status: ${err.response.status})` : '');
@@ -2241,7 +2287,7 @@ async function handleModalSubmit(interaction) {
     return interaction.editReply({ content: '❌ Phiên chơi này đã hết hạn hoặc không tồn tại.' });
   }
 
-  const fakeRoom = { players: new Map(session.players) };
+  const fakeRoom = { players: new Map(session.players), code: session.code };
   const kdaMap = extractAllKDAResult(ocrText, fakeRoom);
   if (kdaMap.size === 0) {
     return interaction.editReply({

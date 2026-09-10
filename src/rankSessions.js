@@ -1,7 +1,7 @@
 // src/rankSessions.js
 const sessions = new Map();
 
-function createSession(roomId, players, mode) {
+function createSession(roomId, players, mode, code) {
   // Dọn session cũ (nếu còn) của CÙNG phòng này trước khi tạo mới.
   // Tránh trường hợp phòng bị reset & phát code lại trong lúc session cũ
   // (45 phút) chưa hết hạn -> tồn tại 2 session trùng roomId cùng lúc,
@@ -15,6 +15,11 @@ function createSession(roomId, players, mode) {
     roomId,
     players: Array.from(players.entries()), // [userId, playerData]
     mode,
+    // Mã phòng RANDOM của ĐÚNG trận này, chốt cứng ngay lúc tạo session.
+    // Bắt buộc dùng giá trị này (không đọc room.code "sống" lúc submit-result)
+    // vì phòng có thể đã bị reset & phát code MỚI cho trận tiếp theo trong
+    // lúc session cũ vẫn còn hạn 45 phút để nhận kết quả.
+    code: code || null,
     createdAt: Date.now(),
     resultMap: new Map(),
     expiresAt: Date.now() + 45 * 60 * 1000, // 45 phút để gửi kết quả
