@@ -134,10 +134,27 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
     const userEloObj = getElo(userId);
     const userElo = userEloObj.elo ?? config.RANK_DEFAULT_ELO;
     const opponentIds = realPlayers.filter(id => id !== userId);
-    const opponentElos = opponentIds.map(id => {
+    let opponentElos = opponentIds.map(id => {
       const e = getElo(id).elo;
       return e === null ? config.RANK_DEFAULT_ELO : e;
     });
+
+    // Trường hợp phòng không có đối thủ thật nào khác (vd: phòng test chỉ
+    // toàn bot giả từ /test-fill-rank). CHỈ áp dụng riêng cho tài khoản
+    // ADMIN: coi như có 1 đối thủ ở mức ELO mặc định để vẫn tính điểm khi
+    // admin tự test. Người chơi thường trong tình huống này vẫn giữ nguyên
+    // hành vi cũ (KHÔNG cộng/trừ điểm), để tránh bị lợi dụng lập phòng toàn
+    // bot nhằm ăn gian ELO. Khi có người chơi thật khác trong phòng (kể cả
+    // khi admin cũng tham gia cùng), opponentElos đã có dữ liệu thật nên
+    // nhánh này không kích hoạt -> vẫn tính như bình thường.
+    if (opponentElos.length === 0) {
+      const adminTesting = await isAdminUserId(userId).catch(() => false);
+      if (adminTesting) {
+        opponentElos = [config.RANK_DEFAULT_ELO];
+        console.log(`ℹ️ ${userId} là admin và không có đối thủ thật trong phòng -> dùng ELO mặc định (${config.RANK_DEFAULT_ELO}) làm đối thủ giả định để vẫn tính điểm.`);
+      }
+    }
+
     const userRankIndex = userEloObj.rankIndex || 0;
     const newElo = calculateNewElo(userElo, opponentElos, resultData.result, resultData.kda, userRankIndex);
     updateElo(userId, newElo);
