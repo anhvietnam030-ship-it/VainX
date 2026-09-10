@@ -73,10 +73,10 @@ const rankSessions = require('./src/rankSessions');
 
 // ===== HOÀN TẤT PHIÊN RANK =====
 async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
-  if (!session) return null;
+  if (!session) { console.warn('⚠️ finalizeRankSessionIfReady: session rỗng, bỏ qua.'); return null; }
 
   const realPlayers = session.players.filter(([, data]) => !data.isBot).map(([id]) => id);
-  if (realPlayers.length === 0) return null;
+  if (realPlayers.length === 0) { console.warn(`⚠️ finalizeRankSessionIfReady [${roomId}]: không có người chơi thật (toàn bot) -> bỏ qua, KHÔNG gửi thông báo.`); return null; }
 
   if (kdaMap) {
     const sampleEntry = Array.from(session.resultMap.entries()).find(([id]) => realPlayers.includes(id));
@@ -113,10 +113,14 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
 
   const submittedReal = Array.from(session.resultMap.keys()).filter(id => realPlayers.includes(id));
   const ready = kdaMap ? submittedReal.length > 0 : realPlayers.every(id => submittedReal.includes(id));
-  if (!ready) return null;
+  if (!ready) {
+    console.log(`ℹ️ finalizeRankSessionIfReady [${roomId}]: chưa đủ kết quả để chốt (đã nộp ${submittedReal.length}/${realPlayers.length}) -> chưa gửi thông báo.`);
+    return null;
+  }
 
   const finalSession = rankSessions.finalizeSession(session.id);
-  if (!finalSession) return null;
+  if (!finalSession) { console.warn(`⚠️ finalizeRankSessionIfReady [${roomId}]: session đã bị finalize/xoá trước đó (có thể do double-call) -> bỏ qua.`); return null; }
+  console.log(`✅ finalizeRankSessionIfReady [${roomId}]: đủ điều kiện chốt kết quả, đang tính ELO cho ${realPlayers.length} người chơi thật.`);
 
   const eloUpdates = [];
   for (const [userId, resultData] of finalSession.resultMap) {
@@ -162,8 +166,12 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
 
   // ===== Kết quả ELO chỉ gửi vào kênh SẢNH CHUNG (PUBLIC_RESULT_CHANNEL_ID) =====
   const publicChannelId = process.env.PUBLIC_RESULT_CHANNEL_ID;
+  console.log(`ℹ️ [${roomId}] PUBLIC_RESULT_CHANNEL_ID = ${publicChannelId || '(chưa set)'}`);
   if (publicChannelId) {
-    const publicChannel = await client.channels.fetch(publicChannelId).catch(() => null);
+    const publicChannel = await client.channels.fetch(publicChannelId).catch((err) => {
+      console.error(`❌ [${roomId}] Không fetch được kênh sảnh chung (${publicChannelId}):`, err.message);
+      return null;
+    });
     if (publicChannel) {
       const winners = eloUpdates.filter(u => u.result === 'win');
       const losers  = eloUpdates.filter(u => u.result === 'loss');
@@ -238,9 +246,11 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
 
       if (mvpAvatarUrl) embed.setThumbnail(mvpAvatarUrl);
 
-      await publicChannel.send({ embeds: [embed] }).catch(() => {});
+      await publicChannel.send({ embeds: [embed] })
+        .then(() => console.log(`✅ [${roomId}] Đã gửi thông báo kết quả vào kênh sảnh chung.`))
+        .catch((err) => console.error(`❌ [${roomId}] Gửi thông báo kết quả vào sảnh chung THẤT BẠI (có thể do bot thiếu quyền View Channel/Send Messages/Embed Links trong kênh đó):`, err.message));
     } else {
-      console.warn(`⚠️ Không tìm thấy kênh sảnh chung: ${publicChannelId}`);
+      console.warn(`⚠️ Không tìm thấy kênh sảnh chung: ${publicChannelId} (kiểm tra lại ID kênh, và bot đã được add vào kênh/server đó chưa).`);
     }
   } else {
     console.warn('⚠️ Chưa set PUBLIC_RESULT_CHANNEL_ID — kết quả ELO sẽ không được đăng.');
@@ -1721,13 +1731,27 @@ async function toggleReady(interaction, roomId) {
   if (!isFull(room)) return interaction.reply({ content: t(interaction, `⚠️ Chưa đủ người (${room.players.size}/${room.capacity}).`, `⚠️ Not full yet (${room.players.size}/${room.capacity}).`), ephemeral: true });
   if (!checkCooldown(interaction.user.id)) return interaction.reply({ content: t(interaction, '⏳ Đợi 1-2 giây.', '⏳ Wait 1-2 seconds.'), ephemeral: true });
 
+  // ✅ Ack ngay trong 3s đầu tiên, TRƯỚC khi làm renderRoom/tryRevealCode —
+  // 2 hàm này có thể gọi nhiều API Discord/Supabase liên tiếp (edit panel,
+  // channel.send, logAdmin, tạo rank session, gửi kênh kết quả...), cộng dồn
+  // dễ vượt 3s -> interaction.reply() cuối cùng bị Discord từ chối với lỗi
+  // "Unknown interaction" (10062) vì token đã hết hạn. Defer trước rồi
+  // editReply sau thì có tới 15 phút để hoàn tất, không còn bị lỗi này.
+  try { await interaction.deferReply({ ephemeral: true }); }
+  catch (err) {
+    console.error('❗ toggleReady: deferReply thất bại (token có thể đã hết hạn):', err.message);
+    return;
+  }
+
   player.ready = !player.ready;
   const channel = interaction.channel;
   await renderRoom(room, channel);
   await tryRevealCode(room, channel);
   let extra = t(interaction, '', '');
   if (room.status === 'waiting' && isFull(room) && allReady(room)) extra = t(interaction, '\n⚖️ Team chưa cân bằng.', "\n⚖️ Teams aren't balanced.");
-  return interaction.reply({ content: t(interaction, player.ready ? '✅ Bạn đã sẵn sàng.' : '↩️ Bạn bỏ sẵn sàng.', player.ready ? '✅ Ready.' : '↩️ No longer ready.') + extra, ephemeral: true });
+  return interaction.editReply({ content: t(interaction, player.ready ? '✅ Bạn đã sẵn sàng.' : '↩️ Bạn bỏ sẵn sàng.', player.ready ? '✅ Ready.' : '↩️ No longer ready.') + extra }).catch((err) => {
+    console.error('❗ toggleReady: editReply thất bại:', err.message);
+  });
 }
 
 async function setTeam(interaction, roomId, team) {
@@ -1737,11 +1761,23 @@ async function setTeam(interaction, roomId, team) {
   if (!player) return interaction.reply({ content: t(interaction, '⚠️ Cần Gia nhập trước.', '⚠️ Join first.'), ephemeral: true });
   if (room.status === 'revealed') return interaction.reply({ content: t(interaction, 'ℹ️ Đã phát code, không đổi team.', 'ℹ️ Code revealed, cannot change team.'), ephemeral: true });
   if (!checkCooldown(interaction.user.id)) return interaction.reply({ content: t(interaction, '⏳ Đợi 1-2 giây.', '⏳ Wait 1-2 seconds.'), ephemeral: true });
+
+  // ✅ Cùng lý do như toggleReady(): defer trước khi làm renderRoom/tryRevealCode
+  // để tránh lỗi "Unknown interaction" (10062) nếu chọn team này vừa khớp làm
+  // team cân bằng -> kích hoạt phát code (chuỗi việc tốn thời gian).
+  try { await interaction.deferReply({ ephemeral: true }); }
+  catch (err) {
+    console.error('❗ setTeam: deferReply thất bại (token có thể đã hết hạn):', err.message);
+    return;
+  }
+
   player.team = team;
   const channel = interaction.channel;
   await renderRoom(room, channel);
   await tryRevealCode(room, channel);
-  return interaction.reply({ content: team ? t(interaction, `✅ Đã chọn **Team ${team}**.`, `✅ Picked **Team ${team}**.`) : t(interaction, '✅ Bỏ chọn team.', '✅ Cleared team.'), ephemeral: true });
+  return interaction.editReply({ content: team ? t(interaction, `✅ Đã chọn **Team ${team}**.`, `✅ Picked **Team ${team}**.`) : t(interaction, '✅ Bỏ chọn team.', '✅ Cleared team.') }).catch((err) => {
+    console.error('❗ setTeam: editReply thất bại:', err.message);
+  });
 }
 
 async function giveCode(interaction, roomId) {
