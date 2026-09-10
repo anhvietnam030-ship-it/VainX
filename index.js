@@ -76,6 +76,14 @@ function autoBalanceRankTeams(room) {
   if (!room || !room.isRank) return false;
   const entries = Array.from(room.players.entries());
   if (entries.length === 0) return false;
+
+  // ✅ Chỉ chia team khi TẤT CẢ đã bấm Sẵn sàng.
+  // Nếu chưa all-ready -> reset team mọi người về null ("Chưa chọn").
+  if (!allReady(room)) {
+    for (const [, p] of entries) p.team = null;
+    return false;
+  }
+
   if (entries.length === 1) { entries[0][1].team = 1; return true; }
 
   const n = entries.length;
@@ -110,7 +118,7 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
   if (!session) { console.warn('⚠️ finalizeRankSessionIfReady: session rỗng, bỏ qua.'); return null; }
 
   const realPlayers = session.players.filter(([, data]) => !data.isBot).map(([id]) => id);
-  if (realPlayers.length === 0) { console.warn(`⚠️ finalizeRankSessionIfReady [${roomId}]: không có người chơi thật (toàn bot) -> bỏ qua, KHÔNG gửi thông báo.`); return null; }
+  if (realPlayers.length === 0) { console.warn(`⚠️ finalizeRankSessionIfReady [${roomId}]: không có người chơi thật (toàn bot) -> bỏ qua.`); return null; }
 
   if (kdaMap) {
     const sampleEntry = Array.from(session.resultMap.entries()).find(([id]) => realPlayers.includes(id));
@@ -148,12 +156,12 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
   const submittedReal = Array.from(session.resultMap.keys()).filter(id => realPlayers.includes(id));
   const ready = kdaMap ? submittedReal.length > 0 : realPlayers.every(id => submittedReal.includes(id));
   if (!ready) {
-    console.log(`ℹ️ finalizeRankSessionIfReady [${roomId}]: chưa đủ kết quả để chốt (đã nộp ${submittedReal.length}/${realPlayers.length}) -> chưa gửi thông báo.`);
+    console.log(`ℹ️ finalizeRankSessionIfReady [${roomId}]: chưa đủ kết quả để chốt (đã nộp ${submittedReal.length}/${realPlayers.length}).`);
     return null;
   }
 
   const finalSession = rankSessions.finalizeSession(session.id);
-  if (!finalSession) { console.warn(`⚠️ finalizeRankSessionIfReady [${roomId}]: session đã bị finalize/xoá trước đó (có thể do double-call) -> bỏ qua.`); return null; }
+  if (!finalSession) { console.warn(`⚠️ finalizeRankSessionIfReady [${roomId}]: session đã bị finalize/xoá trước đó.`); return null; }
   console.log(`✅ finalizeRankSessionIfReady [${roomId}]: đủ điều kiện chốt kết quả, đang tính ELO cho ${realPlayers.length} người chơi thật.`);
 
   const eloUpdates = [];
@@ -162,7 +170,6 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
     const userEloObj = getElo(userId, room.mode);
     const userElo = userEloObj.elo ?? config.RANK_DEFAULT_ELO;
 
-    // Lấy tên hiển thị (IGN > username Discord) để log cho dễ đọc
     const playerEntry = finalSession.players.find(([id]) => id === userId);
     const discordUsername = playerEntry ? playerEntry[1].username : 'Unknown';
     const ign = userEloObj.ign || '';
@@ -202,7 +209,7 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
   console.log(`ℹ️ [${roomId}] PUBLIC_RESULT_CHANNEL_ID = ${publicChannelId || '(chưa set)'}`);
   if (publicChannelId) {
     const publicChannel = await client.channels.fetch(publicChannelId).catch((err) => {
-      console.error(`❌ [${roomId}] Không fetch được kênh sảnh chung (${publicChannelId}):`, err.message);
+      console.error(`❌ [${roomId}] Không fetch được kênh sảnh chung:`, err.message);
       return null;
     });
     if (publicChannel) {
@@ -289,12 +296,12 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
 
       await publicChannel.send({ embeds: [embed] })
         .then(() => console.log(`✅ [${roomId}] Đã gửi thông báo kết quả vào kênh sảnh chung.`))
-        .catch((err) => console.error(`❌ [${roomId}] Gửi thông báo kết quả vào sảnh chung THẤT BẠI:`, err.message));
+        .catch((err) => console.error(`❌ [${roomId}] Gửi thông báo kết quả THẤT BẠI:`, err.message));
     } else {
       console.warn(`⚠️ Không tìm thấy kênh sảnh chung: ${publicChannelId}.`);
     }
   } else {
-    console.warn('⚠️ Chưa set PUBLIC_RESULT_CHANNEL_ID — kết quả ELO sẽ không được đăng.');
+    console.warn('⚠️ Chưa set PUBLIC_RESULT_CHANNEL_ID.');
   }
 
   return eloUpdates;
@@ -314,21 +321,16 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 // ===== IMAGE HISTORY =====
 const HISTORY_FILE = path.join(__dirname, 'data', 'image-history.json');
-
 function loadImageHistory() {
-  try {
-    if (!fs.existsSync(HISTORY_FILE)) return [];
-    return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf-8'));
-  } catch { return []; }
+  try { if (!fs.existsSync(HISTORY_FILE)) return []; return JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf-8')); }
+  catch { return []; }
 }
 function saveImageHistory(history) {
   const dir = path.dirname(HISTORY_FILE);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(HISTORY_FILE, JSON.stringify(history, null, 2));
 }
-function hashImageBuffer(buffer) {
-  return crypto.createHash('sha256').update(buffer).digest('hex');
-}
+function hashImageBuffer(buffer) { return crypto.createHash('sha256').update(buffer).digest('hex'); }
 function isImageHashUsedRecently(hash, userId, days = 90) {
   const history = loadImageHistory();
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
@@ -511,10 +513,8 @@ async function renderHiddenRoom(room) {
       if (target.messageId) {
         const msg = await ch.messages.fetch(target.messageId).catch(() => null);
         if (msg) {
-          try {
-            await msg.edit({ embeds: [embed], components: rowsUi });
-            continue;
-          } catch (editErr) {
+          try { await msg.edit({ embeds: [embed], components: rowsUi }); continue; }
+          catch (editErr) {
             if (editErr.code === 10008) { target.messageId = null; }
             else { throw editErr; }
           }
@@ -544,9 +544,7 @@ async function renderRoom(room, channel) {
             if (editErr.code === 10008) {
               room.panelChannelId = null;
               room.panelMessageId = null;
-            } else {
-              throw editErr;
-            }
+            } else { throw editErr; }
           }
         }
       }
@@ -878,15 +876,9 @@ async function handleSlashCommand(interaction) {
 
   if (DEFER_FIRST_COMMANDS.has(commandName)) {
     let deferred = false;
-    try {
-      await interaction.deferReply({ ephemeral: true });
-      deferred = true;
-    } catch (e) {
-      console.error(`[${commandName}] deferReply thất bại:`, e.message);
-    }
-    if (deferred) {
-      interaction.reply = (opts) => interaction.editReply(opts);
-    }
+    try { await interaction.deferReply({ ephemeral: true }); deferred = true; }
+    catch (e) { console.error(`[${commandName}] deferReply thất bại:`, e.message); }
+    if (deferred) interaction.reply = (opts) => interaction.editReply(opts);
   }
 
   if (commandName === 'lobby') {
@@ -965,6 +957,7 @@ async function handleSlashCommand(interaction) {
     const player = room.players.get(targetUser.id);
     if (!player) return interaction.reply({ content: `❌ <@${targetUser.id}> không ở trong **${room.label}**.`, ephemeral: true });
     player.ready = trangThai === 'ready';
+    if (room.isRank) autoBalanceRankTeams(room);
     const channel = (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) || interaction.channel;
     await renderRoom(room, channel);
     if (player.ready) { const check = canRevealCode(room); if (check.ok) await tryRevealCode(room, channel); }
@@ -1234,10 +1227,7 @@ async function handleSlashCommand(interaction) {
   if (commandName === 'submit-result') {
     console.log(`✅ /submit-result từ ${interaction.user.tag}`);
     try { await interaction.deferReply({ ephemeral: true }); }
-    catch (err) {
-      try { await interaction.reply({ content: '⚠️ Bot quá tải.', ephemeral: true }); } catch (_) {}
-      return;
-    }
+    catch (err) { try { await interaction.reply({ content: '⚠️ Bot quá tải.', ephemeral: true }); } catch (_) {} return; }
 
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const room = getRoom(roomId);
@@ -1264,9 +1254,7 @@ async function handleSlashCommand(interaction) {
     if (config.LOG_CHANNEL_ID) {
       try {
         const logChannel = await client.channels.fetch(config.LOG_CHANNEL_ID);
-        if (logChannel) {
-          await logChannel.send({ content: `📸 **${interaction.user.tag}** gửi ảnh cho **${room.id}** (${room.label})`, files: [attachment.url] });
-        }
+        if (logChannel) await logChannel.send({ content: `📸 **${interaction.user.tag}** gửi ảnh cho **${room.id}** (${room.label})`, files: [attachment.url] });
       } catch (err) {}
     }
 
@@ -1838,11 +1826,14 @@ async function toggleReady(interaction, roomId) {
 
   try { await interaction.deferReply({ ephemeral: true }); }
   catch (err) {
-    console.error('❗ toggleReady: deferReply thất bại (token có thể đã hết hạn):', err.message);
+    console.error('❗ toggleReady: deferReply thất bại:', err.message);
     return;
   }
 
   player.ready = !player.ready;
+  // ✅ Phòng rank: rebalance team theo ready status. Nếu chưa all-ready,
+  // autoBalanceRankTeams sẽ reset toàn bộ team về null ("Chưa chọn").
+  if (room.isRank) autoBalanceRankTeams(room);
   const channel = interaction.channel;
   await renderRoom(room, channel);
   await tryRevealCode(room, channel);
@@ -1880,7 +1871,7 @@ async function setTeam(interaction, roomId, team) {
 
   try { await interaction.deferReply({ ephemeral: true }); }
   catch (err) {
-    console.error('❗ setTeam: deferReply thất bại (token có thể đã hết hạn):', err.message);
+    console.error('❗ setTeam: deferReply thất bại:', err.message);
     return;
   }
 
