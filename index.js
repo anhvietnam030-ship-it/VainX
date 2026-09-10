@@ -134,8 +134,6 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
       return e === null ? config.RANK_DEFAULT_ELO : e;
     });
 
-    // Trường hợp phòng không có đối thủ thật nào khác — CHỈ admin test mới
-    // được cộng/trừ điểm, người chơi thường giữ nguyên để tránh farm ELO.
     if (opponentElos.length === 0) {
       const adminTesting = await isAdminUserId(userId).catch(() => false);
       if (adminTesting) {
@@ -663,7 +661,6 @@ async function tryRevealCode(room, channel) {
     renderRoom(room, channel).catch(() => {});
   }, config.BLINK_INTERVAL_MS);
 
-  // ===== XỬ LÝ RANK =====
   if (room.isRank) {
     const playersSnapshot = new Map(room.players);
     const sessionId = rankSessions.createSession(room.id, playersSnapshot, room.mode, room.code);
@@ -1405,7 +1402,33 @@ async function handleSlashCommand(interaction) {
     }
     eloStore.upsertElo(interaction.user.id, getFullElo(interaction.user.id)).catch(() => {});
     persistence.saveState(rooms, eloData);
-    return interaction.reply({ content: `✅ Đã đăng ký IGN thành công: **${ign}**\nBot sẽ dùng IGN này để tìm KDA của bạn trong ảnh.`, ephemeral: true });
+
+    // ===== Thông báo công khai cho mọi người =====
+    const publicMsg = `📝 <@${interaction.user.id}> vừa đăng ký IGN thành công: **${ign}**`;
+
+    // (A) Gửi vào kênh thông báo chung — mọi người trong server đều thấy
+    if (ANNOUNCE_CHANNEL_ID) {
+      const announceCh = await client.channels.fetch(ANNOUNCE_CHANNEL_ID).catch(() => null);
+      if (announceCh) {
+        announceCh.send(publicMsg).catch(() => {});
+      }
+    }
+
+    // (B) Gửi vào kênh hiện tại — chỉ gửi nếu khác kênh thông báo để tránh trùng
+    if (interaction.channel && interaction.channel.id !== ANNOUNCE_CHANNEL_ID) {
+      interaction.channel.send(publicMsg).catch(() => {});
+    }
+
+    // Thông báo riêng cho admin qua kênh log
+    const adminPing = config.ADMIN_ROLE_ID ? `<@&${config.ADMIN_ROLE_ID}> ` : '';
+    logAdmin(
+      `${adminPing}📝 **Đăng ký IGN mới**\n` +
+      `• Người chơi: <@${interaction.user.id}> (\`${interaction.user.tag}\` — \`${interaction.user.id}\`)\n` +
+      `• IGN đã đăng ký: **${ign}**\n` +
+      `• Thời gian: <t:${Math.floor(Date.now() / 1000)}:F>`
+    ).catch(() => {});
+
+    return interaction.reply({ content: `✅ Đã đăng ký IGN thành công: **${ign}**`, ephemeral: true });
   }
 
   // ---- SET-ELO ----
@@ -2265,7 +2288,6 @@ async function handleModalSubmit(interaction) {
     return interaction.editReply({ content: '❌ Phiên chơi này đã hết hạn hoặc không tồn tại.' });
   }
 
-  // Admin test: bỏ qua xác thực mã phòng
   const submitterIsAdmin = await isAdminUserId(interaction.user.id).catch(() => false);
   const fakeRoom = { players: new Map(session.players), code: session.code };
   const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin });
@@ -2429,7 +2451,6 @@ async function handleButton(interaction) {
     });
   }
 
-  // ===== NÚT GỬI KẾT QUẢ =====
   if (customId.startsWith('submit_result_')) {
     const roomId = customId.replace('submit_result_', '');
     const room = getRoom(roomId);
