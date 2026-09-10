@@ -253,16 +253,30 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
         const kdaStr = typeof upd.kda === 'number' ? upd.kda.toFixed(2) : '—';
         const total = (upd.wins || 0) + (upd.losses || 0);
         const wr = total > 0 ? Math.round(100 * upd.wins / total) + '%' : '—';
-        const est = estimateWinsToNextTier(upd.userId, room.mode);
-        const estStr = est.isMax
-          ? '🏆 MAX tier'
-          : `🎯 ~${est.estimatedWins} win → ${est.nextTierName}`;
+
+        // ✅ Bậc rank hiện tại + mức con (Đồng/Bạc/Vàng) trong tier.
+        // - Unranked (0-199 ELO) coi như CHƯA có rank -> không chia bậc con.
+        // - Từ "Working on It" trở đi: mỗi tier = 200 ELO, chia 3 đoạn đều:
+        //     0    – 66  : Đồng
+        //     67   – 133 : Bạc
+        //     134  – 199 : Vàng
+        const eloObj = getElo(upd.userId, room.mode);
+        const rankName = eloObj.rank || 'Unranked';
+        let rankStr;
+        if (rankName === 'Unranked') {
+          rankStr = '🏅 **Unranked**';
+        } else {
+          const eloInTier = Math.max(0, (upd.newElo ?? 0) % 200);
+          const subIdx = Math.min(2, Math.floor(eloInTier / (200 / 3)));
+          const subName = ['Đồng', 'Bạc', 'Vàng'][subIdx];
+          rankStr = `🏅 **${rankName}** (${subName})`;
+        }
 
         return (
           `> ${medal} **${name}**${mvpTag}\n` +
           `> \`${upd.oldElo} → ${upd.newElo}\` **(${sign}${delta})**\n` +
           `> KDA ${kdaStr} · W/L ${upd.wins}-${upd.losses} (${wr})\n` +
-          `> ${estStr}`
+          `> ${rankStr}`
         );
       };
 
