@@ -429,75 +429,98 @@ function extractAllKDAResult(text, room) {
 
   // Tách dòng
   const lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
 
-  // Duyệt từng người chơi
+  // ===== Bước 1: tìm vị trí (trong toàn văn bản) của tên từng người chơi =====
+  // Vị trí này dùng để xác định "ranh giới dòng" của mỗi người, tránh việc
+  // fallback theo khoảng cách ký tự vô tình lấy nhầm KDA của người khác.
+  const anchors = [];
   for (const [userId, playerData] of players) {
     const eloObj = getElo(userId);
     const searchName = eloObj.ign || playerData.username;
-    console.log(`🔎 Tìm IGN: "${searchName}"`);
-
-    // Tìm dòng chứa tên
     const nameRegex = new RegExp(searchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+
     let foundLine = null;
-    let foundLineIndex = -1;
     for (let i = 0; i < lines.length; i++) {
       if (nameRegex.test(lines[i])) {
         foundLine = lines[i];
-        foundLineIndex = i;
         break;
       }
     }
 
-    if (!foundLine) {
+    const linePos = foundLine ? text.indexOf(foundLine) : -1;
+    anchors.push({ userId, searchName, foundLine, linePos });
+  }
+
+  // Sắp xếp theo vị trí xuất hiện trong văn bản để suy ra thứ tự dòng thực tế
+  const foundAnchors = anchors
+    .filter(a => a.linePos !== -1)
+    .sort((a, b) => a.linePos - b.linePos);
+
+  // ===== Bước 2: với mỗi người, giới hạn vùng tìm KDA trong khoảng
+  // [vị trí tên của họ, vị trí tên của người tiếp theo) để không lấn sang
+  // dòng của người khác =====
+  for (const anchor of anchors) {
+    const { userId, searchName, foundLine, linePos } = anchor;
+    console.log(`🔎 Tìm IGN: "${searchName}"`);
+
+    if (!foundLine || linePos === -1) {
       console.warn(`⚠️ Không tìm thấy dòng nào chứa tên "${searchName}"`);
       continue;
     }
 
-    // Tìm KDA trên dòng đó
-    const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
-    const match = kdaRegex.exec(foundLine);
-    if (match) {
-      const kill = parseInt(match[1], 10);
-      const death = parseInt(match[2], 10);
-      const assist = parseInt(match[3], 10);
+    // Tìm KDA trên chính dòng đó trước (đường tắt, nhanh và chính xác nhất)
+    kdaRegex.lastIndex = 0;
+    const sameLineMatch = kdaRegex.exec(foundLine);
+    if (sameLineMatch) {
+      const kill = parseInt(sameLineMatch[1], 10);
+      const death = parseInt(sameLineMatch[2], 10);
+      const assist = parseInt(sameLineMatch[3], 10);
       resultMap.set(userId, { kill, death, assist });
       console.log(`✅ Map KDA cho ${searchName}: ${kill}/${death}/${assist} (trên dòng "${foundLine}")`);
       continue;
     }
 
-    // Nếu không có KDA trên dòng, thử tìm gần nhất (phạm vi 300 ký tự)
-    console.warn(`⚠️ Không tìm thấy KDA trên dòng của "${searchName}", thử tìm gần nhất...`);
-    const linePos = text.indexOf(foundLine);
-    if (linePos === -1) continue;
+    // Không có trên cùng dòng -> giới hạn phạm vi tìm kiếm bằng vị trí tên
+    // của người chơi liền kề (theo thứ tự xuất hiện thực tế), thay vì quét
+    // toàn văn bản và chọn theo khoảng cách ký tự (dễ lấy nhầm dòng khác).
+    const ownIndex = foundAnchors.findIndex(a => a.userId === userId);
+    const windowStart = linePos;
+    const windowEnd = (ownIndex !== -1 && ownIndex + 1 < foundAnchors.length)
+      ? foundAnchors[ownIndex + 1].linePos
+      : text.length;
 
-    // Lấy tất cả KDA trong toàn bộ văn bản để chọn gần nhất
-    const allKda = [];
-    const globalRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
-    let m;
-    while ((m = globalRegex.exec(text)) !== null) {
-      allKda.push({
-        kill: parseInt(m[1], 10),
-        death: parseInt(m[2], 10),
-        assist: parseInt(m[3], 10),
-        index: m.index,
+    console.warn(`⚠️ Không tìm thấy KDA trên dòng của "${searchName}", tìm trong phạm vi riêng của người này [${windowStart}, ${windowEnd})...`);
+
+    const windowKda = [];
+    const windowRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
+    const windowText = text.slice(windowStart, windowEnd);
+    let wm;
+    while ((wm = windowRegex.exec(windowText)) !== null) {
+      windowKda.push({
+        kill: parseInt(wm[1], 10),
+        death: parseInt(wm[2], 10),
+        assist: parseInt(wm[3], 10),
+        index: windowStart + wm.index,
       });
     }
 
-    let best = null;
-    let bestDist = Infinity;
-    for (const kda of allKda) {
-      const dist = Math.abs(kda.index - linePos);
-      if (dist < bestDist && dist < 300) {
-        bestDist = dist;
-        best = kda;
-      }
-    }
-    if (best) {
+    if (windowKda.length > 0) {
+      // Trong phạm vi riêng, lấy KDA gần tên nhất (thường là cái đầu tiên)
+      const best = windowKda.reduce((closest, kda) => {
+        const dist = Math.abs(kda.index - linePos);
+        const closestDist = Math.abs(closest.index - linePos);
+        return dist < closestDist ? kda : closest;
+      });
       resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
-      console.log(`✅ Map KDA (fallback) cho ${searchName}: ${best.kill}/${best.death}/${best.assist} (cách ${bestDist} ký tự)`);
-    } else {
-      console.warn(`⚠️ Không tìm thấy KDA gần dòng của "${searchName}" trong phạm vi 300 ký tự.`);
+      console.log(`✅ Map KDA (trong phạm vi riêng) cho ${searchName}: ${best.kill}/${best.death}/${best.assist}`);
+      continue;
     }
+
+    // Cực hiếm: không có KDA nào trong phạm vi riêng của người này.
+    // KHÔNG dùng fallback toàn văn bản nữa vì dễ lấy nhầm KDA của người khác
+    // (đã từng gây lỗi gán sai KDA). Bỏ qua và để admin nhập tay.
+    console.warn(`⚠️ Không tìm thấy KDA nào trong phạm vi riêng của "${searchName}". Bỏ qua để tránh gán nhầm.`);
   }
 
   console.log('📊 Kết quả map KDA:', Array.from(resultMap.entries()));
