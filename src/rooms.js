@@ -168,6 +168,7 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
 }
 
 // Ước lượng số win còn lại để lên tier kế tiếp.
+// Coi ELO null = 0 (tier 0, đang ở Unranked) → next tier là tier kế tiếp.
 function estimateWinsToNextTier(userId, mode) {
   const cur = getElo(userId, mode);
   const tiers = config.RANK_TIERS;
@@ -497,11 +498,63 @@ function formatPersonalCode(room, userId) {
 // ============================================================
 function extractAllKDAResult(text, room, opts = {}) {
   const skipCodeCheck = !!opts.skipCodeCheck;
+  // Dòng overlay (toạ độ) trả về từ OCR.space (isOverlayRequired=true).
+  // Dùng để đối chiếu theo VỊ TRÍ DỌC (Top) thực tế trong ảnh, vì thứ tự
+  // của ParsedText thuần không đáng tin khi giao diện có icon/nút xen giữa
+  // các cột (tên & KDA có thể "gần nhau" trong text nhưng khác hàng trong ảnh).
+  const overlayLines = Array.isArray(opts.overlayLines) ? opts.overlayLines : [];
   const resultMap = new Map();
   const players = Array.from(room.players.entries());
   const roomCode = room.code || null;
   const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const SEP = '[\\s\\-_]{0,3}';
+
+  // Gom KDA + toạ độ Top từ overlay (mỗi dòng overlay có thể chứa 1 KDA).
+  const overlayKdaCandidates = [];
+  if (overlayLines.length > 0) {
+    const kdaLineRe = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/;
+    for (const line of overlayLines) {
+      const lineText = line && line.LineText;
+      if (!lineText) continue;
+      const m = kdaLineRe.exec(lineText);
+      if (!m) continue;
+      const top = typeof line.MinTop === 'number'
+        ? line.MinTop
+        : (line.Words && line.Words[0] ? line.Words[0].Top : null);
+      if (top == null) continue;
+      overlayKdaCandidates.push({
+        kill: parseInt(m[1], 10),
+        death: parseInt(m[2], 10),
+        assist: parseInt(m[3], 10),
+        top,
+      });
+    }
+  }
+
+  // Ngưỡng khoảng cách Top hợp lệ, tính động theo khoảng cách trung bình
+  // giữa các hàng KDA phát hiện được (thay vì số cố định), để không phụ
+  // thuộc vào độ phân giải ảnh.
+  let maxTopDist = 60;
+  if (overlayKdaCandidates.length >= 2) {
+    const sortedTops = overlayKdaCandidates.map(c => c.top).sort((a, b) => a - b);
+    const gaps = [];
+    for (let i = 1; i < sortedTops.length; i++) gaps.push(sortedTops[i] - sortedTops[i - 1]);
+    const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    if (avgGap > 0) maxTopDist = Math.max(30, avgGap * 0.6);
+  }
+
+  function findOverlayTopForName(nameRegex) {
+    for (const line of overlayLines) {
+      const lineText = line && line.LineText;
+      if (!lineText) continue;
+      if (nameRegex.test(lineText)) {
+        return typeof line.MinTop === 'number'
+          ? line.MinTop
+          : (line.Words && line.Words[0] ? line.Words[0].Top : null);
+      }
+    }
+    return null;
+  }
 
   console.log('📝 OCR Text:', text);
   console.log('👥 Players:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
@@ -513,7 +566,6 @@ function extractAllKDAResult(text, room, opts = {}) {
 
   let lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
-  // Gộp dòng prefix bị tách rời khỏi tên (vd "1600-1_" + "NaNi")
   for (let i = 0; i < lines.length - 1; i++) {
     const onlyPrefix = /^\d+[\s\-_]+\d+[\s\-_]*$/.test(lines[i]);
     const nextStartsWithLetter = /^[A-Za-z]/.test(lines[i + 1]);
@@ -523,7 +575,6 @@ function extractAllKDAResult(text, room, opts = {}) {
     }
   }
 
-  // Rebuild text cho khớp lines đã gộp
   text = lines.join('\n');
 
   const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
@@ -580,30 +631,6 @@ function extractAllKDAResult(text, room, opts = {}) {
     }
 
     const foundLineIdx = lines.indexOf(foundLine);
-
-    // ===== FIX OCR: KDA tách ra dòng riêng ngay sau tên =====
-    // Ví dụ ảnh kết quả Vainglory có dạng:
-    //   6789_NaNi
-    //   9/10/10
-    // Thay vì nhảy vào slot strategy (dễ sai khi OCR đọc dấu _ thành space),
-    // kiểm tra dòng NGAY SAU dòng chứa tên: nếu nó là KDA thuần (chỉ có
-    // dạng x/y/z, không có text khác) thì gán luôn.
-    if (foundLineIdx !== -1 && foundLineIdx + 1 < lines.length) {
-      const nextLine = lines[foundLineIdx + 1].trim();
-      if (/^\d+\s*\/\s*\d+\s*\/\s*\d+$/.test(nextLine)) {
-        kdaRegex.lastIndex = 0;
-        const m = kdaRegex.exec(nextLine);
-        if (m) {
-          const kill = parseInt(m[1], 10);
-          const death = parseInt(m[2], 10);
-          const assist = parseInt(m[3], 10);
-          resultMap.set(userId, { kill, death, assist });
-          console.log(`✅ Map KDA (dòng kế tiếp) cho ${searchName}: ${kill}/${death}/${assist}`);
-          continue;
-        }
-      }
-    }
-
     let slotLineIdx = -1;
     if (foundLineIdx !== -1) {
       if (slotPrefixRegex.test(lines[foundLineIdx])) {
@@ -643,6 +670,28 @@ function extractAllKDAResult(text, room, opts = {}) {
           console.log(`✅ Map KDA (cột, hạng ${slotRank}) cho ${searchName}: ${kill}/${death}/${assist}`);
           continue;
         }
+      }
+    }
+
+    // ✅ Ưu tiên đối chiếu theo toạ độ Top thực tế (overlay OCR) trước khi
+    // dùng heuristic "gần theo vị trí ký tự trong text", vì text order có
+    // thể không khớp với thứ tự hàng trong ảnh khi có icon/nút xen giữa.
+    if (overlayKdaCandidates.length > 0) {
+      const nameOverlayTop = findOverlayTopForName(nameRegex);
+      if (nameOverlayTop != null) {
+        const best = overlayKdaCandidates.reduce((closest, kda) => {
+          const dist = Math.abs(kda.top - nameOverlayTop);
+          const closestDist = closest ? Math.abs(closest.top - nameOverlayTop) : Infinity;
+          return dist < closestDist ? kda : closest;
+        }, null);
+        // Chỉ chấp nhận nếu đủ gần theo chiều dọc (tránh vơ đại dòng xa
+        // nhất trong toàn ảnh khi có nhiều hàng người chơi).
+        if (best && Math.abs(best.top - nameOverlayTop) <= maxTopDist) {
+          resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
+          console.log(`✅ Map KDA (overlay Top) cho ${searchName}: ${best.kill}/${best.death}/${best.assist}`);
+          continue;
+        }
+        console.warn(`⚠️ Overlay Top cho "${searchName}" không tìm được KDA đủ gần (top=${nameOverlayTop}).`);
       }
     }
 

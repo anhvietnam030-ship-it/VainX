@@ -317,7 +317,12 @@ async function ocrImageBuffer(imageBuffer) {
       formData.append('apikey', OCR_API_KEY);
       formData.append('file', imageBuffer, { filename: 'screenshot.png' });
       formData.append('language', 'eng');
-      formData.append('isOverlayRequired', 'false');
+      // ✅ Bật overlay để lấy toạ độ (Top) của từng dòng. ParsedText thuần
+      // không đảm bảo đúng thứ tự theo chiều dọc của ảnh khi giao diện có
+      // nhiều icon/nút xen giữa các cột -> dùng toạ độ Top để đối chiếu
+      // tên người chơi với đúng dòng K/D/A của họ, tránh map nhầm sang
+      // hàng bên cạnh (VD: NaNi bị gán nhầm KDA của Peckkk).
+      formData.append('isOverlayRequired', 'true');
       formData.append('detectOrientation', 'true');
       formData.append('scale', 'true');
       return axios.post('https://api.ocr.space/parse/image', formData, {
@@ -336,10 +341,11 @@ async function ocrImageBuffer(imageBuffer) {
     }
 
     const data = response.data;
-    if (data.IsErroredOnProcessing) { console.error('OCR error:', data.ErrorMessage); return ''; }
+    if (data.IsErroredOnProcessing) { console.error('OCR error:', data.ErrorMessage); return { text: '', overlayLines: [] }; }
     const text = data.ParsedResults?.[0]?.ParsedText || '';
-    console.log(`✅ OCR: ${text.length} ký tự`);
-    return text;
+    const overlayLines = data.ParsedResults?.[0]?.TextOverlay?.Lines || [];
+    console.log(`✅ OCR: ${text.length} ký tự, ${overlayLines.length} dòng overlay`);
+    return { text, overlayLines };
   } catch (err) {
     console.error('❌ OCR failed:', err.message);
     throw err;
@@ -1160,15 +1166,19 @@ async function handleSlashCommand(interaction) {
     if (!submitterIsAdmin) addImageHistory(imageHash, attachment.url, interaction.user.id, room.id);
 
     let ocrText = '';
-    try { ocrText = await ocrImageBuffer(imageBuffer); }
-    catch (err) {
+    let overlayLines = [];
+    try {
+      const ocrResult = await ocrImageBuffer(imageBuffer);
+      ocrText = ocrResult.text;
+      overlayLines = ocrResult.overlayLines;
+    } catch (err) {
       if (err.message === 'MISSING_OCR_API_KEY') return interaction.editReply({ content: '❌ Bot chưa có OCR key.' });
       return interaction.editReply({ content: '❌ Lỗi OCR.' });
     }
     if (!ocrText) return interaction.editReply({ content: '❌ Không đọc được ảnh.' });
 
     const fakeRoom = { players: new Map(session.players), code: session.code };
-    const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin });
+    const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin, overlayLines });
     if (submitterIsAdmin) console.warn(`🧪 skipCodeCheck cho admin ${interaction.user.id}`);
     if (kdaMap.size === 0) return interaction.editReply({ content: '❌ Không tìm thấy KDA.' });
 
@@ -1487,8 +1497,12 @@ async function handleModalSubmit(interaction) {
   if (!submitterIsAdmin) addImageHistory(imageHash, imageUrl, interaction.user.id, room.id);
 
   let ocrText = '';
-  try { ocrText = await ocrImageBuffer(imageBuffer); }
-  catch (err) {
+  let overlayLines = [];
+  try {
+    const ocrResult = await ocrImageBuffer(imageBuffer);
+    ocrText = ocrResult.text;
+    overlayLines = ocrResult.overlayLines;
+  } catch (err) {
     if (err.message === 'MISSING_OCR_API_KEY') return interaction.editReply({ content: '❌ Bot chưa có OCR key.' });
     return interaction.editReply({ content: '❌ Lỗi OCR.' });
   }
@@ -1498,7 +1512,7 @@ async function handleModalSubmit(interaction) {
   if (!session) return interaction.editReply({ content: '❌ Phiên đã hết hạn.' });
 
   const fakeRoom = { players: new Map(session.players), code: session.code };
-  const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin });
+  const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin, overlayLines });
   if (kdaMap.size === 0) return interaction.editReply({ content: '❌ Không tìm thấy KDA.' });
 
   const result = parseMatchResult(ocrText);
