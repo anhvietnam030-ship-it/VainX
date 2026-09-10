@@ -1575,8 +1575,13 @@ async function handleSlashCommand(interaction) {
       });
     }
 
+    // ===== [PATCH] Admin test: bỏ qua xác thực mã phòng =====
+    const submitterIsAdmin = await isAdminUserId(interaction.user.id).catch(() => false);
     const fakeRoom = { players: new Map(session.players), code: session.code };
-    const kdaMap = extractAllKDAResult(ocrText, fakeRoom);
+    const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin });
+    if (submitterIsAdmin) {
+      console.warn(`🧪 /submit-result: ${interaction.user.id} là admin — đã bật skipCodeCheck cho lần OCR này.`);
+    }
 
     if (kdaMap.size === 0) {
       return interaction.editReply({
@@ -2287,8 +2292,14 @@ async function handleModalSubmit(interaction) {
     return interaction.editReply({ content: '❌ Phiên chơi này đã hết hạn hoặc không tồn tại.' });
   }
 
+  // ===== [PATCH] Admin test: bỏ qua xác thực mã phòng =====
+  const submitterIsAdmin = await isAdminUserId(interaction.user.id).catch(() => false);
   const fakeRoom = { players: new Map(session.players), code: session.code };
-  const kdaMap = extractAllKDAResult(ocrText, fakeRoom);
+  const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin });
+  if (submitterIsAdmin) {
+    console.warn(`🧪 modal submit: ${interaction.user.id} là admin — đã bật skipCodeCheck cho lần OCR này.`);
+  }
+
   if (kdaMap.size === 0) {
     return interaction.editReply({
       content: '❌ Không tìm thấy KDA của bất kỳ ai trong ảnh. Vui lòng kiểm tra ảnh hoặc nhờ admin gửi thay.',
@@ -2829,7 +2840,7 @@ async function giveCode(interaction, roomId) {
   }
   const personal = formatPersonalCode(room, interaction.user.id);
   if (!personal) {
-    return interaction.reply({ content: t(interaction, '⚠️ Bạn không nằm trong phòng này.', '⚠️ You are not in this room.'), ephemeral: true });
+        return interaction.reply({ content: t(interaction, '⚠️ Bạn không nằm trong phòng này.', '⚠️ You are not in this room.'), ephemeral: true });
   }
   await interaction.reply({
     content: t(interaction,

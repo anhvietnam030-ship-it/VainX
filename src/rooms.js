@@ -420,7 +420,8 @@ function formatPersonalCode(room, userId) {
 // ============================================================
 // ===== HÀM OCR – ƯU TIÊN TÌM KDA TRÊN CÙNG DÒNG ============
 // ============================================================
-function extractAllKDAResult(text, room) {
+function extractAllKDAResult(text, room, opts = {}) {
+  const skipCodeCheck = !!opts.skipCodeCheck;
   const resultMap = new Map();
   const players = Array.from(room.players.entries());
   const roomCode = room.code || null;
@@ -432,7 +433,9 @@ function extractAllKDAResult(text, room) {
 
   console.log('📝 OCR Text:', text);
   console.log('👥 Players:', players.map(([id, p]) => `${p.username} (${id})`).join(', '));
-  if (!roomCode) {
+  if (skipCodeCheck) {
+    console.warn('🧪 extractAllKDAResult: ADMIN TESTING MODE — bỏ qua xác thực mã phòng (chỉ nên dùng khi admin test).');
+  } else if (!roomCode) {
     console.warn('⚠️ extractAllKDAResult: không có room.code để đối chiếu -> dùng chế độ so khớp tên "mở" (KHÔNG khuyến khích, dễ bị ăn gian bằng ảnh trận khác).');
   }
 
@@ -451,6 +454,9 @@ function extractAllKDAResult(text, room) {
   // riêng mà formatPersonalCode() đã cấp cho từng người để đặt làm tên
   // trong game. Nhờ vậy ảnh của một trận khác (kể cả trận thật, chơi đúng
   // người đó) sẽ không bao giờ khớp được mã ngẫu nhiên của trận hiện tại.
+  //
+  // NGOẠI LỆ DUY NHẤT: khi opts.skipCodeCheck = true (chỉ dùng cho ADMIN
+  // đang test), bỏ qua yêu cầu mã phòng và chỉ so khớp tên.
   const anchors = [];
   for (const [userId, playerData] of players) {
     const eloObj = getElo(userId);
@@ -458,14 +464,13 @@ function extractAllKDAResult(text, room) {
     const nameEsc = escapeRe(searchName);
 
     let nameRegex;
-    if (roomCode) {
+    if (roomCode && !skipCodeCheck) {
       const codeEsc = escapeRe(roomCode);
       nameRegex = playerData.team
         ? new RegExp(`${codeEsc}${SEP}${escapeRe(playerData.team)}${SEP}${nameEsc}`, 'i')
         : new RegExp(`${codeEsc}${SEP}${nameEsc}`, 'i');
     } else {
-      // Không có mã để đối chiếu (trường hợp cực hiếm / dữ liệu cũ) -> lùi
-      // về cách so khớp cũ, chỉ theo tên.
+      // Admin test (hoặc không có code để đối chiếu) -> chỉ so khớp tên.
       nameRegex = new RegExp(nameEsc, 'i');
     }
 
@@ -489,6 +494,17 @@ function extractAllKDAResult(text, room) {
   // ===== Bước 2: với mỗi người, giới hạn vùng tìm KDA trong khoảng
   // [vị trí tên của họ, vị trí tên của người tiếp theo) để không lấn sang
   // dòng của người khác =====
+  //
+  // slotPrefixRegex: nhận diện dòng "slot" — dòng bắt đầu bằng phần "định
+  // danh" mà game tự ghép (mã phòng + team + username). Ở chế độ xác thực,
+  // BẮT BUỘC khớp đúng mã phòng. Ở chế độ admin test (skipCodeCheck=true),
+  // chấp nhận mọi dạng "<số>[sep]<số>[sep]?" để bắt được cả những dòng
+  // không có mã phòng.
+  const slotPrefixRegex = (roomCode && !skipCodeCheck)
+    ? new RegExp(`^${escapeRe(roomCode)}${SEP}\\d+_`)
+    : /^\d+[\s\-_]+(\d+[\s\-_]+)?/;
+  const pureKdaLineRegex = /^\d+\s*\/\s*\d+\s*\/\s*\d+$/;
+
   for (const anchor of anchors) {
     const { userId, searchName, foundLine, linePos } = anchor;
     console.log(`🔎 Tìm IGN: "${searchName}"`);
@@ -519,17 +535,6 @@ function extractAllKDAResult(text, room) {
     // (xem formatPersonalCode), ta có thể dùng các dòng khớp mẫu này làm
     // "vị trí" đáng tin cậy của từng người trong đội, rồi lấy KDA "thuần"
     // (dòng chỉ chứa số dạng x/y/z) ở đúng thứ hạng tương ứng.
-    // Trước đây chấp nhận BẤT KỲ chuỗi "<số>-<số>_" nào ở đầu dòng — điều
-    // này vô tình khiến ảnh của một trận KHÁC (có tên dạng tương tự) vẫn
-    // được nhận làm "cột hợp lệ". Giờ bắt buộc đúng mã phòng của trận này.
-    const slotPrefixRegex = roomCode
-      ? new RegExp(`^${escapeRe(roomCode)}${SEP}\\d+_`)
-      : /^\d+-\d+_/;
-    const pureKdaLineRegex = /^\d+\s*\/\s*\d+\s*\/\s*\d+$/;
-
-    // Tìm dòng "slot" của người này: có thể là chính dòng khớp tên (nếu nó
-    // đã có tiền tố code-team_), hoặc dòng liền trước đó nếu OCR tách tên
-    // ra làm hai dòng (vd "1600-1_" rồi "NaNi").
     const foundLineIdx = lines.indexOf(foundLine);
     let slotLineIdx = -1;
     if (foundLineIdx !== -1) {
