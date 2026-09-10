@@ -481,6 +481,73 @@ function extractAllKDAResult(text, room) {
       continue;
     }
 
+    // ===== Chiến lược "vị trí theo cột" =====
+    // OCR đôi khi đọc màn hình theo kiểu "cột": toàn bộ tên của một đội được
+    // liệt kê thành một khối, rồi ngay sau đó là khối KDA tương ứng theo
+    // ĐÚNG THỨ TỰ đó — dù khoảng cách ký tự không phản ánh đúng dòng nào đi
+    // với dòng nào (đây chính là nguyên nhân gây gán nhầm KDA trước đây).
+    // Vì tên hiển thị trong game luôn có dạng "<code>-<team>_<username>"
+    // (xem formatPersonalCode), ta có thể dùng các dòng khớp mẫu này làm
+    // "vị trí" đáng tin cậy của từng người trong đội, rồi lấy KDA "thuần"
+    // (dòng chỉ chứa số dạng x/y/z) ở đúng thứ hạng tương ứng.
+    const slotPrefixRegex = /^\d+-\d+_/;
+    const pureKdaLineRegex = /^\d+\s*\/\s*\d+\s*\/\s*\d+$/;
+
+    // Tìm dòng "slot" của người này: có thể là chính dòng khớp tên (nếu nó
+    // đã có tiền tố code-team_), hoặc dòng liền trước đó nếu OCR tách tên
+    // ra làm hai dòng (vd "1600-1_" rồi "NaNi").
+    const foundLineIdx = lines.indexOf(foundLine);
+    let slotLineIdx = -1;
+    if (foundLineIdx !== -1) {
+      if (slotPrefixRegex.test(lines[foundLineIdx])) {
+        slotLineIdx = foundLineIdx;
+      } else if (foundLineIdx > 0 && slotPrefixRegex.test(lines[foundLineIdx - 1])) {
+        slotLineIdx = foundLineIdx - 1;
+      }
+    }
+
+    if (slotLineIdx !== -1) {
+      const slotLines = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (slotPrefixRegex.test(lines[i])) slotLines.push(i);
+      }
+
+      // CHỈ tin chiến lược này khi có một KHỐI LIÊN TỤC các dòng KDA thuần
+      // (không xen kẽ dòng khác) xuất hiện ngay sau dòng "slot" cuối cùng
+      // của nhóm — đây chính là dấu hiệu đặc trưng của kiểu OCR "đọc theo
+      // cột" đã gây lỗi. Nếu KDA nằm xen kẽ theo từng dòng như bình thường
+      // (không phải một khối liền), tuyệt đối không dùng chiến lược này —
+      // để tránh lặp lại kiểu lỗi tương tự theo chiều ngược lại.
+      const lastSlotIdx = slotLines[slotLines.length - 1];
+      let blockStart = -1;
+      for (let i = lastSlotIdx + 1; i < lines.length; i++) {
+        if (pureKdaLineRegex.test(lines[i])) { blockStart = i; break; }
+        if (slotPrefixRegex.test(lines[i])) break; // gặp slot khác trước -> không phải khối liền
+      }
+
+      let contiguousBlock = [];
+      if (blockStart !== -1) {
+        for (let i = blockStart; i < lines.length && pureKdaLineRegex.test(lines[i]); i++) {
+          contiguousBlock.push(i);
+        }
+      }
+
+      const slotRank = slotLines.indexOf(slotLineIdx);
+      if (slotRank !== -1 && contiguousBlock.length >= slotLines.length && slotRank < contiguousBlock.length) {
+        kdaRegex.lastIndex = 0;
+        const kdaLineText = lines[contiguousBlock[slotRank]];
+        const slotMatch = kdaRegex.exec(kdaLineText);
+        if (slotMatch) {
+          const kill = parseInt(slotMatch[1], 10);
+          const death = parseInt(slotMatch[2], 10);
+          const assist = parseInt(slotMatch[3], 10);
+          resultMap.set(userId, { kill, death, assist });
+          console.log(`✅ Map KDA (theo vị trí cột, hạng ${slotRank}) cho ${searchName}: ${kill}/${death}/${assist} (dòng "${kdaLineText}")`);
+          continue;
+        }
+      }
+    }
+
     // Không có trên cùng dòng -> giới hạn phạm vi tìm kiếm bằng vị trí tên
     // của người chơi liền kề (theo thứ tự xuất hiện thực tế), thay vì quét
     // toàn văn bản và chọn theo khoảng cách ký tự (dễ lấy nhầm dòng khác).
