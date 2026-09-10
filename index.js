@@ -143,8 +143,13 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
     eloStore.upsertElo(userId, getFullElo(userId))
       .then(() => console.log(`✅ Đã cập nhật ELO [${room.mode}] cho ${userId}: ${newElo}`))
       .catch((err) => console.error(`❌ Lỗi upsert ELO cho ${userId}:`, err));
+
+    const playerEntry = finalSession.players.find(([id]) => id === userId);
+    const discordUsername = playerEntry ? playerEntry[1].username : 'Unknown';
+
     eloUpdates.push({
       userId,
+      username: discordUsername,
       oldElo: userElo,
       newElo,
       result: resultData.result,
@@ -159,17 +164,75 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
   if (resultChannelId) {
     const resultChannel = await client.channels.fetch(resultChannelId).catch(() => null);
     if (resultChannel) {
-      let msg = `📊 **${room.label} (${roomId})** [${room.mode}] - KẾT QUẢ ELO:\n`;
-      for (const upd of eloUpdates) {
-        const rank = getElo(upd.userId, room.mode).rank;
-        const kdaStr = typeof upd.kda === 'number' ? upd.kda.toFixed(2) : 'N/A';
+      const winners = eloUpdates.filter(u => u.result === 'win');
+      const losers  = eloUpdates.filter(u => u.result === 'loss');
+
+      // Tìm MVP = người có KDA cao nhất toàn trận (không phân biệt thắng/thua)
+      let mvpId = null;
+      let bestKda = -1;
+      for (const u of eloUpdates) {
+        const k = (typeof u.kda === 'number' && !isNaN(u.kda)) ? u.kda : -1;
+        if (k > bestKda) {
+          bestKda = k;
+          mvpId = u.userId;
+        }
+      }
+
+      // Ưu tiên IGN (đã đăng ký), fallback username Discord
+      const getDisplayName = (upd) => {
+        const eloObj = getElo(upd.userId, room.mode);
+        return eloObj.ign || upd.username || `User_${upd.userId.slice(-4)}`;
+      };
+
+      // Sắp xếp: ai được + nhiều nhất lên đầu (bên thua: ai mất ít nhất lên đầu)
+      winners.sort((a, b) => (b.newElo - b.oldElo) - (a.newElo - a.oldElo));
+      losers.sort((a, b) => (b.newElo - b.oldElo) - (a.newElo - a.oldElo));
+
+      const MEDALS = ['🥇', '🥈', '🥉'];
+      const formatEntry = (upd, idx) => {
+        const delta = upd.newElo - upd.oldElo;
+        const sign = delta >= 0 ? '+' : '';
+        const isMvp = upd.userId === mvpId;
+        const medal = isMvp ? '👑' : (MEDALS[idx] || '▫️');
+        const mvpTag = isMvp ? ' · **MVP**' : '';
+        const name = getDisplayName(upd);
+        const kdaStr = typeof upd.kda === 'number' ? upd.kda.toFixed(2) : '—';
         const total = (upd.wins || 0) + (upd.losses || 0);
         const wr = total > 0 ? Math.round(100 * upd.wins / total) + '%' : '—';
         const est = estimateWinsToNextTier(upd.userId, room.mode);
-        const estStr = est.isMax ? 'MAX tier' : `~${est.estimatedWins} win tới ${est.nextTierName}`;
-        msg += `<@${upd.userId}>: ${upd.oldElo} → ${upd.newElo} (${upd.result}) | KDA: ${kdaStr} | W/L: ${upd.wins}-${upd.losses} (${wr}) | ${estStr}\n`;
-      }
-      await resultChannel.send(msg).catch(() => {});
+        const estStr = est.isMax
+          ? '🏆 MAX tier'
+          : `🎯 ~${est.estimatedWins} win → ${est.nextTierName}`;
+
+        return (
+          `> ${medal} **${name}**${mvpTag}\n` +
+          `> \`${upd.oldElo} → ${upd.newElo}\` **(${sign}${delta})**\n` +
+          `> KDA ${kdaStr} · W/L ${upd.wins}-${upd.losses} (${wr})\n` +
+          `> ${estStr}`
+        );
+      };
+
+      const victoryText = winners.length > 0
+        ? winners.map((u, i) => formatEntry(u, i)).join('\n\n')
+        : '> _Không có ai_';
+      const defeatText = losers.length > 0
+        ? losers.map((u, i) => formatEntry(u, i)).join('\n\n')
+        : '> _Không có ai_';
+
+      const trim = (s) => s.length > 1024 ? s.slice(0, 1020) + '\n> ...' : s;
+
+      const embed = new EmbedBuilder()
+        .setTitle(`📊 KẾT QUẢ ELO — ${room.label}`)
+        .setDescription(`Chế độ **${room.mode.toUpperCase()}** · ID: \`${roomId}\` · ${eloUpdates.length} người`)
+        .addFields(
+          { name: `🏆 VICTORY (${winners.length})`, value: trim(victoryText), inline: true },
+          { name: `⚔️ DEFEAT (${losers.length})`,  value: trim(defeatText),  inline: true }
+        )
+        .setColor(winners.length >= losers.length ? 0x57f287 : 0xed4245)
+        .setFooter({ text: `${room.mode.toUpperCase()} Rank · ${new Date().toLocaleString('vi-VN')}` })
+        .setTimestamp();
+
+      await resultChannel.send({ embeds: [embed] }).catch(() => {});
     }
   }
 
