@@ -284,7 +284,7 @@ async function ocrImage(imageUrl) {
     console.log(`✅ OCR thành công, nhận được ${text.length} ký tự`);
     return text;
   } catch (err) {
-    console.error('❌ OCR.space request failed:', err.message);
+    console.error('❌ OCR.space request failed:', err.message, err.code ? `(code: ${err.code})` : '');
     if (err.response) {
       console.error('Response status:', err.response.status);
       console.error('Response data:', JSON.stringify(err.response.data, null, 2));
@@ -1515,7 +1515,7 @@ async function handleSlashCommand(interaction) {
     try {
       ocrText = await ocrImage(attachment.url);
     } catch (err) {
-      console.error('❌ Lỗi khi gọi OCR:', err);
+      console.error('❌ Lỗi khi gọi OCR:', err.message, err.code ? `(code: ${err.code})` : '', err.response ? `(status: ${err.response.status})` : '');
       if (err.message === 'MISSING_OCR_API_KEY') {
         return interaction.editReply({ content: '❌ Bot chưa được cấu hình OCR. Vui lòng báo admin thêm API key.' });
       }
@@ -2207,7 +2207,7 @@ async function handleModalSubmit(interaction) {
     ocrText = await ocrImage(imageUrl);
     console.log('✅ OCR nhận được text dài:', ocrText ? ocrText.length : 0);
   } catch (err) {
-    console.error('❌ OCR error:', err);
+    console.error('❌ OCR error:', err.message, err.code ? `(code: ${err.code})` : '', err.response ? `(status: ${err.response.status})` : '');
     if (err.message === 'MISSING_OCR_API_KEY') {
       return interaction.editReply({ content: '❌ Bot chưa được cấu hình OCR. Vui lòng báo admin thêm API key.' });
     }
