@@ -208,8 +208,6 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
         const total = (upd.wins || 0) + (upd.losses || 0);
         const wr = total > 0 ? Math.round(100 * upd.wins / total) + '%' : '—';
 
-        // Bậc rank + mức con (Đồng/Bạc/Vàng) — mỗi tier 300 ELO, chia 3 mức 100 điểm.
-        // Unranked không chia bậc con.
         const eloObj = getElo(upd.userId, room.mode);
         const rankName = eloObj.rank || 'Unranked';
         let rankStr;
@@ -337,13 +335,25 @@ async function ocrImageBuffer(imageBuffer) {
     };
 
     console.log('📤 Đang gửi OCR.space...');
-    let response;
-    try { response = await postOnce(); }
-    catch (err) {
-      const retryable = err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || err.code === 'ECONNRESET' || (err.response && err.response.status >= 500);
-      if (!retryable) throw err;
-      response = await postOnce();
+    let response = null;
+    let lastErr = null;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        response = await postOnce();
+        break;
+      } catch (err) {
+        lastErr = err;
+        const status = err.response && err.response.status;
+        const retryable = err.code === 'ECONNABORTED' || err.code === 'ETIMEDOUT' || err.code === 'ECONNRESET' || status === 429 || (status >= 500);
+        if (!retryable) throw err;
+        if (attempt < 4) {
+          const waitMs = 2000 * attempt;
+          console.warn(`⚠️ OCR lần ${attempt} lỗi (${status || err.code}). Thử lại sau ${waitMs / 1000}s...`);
+          await new Promise((r) => setTimeout(r, waitMs));
+        }
+      }
     }
+    if (!response) throw lastErr || new Error('OCR_FAILED');
 
     const data = response.data;
     if (data.IsErroredOnProcessing) { console.error('OCR error:', data.ErrorMessage); return { text: '', overlayLines: [] }; }
@@ -1304,8 +1314,20 @@ async function handleSlashCommand(interaction) {
     const room = getRoom(roomId);
     if (!room || !room.isRank) return interaction.editReply({ content: '❌ Phòng không phải rank.' });
 
+    // ✅ Nếu session đã finalize bởi teammate → báo "đã tính rồi", không OCR
     const session = rankSessions.getActiveSessionByRoomId(roomId);
-    if (!session) return interaction.editReply({ content: '❌ Phiên đã hết hạn.' });
+    if (!session) {
+      const finalized = rankSessions.wasRecentlyFinalized(roomId, interaction.user.id);
+      if (finalized) {
+        const myEntry = finalized.players.find(([id]) => id === interaction.user.id);
+        const myTeam = myEntry ? myEntry[1].team : null;
+        return interaction.editReply({
+          content: `✅ Trận này đã có kết quả từ teammate (team ${myTeam || '?'}). ELO của team bạn đã được tính rồi — không cần submit lại.`,
+        });
+      }
+      return interaction.editReply({ content: '❌ Phiên đã hết hạn.' });
+    }
+
     if (!session.players.some(([id]) => id === interaction.user.id)) return interaction.editReply({ content: '❌ Bạn không ở trong phiên.' });
     if (session.resultMap.has(interaction.user.id)) return interaction.editReply({ content: 'ℹ️ Bạn đã gửi rồi.' });
 
