@@ -160,31 +160,26 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
   }
   persistence.saveState(rooms, eloData);
 
-  const resultChannelId = process.env.RANK_RESULT_CHANNEL_ID;
-  if (resultChannelId) {
-    const resultChannel = await client.channels.fetch(resultChannelId).catch(() => null);
-    if (resultChannel) {
+  // ===== Kết quả ELO chỉ gửi vào kênh SẢNH CHUNG (PUBLIC_RESULT_CHANNEL_ID) =====
+  const publicChannelId = process.env.PUBLIC_RESULT_CHANNEL_ID;
+  if (publicChannelId) {
+    const publicChannel = await client.channels.fetch(publicChannelId).catch(() => null);
+    if (publicChannel) {
       const winners = eloUpdates.filter(u => u.result === 'win');
       const losers  = eloUpdates.filter(u => u.result === 'loss');
 
-      // Tìm MVP = người có KDA cao nhất toàn trận (không phân biệt thắng/thua)
       let mvpId = null;
       let bestKda = -1;
       for (const u of eloUpdates) {
         const k = (typeof u.kda === 'number' && !isNaN(u.kda)) ? u.kda : -1;
-        if (k > bestKda) {
-          bestKda = k;
-          mvpId = u.userId;
-        }
+        if (k > bestKda) { bestKda = k; mvpId = u.userId; }
       }
 
-      // Ưu tiên IGN (đã đăng ký), fallback username Discord
       const getDisplayName = (upd) => {
         const eloObj = getElo(upd.userId, room.mode);
         return eloObj.ign || upd.username || `User_${upd.userId.slice(-4)}`;
       };
 
-      // Sắp xếp: ai được + nhiều nhất lên đầu (bên thua: ai mất ít nhất lên đầu)
       winners.sort((a, b) => (b.newElo - b.oldElo) - (a.newElo - a.oldElo));
       losers.sort((a, b) => (b.newElo - b.oldElo) - (a.newElo - a.oldElo));
 
@@ -221,19 +216,34 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
 
       const trim = (s) => s.length > 1024 ? s.slice(0, 1020) + '\n> ...' : s;
 
+      let mvpAvatarUrl = null;
+      if (mvpId) {
+        try {
+          const mvpUser = await client.users.fetch(mvpId);
+          mvpAvatarUrl = mvpUser.displayAvatarURL({ size: 256 });
+        } catch (err) {}
+      }
+
       const embed = new EmbedBuilder()
-        .setTitle(`📊 KẾT QUẢ ELO — ${room.label}`)
-        .setDescription(`Chế độ **${room.mode.toUpperCase()}** · ID: \`${roomId}\` · ${eloUpdates.length} người`)
+        .setAuthor({ name: `Kết quả trận ${room.mode.toUpperCase()} Rank`, iconURL: client.user.displayAvatarURL() })
+        .setTitle(`📊 ${room.label}`)
+        .setDescription(`🏆 **${winners.length} thắng** · ⚔️ **${losers.length} thua** · ${eloUpdates.length} người chơi`)
         .addFields(
-          { name: `🏆 VICTORY (${winners.length})`, value: trim(victoryText), inline: true },
-          { name: `⚔️ DEFEAT (${losers.length})`,  value: trim(defeatText),  inline: true }
+          { name: `🏆 VICTORY (${winners.length})`, value: trim(victoryText) },
+          { name: `⚔️ DEFEAT (${losers.length})`,  value: trim(defeatText) }
         )
         .setColor(winners.length >= losers.length ? 0x57f287 : 0xed4245)
         .setFooter({ text: `${room.mode.toUpperCase()} Rank · ${new Date().toLocaleString('vi-VN')}` })
         .setTimestamp();
 
-      await resultChannel.send({ embeds: [embed] }).catch(() => {});
+      if (mvpAvatarUrl) embed.setThumbnail(mvpAvatarUrl);
+
+      await publicChannel.send({ embeds: [embed] }).catch(() => {});
+    } else {
+      console.warn(`⚠️ Không tìm thấy kênh sảnh chung: ${publicChannelId}`);
     }
+  } else {
+    console.warn('⚠️ Chưa set PUBLIC_RESULT_CHANNEL_ID — kết quả ELO sẽ không được đăng.');
   }
 
   return eloUpdates;
@@ -775,7 +785,6 @@ async function handleSlashCommand(interaction) {
 
   if (ADMIN_ONLY_COMMANDS.has(commandName)) wrapAdminEphemeralAutoDelete(interaction);
 
-  // ---- LOBBY ----
   if (commandName === 'lobby') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được lệnh này.', ephemeral: true });
     const statsFor = (mode) => {
@@ -787,7 +796,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: '✅ Đã đăng bảng chọn phòng.', ephemeral: true });
   }
 
-  // ---- RANK-STATS ----
   if (commandName === 'rank-stats') {
     const target = interaction.options.getUser('user') || interaction.user;
     const eloObj3 = getElo(target.id, '3v3');
@@ -819,7 +827,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
-  // ---- SET-TIMEOUT ----
   if (commandName === 'set-timeout') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const minutes = interaction.options.getInteger('phut', true);
@@ -837,7 +844,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã đặt timeout = **${minutes} phút** cho ${scope === 'all' ? 'tất cả phòng' : `phòng ${scope}`}.`, ephemeral: true });
   }
 
-  // ---- READY ----
   if (commandName === 'ready') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -855,7 +861,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã đặt <@${targetUser.id}> thành **${player.ready ? 'Sẵn sàng' : 'Chưa sẵn sàng'}**.`, ephemeral: true });
   }
 
-  // ---- GIA-HAN-PHONG ----
   if (commandName === 'gia-han-phong') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -872,7 +877,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã gia hạn thêm **${phut} phút** cho **${room.label}**.`, ephemeral: true });
   }
 
-  // ---- MOI-BAN ----
   if (commandName === 'moi-ban') {
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
     const targetUser = interaction.options.getUser('ban', true);
@@ -892,7 +896,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã gửi lời mời.`, ephemeral: true });
   }
 
-  // ---- BAN-PHONG ----
   if (commandName === 'ban-phong') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -909,7 +912,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã cấm <@${targetUser.id}> khỏi **${room.label}**${wasInRoom ? ' (đã đá luôn)' : ''}.`, ephemeral: true });
   }
 
-  // ---- UNBAN-PHONG ----
   if (commandName === 'unban-phong') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -921,7 +923,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã bỏ cấm <@${targetUser.id}> khỏi **${room.label}**.`, ephemeral: true });
   }
 
-  // ---- KICK-ROOM ----
   if (commandName === 'kick-room') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -937,7 +938,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã đá <@${targetUser.id}> khỏi **${room.label}**.`, ephemeral: true });
   }
 
-  // ---- KICK-GROUP ----
   if (commandName === 'kick-group') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -960,7 +960,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã xoá <@${targetUser.id}> khỏi nhóm.`, ephemeral: true });
   }
 
-  // ---- SETUP-PHONG-AN ----
   if (commandName === 'setup-phong-an') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const mode = interaction.options.getString('che_do', true);
@@ -971,7 +970,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã tạo **${room.label}** (ID: \`${room.id}\`).${dmNote}`, ephemeral: true });
   }
 
-  // ---- MOI-PHONG-AN ----
   if (commandName === 'moi-phong-an') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     if (!interaction.guild) return interaction.reply({ content: '⚠️ Lệnh này phải chạy trong kênh server.', ephemeral: true });
@@ -985,7 +983,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `📨 Chọn người muốn mời vào **${room.label}**:`, components: [new ActionRowBuilder().addComponents(select)], ephemeral: true });
   }
 
-  // ---- DANH-SACH-PHONG-AN ----
   if (commandName === 'danh-sach-phong-an') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const list = getAllHiddenRooms();
@@ -994,7 +991,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `📋 Danh sách:\n${lines.join('\n')}`, ephemeral: true });
   }
 
-  // ---- XOA-PHONG-AN ----
   if (commandName === 'xoa-phong-an') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -1011,7 +1007,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã xóa **${room.label}**.`, ephemeral: true });
   }
 
-  // ---- XOA-TAT-CA-PHONG-AN ----
   if (commandName === 'xoa-tat-ca-phong-an') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const allHidden = getAllHiddenRooms();
@@ -1030,7 +1025,6 @@ async function handleSlashCommand(interaction) {
     return interaction.followUp({ content: `✅ Đã xóa **${allHidden.length}** phòng ẩn.`, ephemeral: true });
   }
 
-  // ---- SETUP ----
   if (commandName === 'setup') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const mode = interaction.options.getString('che_do', true);
@@ -1049,7 +1043,6 @@ async function handleSlashCommand(interaction) {
     return;
   }
 
-  // ---- SETUP-RANK ----
   if (commandName === 'setup-rank') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
     const mode = interaction.options.getString('che_do', true);
@@ -1068,7 +1061,6 @@ async function handleSlashCommand(interaction) {
     return;
   }
 
-  // ---- REGISTER-IGN ----
   if (commandName === 'register-ign') {
     const ign = interaction.options.getString('ign', true).trim();
     if (ign.length < 2 || ign.length > 20) return interaction.reply({ content: '❌ Tên IGN phải từ 2-20 ký tự.', ephemeral: true });
@@ -1091,7 +1083,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã đăng ký IGN thành công: **${ign}**`, ephemeral: true });
   }
 
-  // ---- SET-ELO ----
   if (commandName === 'set-elo') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const targetUser = interaction.options.getUser('user', true);
@@ -1104,7 +1095,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã đặt ELO **${mode}** của <@${targetUser.id}> thành **${clamped}** (${data.rank}).`, ephemeral: true });
   }
 
-  // ---- THEM-ELO ----
   if (commandName === 'them-elo') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const targetUser = interaction.options.getUser('user', true);
@@ -1118,7 +1108,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã ${diem >= 0 ? 'cộng' : 'trừ'} **${Math.abs(diem)}** ELO **${mode}** cho <@${targetUser.id}>. ${currentElo} → **${newElo}** (${data.rank}).`, ephemeral: true });
   }
 
-  // ---- XOA-ELO ----
   if (commandName === 'xoa-elo') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
     const targetUser = interaction.options.getUser('user', true);
@@ -1129,7 +1118,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: mode ? `✅ Đã xóa ELO **${mode}** của <@${targetUser.id}>.` : `✅ Đã xóa ELO **cả 2 chế độ** của <@${targetUser.id}>.`, ephemeral: true });
   }
 
-  // ---- SUBMIT-RESULT ----
   if (commandName === 'submit-result') {
     console.log(`✅ /submit-result từ ${interaction.user.tag}`);
     try { await interaction.deferReply({ ephemeral: true }); }
@@ -1205,7 +1193,6 @@ async function handleSlashCommand(interaction) {
     return interaction.editReply({ content: `✅ Đã ghi nhận kết quả **${result === 'win' ? 'Thắng' : 'Thua'}**.` });
   }
 
-  // ---- ADMIN-SUBMIT-RESULT ----
   if (commandName === 'admin-submit-result') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -1228,7 +1215,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Ghi nhận **${result === 'win' ? 'Thắng' : 'Thua'}** cho <@${targetUser.id}>, KDA ${kill}/${death}/${assist}.`, ephemeral: true });
   }
 
-  // ---- XOA-PHONG-RANK ----
   if (commandName === 'xoa-phong-rank') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -1244,7 +1230,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã xóa **${result.room.label}**.`, ephemeral: true });
   }
 
-  // ---- XOA-TAT-CA-PHONG-RANK ----
   if (commandName === 'xoa-tat-ca-phong-rank') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const mode = interaction.options.getString('che_do');
@@ -1262,7 +1247,6 @@ async function handleSlashCommand(interaction) {
     return interaction.followUp({ content: `✅ Đã xóa ${targetRooms.length} phòng rank.`, ephemeral: true });
   }
 
-  // ---- TEST-FILL ----
   if (commandName === 'test-fill') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -1285,7 +1269,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã thêm **${needed}** người giả vào **${room.label}**.`, ephemeral: true });
   }
 
-  // ---- TEST-FILL-RANK ----
   if (commandName === 'test-fill-rank') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -1308,7 +1291,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã thêm **${needed}** người giả vào **${room.label}** (rank).`, ephemeral: true });
   }
 
-  // ---- TEST-FILL-AN ----
   if (commandName === 'test-fill-an') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -1331,7 +1313,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã thêm **${needed}** người giả vào **${room.label}** (ẩn).`, ephemeral: true });
   }
 
-  // ---- XOA-SETUP-PHONG ----
   if (commandName === 'xoa-setup-phong') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const mode = interaction.options.getString('che_do');
@@ -1352,7 +1333,6 @@ async function handleSlashCommand(interaction) {
     return interaction.followUp({ content: `✅ Đã xóa **${deletedCount}** panel, reset **${targetRooms.length}** phòng.`, ephemeral: true });
   }
 
-  // ---- DON-RAC ----
   if (commandName === 'don-rac') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const soLuong = interaction.options.getInteger('so_luong') || 50;
@@ -1372,7 +1352,6 @@ async function handleSlashCommand(interaction) {
     }
   }
 
-  // ---- XOA-TIN-NHAN-BOT ----
   if (commandName === 'xoa-tin-nhan-bot') {
     const allowed = await isAdminAnywhere(interaction);
     if (!allowed) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
@@ -1413,7 +1392,6 @@ async function handleSlashCommand(interaction) {
     return interaction.followUp({ content: `✅ Đã xóa **${totalDeleted}** tin Bot ${noiChung}.` + (skippedPanels > 0 ? `\n🛡️ Bỏ qua **${skippedPanels}** panel.` : ''), ephemeral: true });
   }
 
-  // ---- XOA-PHONG-THUONG ----
   if (commandName === 'xoa-phong-thuong') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
@@ -1432,7 +1410,6 @@ async function handleSlashCommand(interaction) {
     return interaction.reply({ content: `✅ Đã xóa **${result.room.label}**.`, ephemeral: true });
   }
 
-  // ---- XOA-TAT-CA-PHONG-THUONG ----
   if (commandName === 'xoa-tat-ca-phong-thuong') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const mode = interaction.options.getString('che_do');
@@ -1451,7 +1428,6 @@ async function handleSlashCommand(interaction) {
     return interaction.followUp({ content: `✅ Đã xóa hẳn **${deletedCount}** phòng thường${mode ? ` (${mode.toUpperCase()})` : ''}.`, ephemeral: true });
   }
 
-  // ---- RESET-TAT-CA-PHONG ----
   if (commandName === 'reset-tat-ca-phong') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const allRoomsNow = getAllNormalRooms();
@@ -1465,7 +1441,6 @@ async function handleSlashCommand(interaction) {
     return interaction.followUp({ content: `✅ Đã reset ${allRoomsNow.length} phòng thường.`, ephemeral: true });
   }
 
-  // ---- RESET-ROOM ----
   if (commandName === 'reset-room') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin.', ephemeral: true });
     const roomId = sanitizeRoomId(interaction.options.getString('phong', true));
