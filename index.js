@@ -71,6 +71,57 @@ const eloStore = require('./src/eloStore');
 const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 const rankSessions = require('./src/rankSessions');
 
+// ===== AUTO-BALANCE TEAM CHO PHÒNG RANK =====
+// Ghép team theo ELO sao cho tổng ELO 2 team chênh lệch nhỏ nhất.
+// Chỉ áp dụng cho phòng rank (room.isRank === true). Số người tối đa
+// là 10 -> C(10,5) = 252 tổ hợp, duyệt hết vẫn nhanh trong vài ms.
+// Trả về true nếu đã gán team thành công.
+function autoBalanceRankTeams(room) {
+  if (!room || !room.isRank) return false;
+  const entries = Array.from(room.players.entries());
+  if (entries.length === 0) return false;
+
+  // Chỉ 1 người -> cho vào Team 1 luôn, khỏi tính toán.
+  if (entries.length === 1) {
+    entries[0][1].team = 1;
+    return true;
+  }
+
+  const n = entries.length;
+  const team1Size = Math.floor(n / 2); // team1 nhỏ hơn hoặc bằng team2
+
+  const players = entries.map(([id, data]) => ({
+    id,
+    data,
+    elo: getElo(id, room.mode).elo ?? config.RANK_DEFAULT_ELO,
+  }));
+
+  // Sinh tất cả tổ hợp chọn team1Size người trong n người.
+  const combos = [];
+  (function gen(start, cur) {
+    if (cur.length === team1Size) { combos.push([...cur]); return; }
+    for (let i = start; i < n; i++) {
+      cur.push(i);
+      gen(i + 1, cur);
+      cur.pop();
+    }
+  })(0, []);
+
+  const totalElo = players.reduce((s, p) => s + p.elo, 0);
+  let bestDiff = Infinity;
+  let bestCombo = combos[0] || [];
+
+  for (const combo of combos) {
+    const sum1 = combo.reduce((s, i) => s + players[i].elo, 0);
+    const diff = Math.abs(totalElo - 2 * sum1);
+    if (diff < bestDiff) { bestDiff = diff; bestCombo = combo; }
+  }
+
+  const t1 = new Set(bestCombo);
+  players.forEach((p, i) => { p.data.team = t1.has(i) ? 1 : 2; });
+  return true;
+}
+
 // ===== HOÀN TẤT PHIÊN RANK =====
 async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
   if (!session) { console.warn('⚠️ finalizeRankSessionIfReady: session rỗng, bỏ qua.'); return null; }
@@ -616,6 +667,12 @@ async function handleReadyCountdownExpire(room, channel) {
   room.fullAt = null;
   if (room.timers.blink) { clearInterval(room.timers.blink); room.timers.blink = null; room._flashColor = null; }
 
+  // ✅ Nếu là phòng rank: sau khi đá người không sẵn sàng, ghép lại team
+  // theo ELO cho những người còn lại (nếu còn từ 1 người trở lên).
+  if (room.isRank && room.players.size > 0) {
+    autoBalanceRankTeams(room);
+  }
+
   if (kicked.length === 0) {
     await channel.send(bi(
       `⚖️ **${room.label}**: mọi người đã sẵn sàng nhưng team chưa cân bằng.`,
@@ -741,6 +798,12 @@ client.once('ready', async () => {
     if (room.players.size === 0 || !room.panelChannelId) continue;
     const channel = await client.channels.fetch(room.panelChannelId).catch(() => null);
     if (!channel) continue;
+
+    // Nếu là phòng rank và còn người chơi (khôi phục sau restart) -> ghép
+    // lại team theo ELO để đảm bảo tính cân bằng.
+    if (room.isRank && room.players.size > 0) {
+      autoBalanceRankTeams(room);
+    }
 
     if (room.status === 'revealed' && room.revealedAt) {
       if (room.isRank) { resetRoomWithCleanup(room); await renderRoom(room, channel); }
@@ -971,6 +1034,8 @@ async function handleSlashCommand(interaction) {
     if (!room) return interaction.reply({ content: `❌ Không tìm thấy phòng "${roomId}".`, ephemeral: true });
     if (!room.players.has(targetUser.id)) return interaction.reply({ content: `ℹ️ <@${targetUser.id}> không ở trong **${room.label}**.`, ephemeral: true });
     room.players.delete(targetUser.id);
+    // Phòng rank: ghép lại team theo ELO cho người còn lại.
+    if (room.isRank && room.players.size > 0) autoBalanceRankTeams(room);
     persistence.saveState(rooms, eloData);
     const channel = (room.panelChannelId && (await client.channels.fetch(room.panelChannelId).catch(() => null))) || interaction.channel;
     await renderRoom(room, channel);
@@ -985,6 +1050,7 @@ async function handleSlashCommand(interaction) {
     const room = getHiddenRoom(roomId);
     if (!room) return interaction.reply({ content: `❌ Không tìm thấy phòng ẩn "${roomId}".`, ephemeral: true });
     room.players.delete(targetUser.id);
+    if (room.isRank && room.players.size > 0) autoBalanceRankTeams(room);
     const targetIdx = room.panelTargets.findIndex((t) => t.userId === targetUser.id);
     if (targetIdx === -1) return interaction.reply({ content: `ℹ️ <@${targetUser.id}> chưa từng được mời.`, ephemeral: true });
     const [target] = room.panelTargets.splice(targetIdx, 1);
@@ -1328,6 +1394,8 @@ async function handleSlashCommand(interaction) {
       const fakeId = `9${Date.now()}${i}`.slice(0, 18);
       room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true, isBot: true });
     }
+    // Phòng rank: ghép lại team theo ELO (bot dùng ELO mặc định).
+    autoBalanceRankTeams(room);
     const channel = interaction.channel;
     if (wasEmpty) { room.firstJoinAt = Date.now(); scheduleInactivityTimeout(room, channel); }
     await renderRoom(room, channel);
@@ -1350,6 +1418,7 @@ async function handleSlashCommand(interaction) {
       const fakeId = `9${Date.now()}${i}`.slice(0, 18);
       room.players.set(fakeId, { username: `TestBot${i}`, team: null, ready: true, isBot: true });
     }
+    if (room.isRank) autoBalanceRankTeams(room);
     const channel = interaction.channel;
     if (wasEmpty) { room.firstJoinAt = Date.now(); scheduleInactivityTimeout(room, channel); }
     await renderRoom(room, channel);
@@ -1721,6 +1790,12 @@ async function joinRoom(interaction, roomId) {
     team: null,
     ready: false,
   });
+  // ✅ Phòng rank: tự động ghép lại team theo ELO mỗi khi có người join.
+  // Điều này giúp team luôn cân bằng theo ELO hiện tại (thay vì để user
+  // tự chọn Team 1 / Team 2 / Bỏ team như phòng thường).
+  if (room.isRank) {
+    autoBalanceRankTeams(room);
+  }
   const channel = interaction.channel;
   if (wasEmpty) { room.firstJoinAt = Date.now(); scheduleInactivityTimeout(room, channel); }
   await renderRoom(room, channel);
@@ -1736,6 +1811,10 @@ async function leaveRoom(interaction, roomId) {
   if (room.status === 'revealed') return interaction.reply({ content: t(interaction, '❌ Phòng đã phát code, không thể rời.', '❌ Code revealed, cannot leave.'), ephemeral: true });
 
   room.players.delete(interaction.user.id);
+  // ✅ Phòng rank: ghép lại team theo ELO cho những người còn lại.
+  if (room.isRank && room.players.size > 0) {
+    autoBalanceRankTeams(room);
+  }
   const channel = interaction.channel;
   if (room.timers.readyCountdown && !isFull(room)) {
     clearTimeout(room.timers.readyCountdown); room.timers.readyCountdown = null; room.fullAt = null;
@@ -1781,6 +1860,25 @@ async function toggleReady(interaction, roomId) {
 async function setTeam(interaction, roomId, team) {
   const room = getRoom(roomId);
   if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
+
+  // ✅ Phòng RANK: hệ thống tự ghép team cân bằng theo ELO. Non-admin
+  // KHÔNG được phép đổi team bằng tay; chỉ admin mới override được.
+  if (room.isRank) {
+    const allowed = await isAdminAnywhere(interaction);
+    if (!allowed) {
+      return interaction.reply({
+        content: t(interaction,
+          '🔒 **Phòng Rank tự động ghép team cân bằng theo ELO.**\n' +
+          'Bạn không cần (và không thể) chọn team bằng tay.\n' +
+          'Chỉ **admin** mới đổi team thủ công khi cần.',
+          '🔒 **Rank rooms auto-balance teams by ELO.**\n' +
+          'You don\'t need (and can\'t) pick a team manually.\n' +
+          'Only **admins** can override teams.'),
+        ephemeral: true,
+      });
+    }
+  }
+
   const player = room.players.get(interaction.user.id);
   if (!player) return interaction.reply({ content: t(interaction, '⚠️ Cần Gia nhập trước.', '⚠️ Join first.'), ephemeral: true });
   if (room.status === 'revealed') return interaction.reply({ content: t(interaction, 'ℹ️ Đã phát code, không đổi team.', 'ℹ️ Code revealed, cannot change team.'), ephemeral: true });
