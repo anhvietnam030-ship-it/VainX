@@ -1284,11 +1284,14 @@ async function handleSlashCommand(interaction) {
   if (commandName === 'submit-result') {
     console.log(`✅ /submit-result từ ${interaction.user.tag}`);
 
-    // ✅ Chỉ cho phép dùng trong kênh rank-result (chặn cả Admin/Owner)
-    const RANK_RESULT_CHANNEL_ID = '1547239567302860840';
+    // ✅ Đọc ID kênh rank-result từ ENV (Render Environment Variable)
+    const RANK_RESULT_CHANNEL_ID = String(process.env.RANK_RESULT_CHANNEL_ID || '').trim();
+    if (!RANK_RESULT_CHANNEL_ID) {
+      console.error('❌ Thiếu ENV RANK_RESULT_CHANNEL_ID — không thể check kênh!');
+    }
     if (interaction.channelId !== RANK_RESULT_CHANNEL_ID) {
       return interaction.reply({
-        content: `❌ Lệnh này chỉ dùng được trong <#${RANK_RESULT_CHANNEL_ID}>.`,
+        content: `❌ Lệnh này chỉ dùng được trong <#${RANK_RESULT_CHANNEL_ID || 'rank-result'}>.`,
         ephemeral: true,
       });
     }
@@ -1960,6 +1963,7 @@ async function bootstrap() {
     for (const mode of Object.keys(config.CAPACITY)) addRankRoomsToMode(mode, rankDefault);
   }
   console.log(`ℹ️ Đã khởi tạo ${rooms.size} phòng.`);
+  console.log(`ℹ️ RANK_RESULT_CHANNEL_ID (env) = ${process.env.RANK_RESULT_CHANNEL_ID || '(chưa set!)'}`);
 
   const eloMap = await eloStore.loadAllElo();
   if (eloStore.isEnabled()) {
