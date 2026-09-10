@@ -121,13 +121,28 @@ function roomColor(room) {
 function statusText(room) {
   if (room.status === 'revealed') {
     let text = bi('🟢 **Đã phát code — chuẩn bị vào game!**', '🟢 **Code revealed — get ready to play!**');
-    if (room.isRank && room.resultWindowEnd) {
-      const deadline = unixSeconds(room.resultWindowEnd);
-      text += `\n${bi(`📩 Hạn gửi kết quả: <t:${deadline}:R>`, `📩 Submit result deadline: <t:${deadline}:R>`)}`;
-    } else if (room.revealedAt) {
-      const deadline = unixSeconds(room.revealedAt + config.CODE_RESET_DELAY_MS);
-      text += `\n${bi(`♻️ Phòng tự reset <t:${deadline}:R>`, `♻️ Room auto-resets <t:${deadline}:R>`)}`;
+
+    // ✅ Đếm ngược reset phòng (2 phút) — LUÔN hiện khi đã phát code,
+    // bất kể phòng thường hay phòng rank. Trước đây dùng `else if` nên
+    // khi phòng rank có resultWindowEnd thì dòng này bị ẩn mất.
+    if (room.revealedAt) {
+      const resetDeadline = unixSeconds(room.revealedAt + config.CODE_RESET_DELAY_MS);
+      text += `\n${bi(
+        `♻️ Phòng tự reset <t:${resetDeadline}:R>`,
+        `♻️ Room auto-resets <t:${resetDeadline}:R>`
+      )}`;
     }
+
+    // Hạn gửi kết quả (chỉ phòng rank mới có resultWindowEnd) — hiện thêm
+    // bên dưới, không thay thế dòng reset ở trên.
+    if (room.isRank && room.resultWindowEnd) {
+      const submitDeadline = unixSeconds(room.resultWindowEnd);
+      text += `\n${bi(
+        `📩 Hạn gửi kết quả: <t:${submitDeadline}:R>`,
+        `📩 Submit result deadline: <t:${submitDeadline}:R>`
+      )}`;
+    }
+
     return text;
   }
 
