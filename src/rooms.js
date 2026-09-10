@@ -62,7 +62,6 @@ function getFullElo(userId) {
   };
 }
 
-// isWin: true = tăng wins, false = tăng losses, undefined = không đổi
 function updateElo(userId, mode, newElo, isWin) {
   if (!MODES.includes(mode)) throw new Error(`Mode không hợp lệ: ${mode}`);
   const entry = eloData.get(userId) || emptyEloEntry();
@@ -92,7 +91,6 @@ function registerIGN(userId, ign) {
   return { ok: true };
 }
 
-// Reset ELO về 0, GIỮ NGUYÊN IGN.
 function clearElo(userId, mode) {
   const entry = eloData.get(userId);
   if (!entry) return false;
@@ -142,23 +140,11 @@ function restoreEloData(saved) {
   return eloData;
 }
 
-// ============================================================
-// ===== TÍNH ELO KHI KẾT THÚC TRẬN ===========================
-// Yếu tố ảnh hưởng:
-//   1. Team mạnh/yếu (expected): địch ELO cao → thắng được nhiều, thua mất ít.
-//   2. K factor theo tier: thắng dùng full K, thua dùng nửa K → thua không sốc.
-//   3. KDA:
-//      - Thắng: KDA cao → thưởng thêm (×1.5), KDA thấp → thưởng ít (×0.5).
-//      - Thua : KDA cao → giảm hình phạt (÷1.5 = −33%, ÷1.2 = −17%),
-//               KDA ≤ 2.0 → không phạt thêm.
-// ============================================================
 function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
   if (!opponentElos || opponentElos.length === 0) return userElo;
   const currentElo = (userElo === null || userElo === undefined) ? config.RANK_DEFAULT_ELO : userElo;
-
   const avgOppElo = opponentElos.reduce((a, b) => a + b, 0) / opponentElos.length;
   const expected = 1 / (1 + Math.pow(10, (avgOppElo - currentElo) / 400));
-
   const S = result === 'win' ? 1 : 0;
   const baseK = config.RANK_K_FACTORS[userRankIndex] || 150;
   const K = (S === 1) ? baseK : baseK * 0.5;
@@ -185,7 +171,6 @@ function calculateNewElo(userElo, opponentElos, result, kda, userRankIndex) {
   return Math.max(0, Math.min(3000, newElo));
 }
 
-// Ước lượng số win còn lại để lên tier kế tiếp.
 function estimateWinsToNextTier(userId, mode) {
   const cur = getElo(userId, mode);
   const tiers = config.RANK_TIERS;
@@ -600,9 +585,15 @@ function extractAllKDAResult(text, room, opts = {}) {
     let nameRegex;
     if (roomCode && !skipCodeCheck) {
       const codeEsc = escapeRe(roomCode);
-      nameRegex = playerData.team
-        ? new RegExp(`${codeEsc}${SEP}${escapeRe(playerData.team)}${SEP}${nameEsc}`, 'i')
-        : new RegExp(`${codeEsc}${SEP}${nameEsc}`, 'i');
+      if (playerData.team) {
+        // ✅ Chấp nhận CẢ 2 format:
+        //   "code_name"       (VD: 6969_NaNi)        — người chơi không ghi số team
+        //   "code-team_name"  (VD: 6969-1_NaNi)      — có ghi số team
+        // Nhóm "(?:team SEP)?" là optional → có hay không đều match.
+        nameRegex = new RegExp(`${codeEsc}${SEP}(?:${escapeRe(playerData.team)}${SEP})?${nameEsc}`, 'i');
+      } else {
+        nameRegex = new RegExp(`${codeEsc}${SEP}${nameEsc}`, 'i');
+      }
     } else {
       nameRegex = new RegExp(nameEsc, 'i');
     }
@@ -787,7 +778,6 @@ module.exports = {
   getHiddenRoom,
   getAllHiddenRooms,
   deleteHiddenRoom,
-  // ELO
   getElo,
   getFullElo,
   getRankFromElo,
@@ -796,15 +786,12 @@ module.exports = {
   calculateNewElo,
   registerIGN,
   estimateWinsToNextTier,
-  // Rank rooms
   buildRankRoom,
   addRankRoomsToMode,
   removeRankRoom,
   getAllRankRooms,
   getRankRoomsByMode,
-  // Filter
   getAllNormalRooms,
   getNormalRoomsByMode,
-  // OCR
   extractAllKDAResult,
 };
