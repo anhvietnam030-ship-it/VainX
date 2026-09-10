@@ -600,7 +600,7 @@ function extractAllKDAResult(text, room, opts = {}) {
       if (nameRegex.test(lines[i])) { foundLine = lines[i]; break; }
     }
     const linePos = foundLine ? text.indexOf(foundLine) : -1;
-    anchors.push({ userId, searchName, foundLine, linePos });
+    anchors.push({ userId, searchName, foundLine, linePos, nameRegex });
   }
 
   const foundAnchors = anchors.filter(a => a.linePos !== -1).sort((a, b) => a.linePos - b.linePos);
@@ -611,7 +611,7 @@ function extractAllKDAResult(text, room, opts = {}) {
   const pureKdaLineRegex = /^\d+\s*\/\s*\d+\s*\/\s*\d+$/;
 
   for (const anchor of anchors) {
-    const { userId, searchName, foundLine, linePos } = anchor;
+    const { userId, searchName, foundLine, linePos, nameRegex } = anchor;
     console.log(`🔎 Tìm IGN: "${searchName}"`);
 
     if (!foundLine || linePos === -1) {
