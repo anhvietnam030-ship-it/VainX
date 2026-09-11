@@ -1,3 +1,4 @@
+// test123
 // Fix: ưu tiên IPv4
 const dns = require('node:dns');
 dns.setDefaultResultOrder('ipv4first');
