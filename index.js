@@ -275,6 +275,13 @@ function checkCooldown(userId) {
   cooldowns.set(userId, now);
   return true;
 }
+// Dọn cooldowns cũ mỗi 10 phút để tránh Map phình to dần khi bot chạy lâu ngày.
+setInterval(() => {
+  const now = Date.now();
+  for (const [userId, last] of cooldowns) {
+    if (now - last > config.ACTION_COOLDOWN_MS * 5) cooldowns.delete(userId);
+  }
+}, 10 * 60 * 1000);
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -2006,3 +2013,17 @@ bootstrap().catch((err) => console.error('=== LỖI KHỞI ĐỘNG BOT ===', err
 process.on('unhandledRejection', (err) => {
   console.error('=== UNHANDLED REJECTION ===', err);
 });
+
+// ===== GRACEFUL SHUTDOWN =====
+// Render gửi SIGTERM khi redeploy/restart. Flush state ngay để không mất
+// dữ liệu của lần ghi debounce (persistence.js) còn đang chờ trong hàng đợi.
+let shuttingDown = false;
+function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`ℹ️ Nhận ${signal}, đang flush state trước khi tắt...`);
+  persistence.flushState(rooms, eloData);
+  setTimeout(() => process.exit(0), 200);
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
