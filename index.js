@@ -234,11 +234,18 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
       const defeatText = losers.length > 0 ? losers.map((u, i) => formatEntry(u, i)).join('\n\n') : '> _Không có ai_';
       const trim = (s) => s.length > 1024 ? s.slice(0, 1020) + '\n> ...' : s;
 
-      let mvpAvatarUrl = null;
+      // ✅ Thumbnail: ưu tiên avatar MVP (nếu user có avatar tùy chỉnh);
+      // nếu MVP dùng avatar mặc định → dùng ảnh từ env RANK_RESULT_THUMBNAIL_URL,
+      // fallback cuối cùng là avatar của bot.
+      let thumbnailUrl = config.RANK_RESULT_THUMBNAIL_URL
+        || client.user.displayAvatarURL({ size: 256 });
+
       if (mvpId) {
         try {
           const mvpUser = await client.users.fetch(mvpId);
-          mvpAvatarUrl = mvpUser.displayAvatarURL({ size: 256 });
+          if (mvpUser.avatar) {
+            thumbnailUrl = mvpUser.displayAvatarURL({ size: 256 });
+          }
         } catch (err) {}
       }
 
@@ -252,9 +259,8 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
         )
         .setColor(winners.length >= losers.length ? 0x57f287 : 0xed4245)
         .setFooter({ text: `${room.mode.toUpperCase()} Rank · ${new Date().toLocaleString('vi-VN')}` })
-        .setTimestamp();
-
-      if (mvpAvatarUrl) embed.setThumbnail(mvpAvatarUrl);
+        .setTimestamp()
+        .setThumbnail(thumbnailUrl);
 
       await publicChannel.send({ embeds: [embed] })
         .then(() => console.log(`✅ [${roomId}] Đã gửi kết quả vào kênh sảnh chung.`))

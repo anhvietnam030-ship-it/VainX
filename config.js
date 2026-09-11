@@ -64,11 +64,14 @@ module.exports = {
     '5v5': process.env.BANNER_5V5_URL || null,
   },
 
+  // ----- THUMBNAIL EMBED KẾT QUẢ RANK -----
+  // Ảnh hiển thị ở góc phải trên embed kết quả trận Rank.
+  // Nếu không set → fallback về avatar của bot.
+  RANK_RESULT_THUMBNAIL_URL: process.env.RANK_RESULT_THUMBNAIL_URL || null,
+
   // =============================================
   // ====== CẤU HÌNH HỆ THỐNG RANK ==============
   // =============================================
-  // Ngưỡng ELO mỗi tier: 300 ELO / bậc.
-  // Mỗi tier chia 3 mức con: 0-99 Đồng · 100-199 Bạc · 200-299 Vàng.
   RANK_TIERS: [
     { name: 'Unranked',            minElo: 0,    maxElo: 299 },
     { name: 'Working on It',       minElo: 300,  maxElo: 599 },
@@ -82,12 +85,6 @@ module.exports = {
     { name: 'Vainglorious',        minElo: 2700, maxElo: 3000 },
   ],
 
-  // K-factor — cấu hình để:
-  //   Tier 0-2: ~4 ván/tier  (K = 150)
-  //   Tier 3-5: ~5 ván/tier  (K = 120)
-  //   Tier 6-8: ~7 ván/tier  (K = 85)
-  //   Tier 9:   ~9 ván/tier  (K = 65)
-  // Thua dùng nửa K → không sốc. KDA cao khi thua còn bớt mất điểm.
   RANK_K_FACTORS: {
     0: 150,  // Unranked
     1: 150,  // Working on It
