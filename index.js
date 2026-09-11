@@ -40,12 +40,14 @@ const { startKeepAliveServer, startSelfPing } = require('./src/keepalive');
 const rankSessions = require('./src/rankSessions');
 
 // ===== AUTO-BALANCE TEAM CHO PHÒNG RANK =====
+// ✅ CHỈ chia team khi phòng ĐÃ ĐỦ NGƯỜI và MỌI NGƯỜI đều Sẵn sàng.
+// Nếu chưa đủ điều kiện → xoá sạch team đang có để tránh hiện team lệch/sớm.
 function autoBalanceRankTeams(room) {
   if (!room || !room.isRank) return false;
   const entries = Array.from(room.players.entries());
   if (entries.length === 0) return false;
 
-  if (!allReady(room)) {
+  if (!isFull(room) || !allReady(room)) {
     for (const [, p] of entries) p.team = null;
     return false;
   }
@@ -378,6 +380,25 @@ async function ocrImageBuffer(imageBuffer) {
 function t(interaction, vi, en) { return interaction.locale === 'vi' ? vi : en; }
 function bi(vi, en) { return `${vi}\n🌐 ${en}`; }
 
+// ===== AUTO-DELETE NOTIFICATION MESSAGES =====
+// Tin thông báo trong phòng (đủ người, phát code, reset, kick...) tự biến mất
+// sau 60s để không làm rác kênh panel.
+const NOTIF_AUTO_DELETE_MS = 60 * 1000;
+
+async function sendTempMessage(channel, options, ms = NOTIF_AUTO_DELETE_MS) {
+  if (!channel) return null;
+  try {
+    const msg = await channel.send(options);
+    if (msg && typeof msg.delete === 'function') {
+      setTimeout(() => msg.delete().catch(() => {}), ms);
+    }
+    return msg;
+  } catch (err) {
+    console.error('❌ sendTempMessage thất bại:', err.message);
+    return null;
+  }
+}
+
 function parseMatchResult(ocrText) {
   const resultMatch = ocrText.match(
     /\b(VICTORY|DEFEAT|WIN|LOSE|Chiến\s*thắng|Thắng\s*trận|Thất\s*bại|Bại\s*trận|Đầu\s*hàng|Thắng|Bại|Thua|Chien\s*thang|Thang\s*tran|That\s*bai|Bai\s*tran|Dau\s*hang)\b/i
@@ -560,10 +581,10 @@ function scheduleInactivityTimeout(room, channel, customMs) {
         }
         return;
       }
-      await channel.send(bi(
+      await sendTempMessage(channel, bi(
         `⏰ **${room.label}** đã tự động reset vì quá thời gian chờ.`,
         `**${room.label}** was auto-reset.`
-      )).catch(() => {});
+      ));
     }
   }, ms);
 }
@@ -580,10 +601,10 @@ async function announceRoomFull(room, channel) {
     return;
   }
   const mentions = ids.map((id) => `<@${id}>`).join(' ');
-  await channel.send(bi(
+  await sendTempMessage(channel, bi(
     `✅ **${room.label}** đã đủ người! ${mentions}\nBấm **Sẵn sàng** trong ${readyMinutes} phút.`,
     `**${room.label}** is now full! ${mentions}\nHit Ready within ${readyMinutes} minutes.`
-  )).catch(() => {});
+  ));
   for (const id of ids) {
     client.users.fetch(id).then((user) =>
       user.send(bi(
@@ -620,20 +641,20 @@ async function handleReadyCountdownExpire(room, channel) {
   }
 
   if (kicked.length === 0) {
-    await channel.send(bi(
+    await sendTempMessage(channel, bi(
       `⚖️ **${room.label}**: mọi người đã sẵn sàng nhưng team chưa cân bằng.`,
       `**${room.label}**: everyone ready but teams aren't balanced.`
-    )).catch(() => {});
+    ));
     await renderRoom(room, channel);
     return;
   }
 
   const mentions = kicked.map((id) => `<@${id}>`).join(' ');
   const readyMinutes2 = Math.round(config.READY_COUNTDOWN_MS / 60000);
-  await channel.send(bi(
+  await sendTempMessage(channel, bi(
     `⏱️ Hết ${readyMinutes2} phút chờ sẵn sàng tại **${room.label}** — đã đá ${mentions}.`,
     `⏱️ Ready window for **${room.label}** over — kicked ${mentions}.`
-  )).catch(() => {});
+  ));
 
   if (room.players.size === 0) resetRoomWithCleanup(room);
   else { room.firstJoinAt = Date.now(); scheduleInactivityTimeout(room, channel); }
@@ -658,10 +679,10 @@ async function tryRevealCode(room, channel) {
   if (room.timers.blink) { clearInterval(room.timers.blink); room.timers.blink = null; }
 
   await renderRoom(room, channel);
-  await channel.send(bi(
+  await sendTempMessage(channel, bi(
     `🔑 **${room.label}** đã đủ người sẵn sàng! Code đã phát.`,
     `🔑 **${room.label}** is full and ready! Code revealed.`
-  )).catch(() => {});
+  ));
 
   const playerList = Array.from(room.players.values()).map((p) => `${p.username}${p.team ? ` (Team ${p.team})` : ''}`).join(', ');
   await logAdmin(`🔑 **${room.label}** phát code \`${room.code}\`\nNgười chơi: ${playerList}`);
@@ -691,14 +712,14 @@ async function tryRevealCode(room, channel) {
       clearRoomTimers(room);
       resetRoomWithCleanup(room);
       await renderRoom(room, channel);
-      await channel.send(bi(`♻️ **${room.label}** đã reset.`, `**${room.label}** reset.`)).catch(() => {});
+      await sendTempMessage(channel, bi(`♻️ **${room.label}** đã reset.`, `**${room.label}** reset.`));
     }, config.CODE_RESET_DELAY_MS);
   } else {
     room.timers.resetAfterCode = setTimeout(async () => {
       clearRoomTimers(room);
       resetRoomWithCleanup(room);
       await renderRoom(room, channel);
-      await channel.send(bi(`♻️ **${room.label}** đã reset.`, `**${room.label}** reset.`)).catch(() => {});
+      await sendTempMessage(channel, bi(`♻️ **${room.label}** đã reset.`, `**${room.label}** reset.`));
     }, config.CODE_RESET_DELAY_MS);
   }
 }
@@ -758,7 +779,7 @@ client.once('ready', async () => {
           room.timers.resetAfterCode = setTimeout(async () => {
             clearRoomTimers(room); resetRoomWithCleanup(room);
             await renderRoom(room, channel);
-            await channel.send(bi(`♻️ **${room.label}** đã reset.`, `**${room.label}** reset.`)).catch(() => {});
+            await sendTempMessage(channel, bi(`♻️ **${room.label}** đã reset.`, `**${room.label}** reset.`));
           }, remaining);
         }
       }
