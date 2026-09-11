@@ -1869,8 +1869,22 @@ async function joinRoom(interaction, roomId) {
   const room = getRoom(roomId);
   if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
   if (isBanned(room, interaction.user.id)) return interaction.reply({ content: t(interaction, `❌ Bạn bị cấm khỏi **${room.label}**.`, `❌ You're banned from **${room.label}**.`), ephemeral: true });
-  if (interaction.member && config.JOIN_ROLE_ID && !interaction.member.roles?.cache?.has(config.JOIN_ROLE_ID)) {
-    return interaction.reply({ content: t(interaction, `❌ Cần role <@&${config.JOIN_ROLE_ID}>.`, `❌ Need <@&${config.JOIN_ROLE_ID}> role.`), ephemeral: true });
+  if (config.JOIN_ROLE_ID) {
+    let member = interaction.member;
+    // Một số host (interaction đến ngay sau khi bot vừa restart, hoặc guild cache
+    // chưa kịp sync) khiến interaction.member.roles.cache thiếu/không đúng.
+    // -> fetch lại member trực tiếp từ Discord API cho chắc trước khi kết luận thiếu role.
+    if (!member?.roles?.cache?.has(config.JOIN_ROLE_ID)) {
+      try {
+        member = await interaction.guild.members.fetch(interaction.user.id);
+      } catch (err) {
+        console.error('⚠️ Không fetch được member để check JOIN_ROLE_ID:', err.message);
+      }
+    }
+    if (!member?.roles?.cache?.has(config.JOIN_ROLE_ID)) {
+      console.log(`[JOIN_ROLE_ID check] user=${interaction.user.id} cần=${config.JOIN_ROLE_ID} có=[${member?.roles?.cache?.map(r => r.id).join(',') || 'N/A'}]`);
+      return interaction.reply({ content: t(interaction, `❌ Cần role <@&${config.JOIN_ROLE_ID}>.`, `❌ Need <@&${config.JOIN_ROLE_ID}> role.`), ephemeral: true });
+    }
   }
   const existing = findRoomOfUser(interaction.user.id);
   if (existing && existing.id !== room.id) return interaction.reply({ content: t(interaction, `⚠️ Bạn đang ở **${existing.label}**.`, `⚠️ You're in **${existing.label}**.`), ephemeral: true });

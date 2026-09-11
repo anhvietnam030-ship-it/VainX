@@ -10,10 +10,12 @@ module.exports = {
   TOKEN: process.env.DISCORD_TOKEN,
   CLIENT_ID: process.env.CLIENT_ID,
   GUILD_ID: process.env.GUILD_ID,
-  ADMIN_ROLE_ID: process.env.ADMIN_ROLE_ID || null,
+  ADMIN_ROLE_ID: (process.env.ADMIN_ROLE_ID || '').trim() || null,
 
   // ----- CẤU HÌNH MẶC ĐỊNH -----
-  JOIN_ROLE_ID: process.env.JOIN_ROLE_ID || null,
+  // .trim() vì một số panel host (vd wispbyte) dễ dính khoảng trắng/newline
+  // thừa khi copy-paste ID vào ô env -> so sánh ID bị sai lệch âm thầm.
+  JOIN_ROLE_ID: (process.env.JOIN_ROLE_ID || '').trim() || null,
   LOG_CHANNEL_ID: process.env.LOG_CHANNEL_ID || null,
   ANNOUNCE_CHANNEL_ID: process.env.ANNOUNCE_CHANNEL_ID || null,
 
