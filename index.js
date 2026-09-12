@@ -630,7 +630,27 @@ async function renderHiddenRoom(room) {
   }
 }
 
-async function renderRoom(room, channel) {
+// ✅ Hàng đợi render theo từng phòng: chống race condition khi nhiều nơi
+// (blink interval 1.5s, toggleReady, test-fill-rank, tryRevealCode...) cùng
+// gọi renderRoom() cho CÙNG 1 phòng gần như đồng thời. Nếu không có hàng đợi
+// này, 2 lệnh gọi có thể cùng đọc room.panelMessageId cùng lúc rồi cùng thao
+// tác song song trên Discord API -> dễ sinh ra panel bị đăng lặp thay vì edit
+// tin cũ. Giờ mỗi phòng chỉ chạy 1 renderRoom() tại 1 thời điểm, các lệnh gọi
+// sau sẽ tự động đợi lệnh trước xong rồi mới chạy, thứ tự vẫn giữ nguyên.
+const roomRenderChains = new Map();
+
+function renderRoom(room, channel) {
+  const key = room.id;
+  const prev = roomRenderChains.get(key) || Promise.resolve();
+  const run = prev.then(
+    () => renderRoomInternal(room, channel),
+    () => renderRoomInternal(room, channel)
+  );
+  roomRenderChains.set(key, run.catch(() => {}));
+  return run;
+}
+
+async function renderRoomInternal(room, channel) {
   if (room.hidden) return renderHiddenRoom(room);
   const embed = roomEmbed(room);
   const rowsUi = roomActionRows(room);
