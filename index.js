@@ -88,7 +88,7 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
     if (roomId === 'admin-test') {
       room = {
         id: 'admin-test',
-        label: 'Phòng ADMIN TEST',
+        label: `${(session.mode || '5v5').toUpperCase()} Rank`,
         mode: session.mode || '5v5',
         isRank: true,
       };
@@ -990,12 +990,8 @@ client.on('messageCreate', async (message) => {
     // 🧪 ADMIN TEST: đếm KDA → đoán mode, update session
     if (adminTestMode && isFakeAdminSession) {
       const { mode: detectedMode, count: kdaCount } = detectModeFromKdaCount(ocrText);
-      if (!detectedMode) {
-        return editOrIgnore(
-          `❌ **Không đọc được mode từ ảnh.**\n` +
-          `Chỉ đếm được \`${kdaCount}\` KDA trong ảnh — cần ít nhất 4 KDA.\n` +
-          `Chụp lại rõ hơn (đủ 6 hoặc 10 người).`
-        );
+            if (!detectedMode) {
+        return editOrIgnore('❌ Ảnh gửi không đúng.');
       }
       rankSessions.setSessionMode(session.id, detectedMode);
       session.mode = detectedMode;
@@ -2196,17 +2192,29 @@ async function joinRoom(interaction, roomId) {
   const room = getRoom(roomId);
   if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
   if (isBanned(room, interaction.user.id)) return interaction.reply({ content: t(interaction, `❌ Bạn bị cấm khỏi **${room.label}**.`, `❌ You're banned from **${room.label}**.`), ephemeral: true });
-  if (config.JOIN_ROLE_ID) {
-    let member = interaction.member;
-    if (!member?.roles?.cache?.has(config.JOIN_ROLE_ID)) {
-      try {
-        member = await interaction.guild.members.fetch(interaction.user.id);
-      } catch (err) {
-        console.error('⚠️ Không fetch được member để check JOIN_ROLE_ID:', err.message);
+   if (config.JOIN_ROLE_ID) {
+    let hasRole = false;
+    let debugRoles = 'N/A';
+    try {
+      // ✅ Force fetch member từ API — bỏ qua cache (fix lỗi mobile interaction.member partial)
+      const member = await interaction.guild.members.fetch({
+        user: interaction.user.id,
+        force: true,
+        cache: false,  // Không ghi đè cache, tránh race condition
+      });
+      debugRoles = member.roles.cache.map(r => r.id).join(',') || 'N/A';
+      hasRole = member.roles.cache.has(config.JOIN_ROLE_ID);
+    } catch (err) {
+      console.error('⚠️ Không fetch được member:', err.message);
+      // Fallback: check interaction.member nếu có
+      if (interaction.member?.roles?.cache) {
+        debugRoles = interaction.member.roles.cache.map(r => r.id).join(',') || 'N/A';
+        hasRole = interaction.member.roles.cache.has(config.JOIN_ROLE_ID);
       }
     }
-    if (!member?.roles?.cache?.has(config.JOIN_ROLE_ID)) {
-      console.log(`[JOIN_ROLE_ID check] user=${interaction.user.id} cần=${config.JOIN_ROLE_ID} có=[${member?.roles?.cache?.map(r => r.id).join(',') || 'N/A'}]`);
+
+    if (!hasRole) {
+      console.log(`[JOIN_ROLE_ID check] user=${interaction.user.id} cần=${config.JOIN_ROLE_ID} có=[${debugRoles}]`);
       return interaction.reply({ content: t(interaction, `❌ Cần role <@&${config.JOIN_ROLE_ID}>.`, `❌ Need <@&${config.JOIN_ROLE_ID}> role.`), ephemeral: true });
     }
   }

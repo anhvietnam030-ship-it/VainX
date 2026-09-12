@@ -3,7 +3,6 @@ const config = require('../config');
 const rooms = new Map();
 const hiddenRooms = new Map();
 
-// Map<userId, { ign, '3v3': { elo, rank, wins, losses }, '5v5': { elo, rank, wins, losses } }>
 const eloData = new Map();
 
 const MODES = ['3v3', '5v5'];
@@ -505,47 +504,45 @@ function extractAllKDAResult(text, room, opts = {}) {
   const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const SEP = '[\\s\\-_]{0,3}';
 
+  // ===== HELPERS: lấy Top/Left từ overlay line =====
+  function getLineTop(line) {
+    if (!line) return null;
+    if (typeof line.MinTop === 'number') return line.MinTop;
+    if (line.Words && line.Words[0] && typeof line.Words[0].Top === 'number') return line.Words[0].Top;
+    return null;
+  }
+  function getLineLeft(line) {
+    if (!line) return null;
+    if (typeof line.MinLeft === 'number') return line.MinLeft;
+    if (line.Words && line.Words[0] && typeof line.Words[0].Left === 'number') return line.Words[0].Left;
+    return null;
+  }
+
+  // ===== PARSE OVERLAY =====
   const overlayKdaCandidates = [];
+  const overlayLinesWithPos = [];
+
   if (overlayLines.length > 0) {
     const kdaLineRe = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/;
     for (const line of overlayLines) {
       const lineText = line && line.LineText;
       if (!lineText) continue;
+
+      const top = getLineTop(line);
+      const left = getLineLeft(line);
+      overlayLinesWithPos.push({ text: lineText, top, left });
+
       const m = kdaLineRe.exec(lineText);
-      if (!m) continue;
-      const top = typeof line.MinTop === 'number'
-        ? line.MinTop
-        : (line.Words && line.Words[0] ? line.Words[0].Top : null);
-      if (top == null) continue;
-      overlayKdaCandidates.push({
-        kill: parseInt(m[1], 10),
-        death: parseInt(m[2], 10),
-        assist: parseInt(m[3], 10),
-        top,
-      });
-    }
-  }
-
-  let maxTopDist = 60;
-  if (overlayKdaCandidates.length >= 2) {
-    const sortedTops = overlayKdaCandidates.map(c => c.top).sort((a, b) => a - b);
-    const gaps = [];
-    for (let i = 1; i < sortedTops.length; i++) gaps.push(sortedTops[i] - sortedTops[i - 1]);
-    const avgGap = gaps.reduce((a, b) => a + b, 0) / gaps.length;
-    if (avgGap > 0) maxTopDist = Math.max(30, avgGap * 0.6);
-  }
-
-  function findOverlayTopForName(nameRegex) {
-    for (const line of overlayLines) {
-      const lineText = line && line.LineText;
-      if (!lineText) continue;
-      if (nameRegex.test(lineText)) {
-        return typeof line.MinTop === 'number'
-          ? line.MinTop
-          : (line.Words && line.Words[0] ? line.Words[0].Top : null);
+      if (m && top != null) {
+        overlayKdaCandidates.push({
+          kill: parseInt(m[1], 10),
+          death: parseInt(m[2], 10),
+          assist: parseInt(m[3], 10),
+          top,
+          left,
+        });
       }
     }
-    return null;
   }
 
   console.log('📝 OCR Text:', text);
@@ -555,14 +552,19 @@ function extractAllKDAResult(text, room, opts = {}) {
     return ign && ign !== p.username ? `${ign} (${p.username}) [${id}]` : `${p.username} [${id}]`;
   }).join(', '));
 
+  console.log(`🧭 Overlay KDA candidates (${overlayKdaCandidates.length}):`,
+    overlayKdaCandidates.map(k => `${k.kill}/${k.death}/${k.assist}@(${k.left},${k.top})`).join(' | '));
+
   if (skipCodeCheck) {
     console.warn('🧪 extractAllKDAResult: ADMIN TESTING MODE — bỏ qua xác thực mã phòng.');
   } else if (!roomCode) {
     console.warn('⚠️ extractAllKDAResult: không có room.code để đối chiếu.');
   }
 
+  // ===== NORMALIZE LINES =====
   let lines = text.split('\n').map(line => line.trim()).filter(line => line.length > 0);
 
+  // Ghép prefix "1234-1" + "name" trên 2 dòng liền nhau
   for (let i = 0; i < lines.length - 1; i++) {
     const onlyPrefix = /^\d+[\s\-_]+\d+[\s\-_]*$/.test(lines[i]);
     const nextStartsWithLetter = /^[A-Za-z]/.test(lines[i + 1]);
@@ -574,8 +576,7 @@ function extractAllKDAResult(text, room, opts = {}) {
 
   text = lines.join('\n');
 
-  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
-
+  // ===== FIND ANCHORS (tên trong text) =====
   const anchors = [];
   for (const [userId, playerData] of players) {
     const eloObj = getElo(userId, room.mode);
@@ -586,9 +587,6 @@ function extractAllKDAResult(text, room, opts = {}) {
     if (roomCode && !skipCodeCheck) {
       const codeEsc = escapeRe(roomCode);
       if (playerData.team) {
-        // ✅ Chấp nhận CẢ 2 format:
-        //   "code_name"       (VD: 6969_NaNi)
-        //   "code-team_name"  (VD: 6969-1_NaNi)
         nameRegex = new RegExp(`${codeEsc}${SEP}(?:${escapeRe(playerData.team)}${SEP})?${nameEsc}`, 'i');
       } else {
         nameRegex = new RegExp(`${codeEsc}${SEP}${nameEsc}`, 'i');
@@ -607,20 +605,99 @@ function extractAllKDAResult(text, room, opts = {}) {
 
   const foundAnchors = anchors.filter(a => a.linePos !== -1).sort((a, b) => a.linePos - b.linePos);
 
-  const slotPrefixRegex = (roomCode && !skipCodeCheck)
-    ? new RegExp(`^${escapeRe(roomCode)}${SEP}\\d+_`)
-    : /^\d+[\-_][A-Za-z0-9]/;
-  const pureKdaLineRegex = /^\d+\s*\/\s*\d+\s*\/\s*\d+$/;
+  // ===== MATCH THEO OVERLAY TOP+LEFT (greedy, không phụ thuộc trái/phải) =====
+  if (overlayKdaCandidates.length > 0 && overlayLinesWithPos.length > 0) {
+    // Tìm overlay name candidate: dòng ngắn nhất chứa tên
+    const overlayNameCandidates = [];
+    for (const anchor of anchors) {
+      let bestLine = null;
+      let bestLen = Infinity;
+      for (const line of overlayLinesWithPos) {
+        if (anchor.nameRegex.test(line.text)) {
+          if (line.text.length < bestLen) {
+            bestLen = line.text.length;
+            bestLine = line;
+          }
+        }
+      }
+      if (bestLine && bestLine.top != null) {
+        overlayNameCandidates.push({
+          userId: anchor.userId,
+          searchName: anchor.searchName,
+          top: bestLine.top,
+          left: bestLine.left,
+          text: bestLine.text,
+        });
+      }
+    }
+
+    console.log(`🧭 Overlay name candidates (${overlayNameCandidates.length}):`,
+      overlayNameCandidates.map(n => `${n.searchName}@(${n.left},${n.top})`).join(' | '));
+
+    // Tạo tất cả cặp (name, KDA) với score
+    // Top quan trọng hơn (hệ số 10), Left phụ (hệ số 1)
+    // → tự động match đúng dù name bên trái hay phải KDA
+    const pairs = [];
+    for (const nameC of overlayNameCandidates) {
+      for (let kdaIdx = 0; kdaIdx < overlayKdaCandidates.length; kdaIdx++) {
+        const kdaC = overlayKdaCandidates[kdaIdx];
+        const topDiff = Math.abs(kdaC.top - nameC.top);
+        if (topDiff > 40) continue;
+
+        let leftDiff = 999;
+        if (nameC.left != null && kdaC.left != null) {
+          leftDiff = Math.abs(kdaC.left - nameC.left);
+        }
+
+        const score = topDiff * 10 + leftDiff;
+        pairs.push({
+          userId: nameC.userId,
+          searchName: nameC.searchName,
+          kdaIdx,
+          kda: kdaC,
+          topDiff,
+          leftDiff,
+          score,
+        });
+      }
+    }
+
+    // Greedy: match cặp gần nhất trước, tránh conflict
+    pairs.sort((a, b) => a.score - b.score);
+    const usedKda = new Set();
+    const matchedNames = new Set();
+
+    for (const pair of pairs) {
+      if (matchedNames.has(pair.userId)) continue;
+      if (usedKda.has(pair.kdaIdx)) continue;
+
+      matchedNames.add(pair.userId);
+      usedKda.add(pair.kdaIdx);
+
+      resultMap.set(pair.userId, {
+        kill: pair.kda.kill,
+        death: pair.kda.death,
+        assist: pair.kda.assist,
+      });
+      console.log(`✅ Map KDA (overlay Top+Left) cho ${pair.searchName}: ${pair.kda.kill}/${pair.kda.death}/${pair.kda.assist} (topΔ=${pair.topDiff}, leftΔ=${pair.leftDiff})`);
+    }
+  }
+
+  // ===== FALLBACK: WINDOW TEXT cho ai chưa match =====
+  const kdaRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/;
 
   for (const anchor of anchors) {
-    const { userId, searchName, foundLine, linePos, nameRegex } = anchor;
-    console.log(`🔎 Tìm IGN: "${searchName}"`);
+    if (resultMap.has(anchor.userId)) continue;
+    const { userId, searchName, foundLine, linePos } = anchor;
+
+    console.log(`🔎 Fallback window cho IGN: "${searchName}"`);
 
     if (!foundLine || linePos === -1) {
       console.warn(`⚠️ Không tìm thấy dòng nào chứa tên "${searchName}"`);
       continue;
     }
 
+    // Same line
     kdaRegex.lastIndex = 0;
     const sameLineMatch = kdaRegex.exec(foundLine);
     if (sameLineMatch) {
@@ -628,62 +705,16 @@ function extractAllKDAResult(text, room, opts = {}) {
       const death = parseInt(sameLineMatch[2], 10);
       const assist = parseInt(sameLineMatch[3], 10);
       resultMap.set(userId, { kill, death, assist });
-      console.log(`✅ Map KDA cho ${searchName}: ${kill}/${death}/${assist}`);
+      console.log(`✅ Map KDA (same line) cho ${searchName}: ${kill}/${death}/${assist}`);
       continue;
     }
 
-    const foundLineIdx = lines.indexOf(foundLine);
-    let slotLineIdx = -1;
-    if (foundLineIdx !== -1) {
-      if (slotPrefixRegex.test(lines[foundLineIdx])) {
-        slotLineIdx = foundLineIdx;
-      } else if (foundLineIdx > 0 && slotPrefixRegex.test(lines[foundLineIdx - 1])) {
-        slotLineIdx = foundLineIdx - 1;
-      }
-    }
-
-    if (slotLineIdx !== -1) {
-      const slotLines = [];
-      for (let i = 0; i < lines.length; i++) {
-        if (slotPrefixRegex.test(lines[i])) slotLines.push(i);
-      }
-      const lastSlotIdx = slotLines[slotLines.length - 1];
-      let blockStart = -1;
-      for (let i = lastSlotIdx + 1; i < lines.length; i++) {
-        if (pureKdaLineRegex.test(lines[i])) { blockStart = i; break; }
-        if (slotPrefixRegex.test(lines[i])) break;
-      }
-      let contiguousBlock = [];
-      if (blockStart !== -1) {
-        for (let i = blockStart; i < lines.length && pureKdaLineRegex.test(lines[i]); i++) {
-          contiguousBlock.push(i);
-        }
-      }
-      const slotRank = slotLines.indexOf(slotLineIdx);
-      if (slotRank !== -1 && contiguousBlock.length >= slotLines.length && slotRank < contiguousBlock.length) {
-        kdaRegex.lastIndex = 0;
-        const kdaLineText = lines[contiguousBlock[slotRank]];
-        const slotMatch = kdaRegex.exec(kdaLineText);
-        if (slotMatch) {
-          const kill = parseInt(slotMatch[1], 10);
-          const death = parseInt(slotMatch[2], 10);
-          const assist = parseInt(slotMatch[3], 10);
-          resultMap.set(userId, { kill, death, assist });
-          console.log(`✅ Map KDA (cột, hạng ${slotRank}) cho ${searchName}: ${kill}/${death}/${assist}`);
-          continue;
-        }
-      }
-    }
-
-    // ✅ Ưu tiên WINDOW TEXT trước overlay (chính xác hơn cho 3v3 3x2 và 5v5 nhiều cột).
-    // OCR ParsedText giữ đúng thứ tự đọc: name1 / KDA1 / name2 / KDA2...
+    // Window text
     const ownIndex = foundAnchors.findIndex(a => a.userId === userId);
     const windowStart = linePos;
     const windowEnd = (ownIndex !== -1 && ownIndex + 1 < foundAnchors.length)
       ? foundAnchors[ownIndex + 1].linePos
       : text.length;
-
-    console.log(`ℹ️ Window cho "${searchName}" [${windowStart}, ${windowEnd})`);
 
     const windowKda = [];
     const windowRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
@@ -709,27 +740,10 @@ function extractAllKDAResult(text, room, opts = {}) {
       continue;
     }
 
-    // Fallback: dùng overlay top nếu window không match
-    if (overlayKdaCandidates.length > 0) {
-      const nameOverlayTop = findOverlayTopForName(nameRegex);
-      if (nameOverlayTop != null) {
-        const best = overlayKdaCandidates.reduce((closest, kda) => {
-          const dist = Math.abs(kda.top - nameOverlayTop);
-          const closestDist = closest ? Math.abs(closest.top - nameOverlayTop) : Infinity;
-          return dist < closestDist ? kda : closest;
-        }, null);
-        if (best && Math.abs(best.top - nameOverlayTop) <= maxTopDist) {
-          resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
-          console.log(`✅ Map KDA (overlay Top) cho ${searchName}: ${best.kill}/${best.death}/${best.assist}`);
-          continue;
-        }
-        console.warn(`⚠️ Overlay Top cho "${searchName}" không tìm được KDA đủ gần (top=${nameOverlayTop}).`);
-      }
-    }
-
     console.warn(`⚠️ Không tìm thấy KDA nào cho "${searchName}".`);
   }
 
+  // ===== SUMMARY =====
   const playersLookup = new Map(players);
   const kdaEntries = Array.from(resultMap.entries()).map(([id, k]) => {
     const p = playersLookup.get(id);
