@@ -968,7 +968,8 @@ async function tryRevealCode(room, channel) {
 }
 
 async function repostPanelsForChannel(channelId, roomList) {
-  if (!channelId || roomList.length === 0) return;
+  // ✅ FIX: KHÔNG return sớm khi roomList rỗng → vẫn phải dọn channel.
+  if (!channelId) return;
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) { console.error(`❌ Không tìm thấy kênh panel: ${channelId}`); return; }
 
@@ -998,6 +999,9 @@ async function repostPanelsForChannel(channelId, roomList) {
     }
     if (deletedTotal > 0) console.log(`🧹 Dọn ${deletedTotal} tin bot cũ ở kênh ${channelId}`);
   } catch (err) { console.error(`⚠️ Không dọn được panel cũ:`, err.message); }
+
+  // ✅ Nếu không có room nào → chỉ dọn, không render gì thêm.
+  if (roomList.length === 0) return;
 
   await new Promise((r) => setTimeout(r, 1000));
 
@@ -2617,13 +2621,20 @@ async function bootstrap() {
   await acquireSingleInstanceLock();
   initRooms();
 
-  // ✅ FIX DUPLICATE: KHÔNG tự tạo thêm rank room ở bootstrap.
-  // initRooms() đã tạo sẵn phòng theo config; nếu admin muốn thêm thì dùng /setup-rank.
-  // Việc gọi addRankRoomsToMode ở đây gây ra 2 room cùng mode → 2 panel cùng channel.
-  // const rankDefault = config.DEFAULT_RANK_ROOMS_PER_MODE || 0;
-  // if (rankDefault > 0) {
-  //   for (const mode of Object.keys(config.CAPACITY)) addRankRoomsToMode(mode, rankDefault);
-  // }
+  // ✅ FIX DUPLICATE: chỉ tạo rank room khi CHƯA có room rank nào.
+  // Nếu đã có sẵn → KHÔNG tạo thêm (tránh nhân đôi mỗi lần restart).
+  const rankDefault = config.DEFAULT_RANK_ROOMS_PER_MODE || 0;
+  if (rankDefault > 0) {
+    for (const mode of Object.keys(config.CAPACITY)) {
+      const existing = getRankRoomsByMode(mode);
+      if (existing.length === 0) {
+        addRankRoomsToMode(mode, rankDefault);
+        console.log(`ℹ️ Tạo ${rankDefault} rank room ${mode} (chưa có sẵn).`);
+      } else {
+        console.log(`ℹ️ Rank room ${mode} đã có ${existing.length} → không tạo thêm.`);
+      }
+    }
+  }
 
   console.log(`ℹ️ Đã khởi tạo ${rooms.size} phòng.`);
   console.log(`ℹ️ RANK_RESULT_CHANNEL_ID (env) = ${process.env.RANK_RESULT_CHANNEL_ID || '(chưa set!)'}`);
