@@ -587,9 +587,8 @@ function extractAllKDAResult(text, room, opts = {}) {
       const codeEsc = escapeRe(roomCode);
       if (playerData.team) {
         // ✅ Chấp nhận CẢ 2 format:
-        //   "code_name"       (VD: 6969_NaNi)        — người chơi không ghi số team
-        //   "code-team_name"  (VD: 6969-1_NaNi)      — có ghi số team
-        // Nhóm "(?:team SEP)?" là optional → có hay không đều match.
+        //   "code_name"       (VD: 6969_NaNi)
+        //   "code-team_name"  (VD: 6969-1_NaNi)
         nameRegex = new RegExp(`${codeEsc}${SEP}(?:${escapeRe(playerData.team)}${SEP})?${nameEsc}`, 'i');
       } else {
         nameRegex = new RegExp(`${codeEsc}${SEP}${nameEsc}`, 'i');
@@ -676,30 +675,15 @@ function extractAllKDAResult(text, room, opts = {}) {
       }
     }
 
-    if (overlayKdaCandidates.length > 0) {
-      const nameOverlayTop = findOverlayTopForName(nameRegex);
-      if (nameOverlayTop != null) {
-        const best = overlayKdaCandidates.reduce((closest, kda) => {
-          const dist = Math.abs(kda.top - nameOverlayTop);
-          const closestDist = closest ? Math.abs(closest.top - nameOverlayTop) : Infinity;
-          return dist < closestDist ? kda : closest;
-        }, null);
-        if (best && Math.abs(best.top - nameOverlayTop) <= maxTopDist) {
-          resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
-          console.log(`✅ Map KDA (overlay Top) cho ${searchName}: ${best.kill}/${best.death}/${best.assist}`);
-          continue;
-        }
-        console.warn(`⚠️ Overlay Top cho "${searchName}" không tìm được KDA đủ gần (top=${nameOverlayTop}).`);
-      }
-    }
-
+    // ✅ Ưu tiên WINDOW TEXT trước overlay (chính xác hơn cho 3v3 3x2 và 5v5 nhiều cột).
+    // OCR ParsedText giữ đúng thứ tự đọc: name1 / KDA1 / name2 / KDA2...
     const ownIndex = foundAnchors.findIndex(a => a.userId === userId);
     const windowStart = linePos;
     const windowEnd = (ownIndex !== -1 && ownIndex + 1 < foundAnchors.length)
       ? foundAnchors[ownIndex + 1].linePos
       : text.length;
 
-    console.log(`ℹ️ Fallback window cho "${searchName}" [${windowStart}, ${windowEnd})`);
+    console.log(`ℹ️ Window cho "${searchName}" [${windowStart}, ${windowEnd})`);
 
     const windowKda = [];
     const windowRegex = /(\d+)\s*\/\s*(\d+)\s*\/\s*(\d+)/g;
@@ -723,6 +707,24 @@ function extractAllKDAResult(text, room, opts = {}) {
       resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
       console.log(`✅ Map KDA (window) cho ${searchName}: ${best.kill}/${best.death}/${best.assist}`);
       continue;
+    }
+
+    // Fallback: dùng overlay top nếu window không match
+    if (overlayKdaCandidates.length > 0) {
+      const nameOverlayTop = findOverlayTopForName(nameRegex);
+      if (nameOverlayTop != null) {
+        const best = overlayKdaCandidates.reduce((closest, kda) => {
+          const dist = Math.abs(kda.top - nameOverlayTop);
+          const closestDist = closest ? Math.abs(closest.top - nameOverlayTop) : Infinity;
+          return dist < closestDist ? kda : closest;
+        }, null);
+        if (best && Math.abs(best.top - nameOverlayTop) <= maxTopDist) {
+          resultMap.set(userId, { kill: best.kill, death: best.death, assist: best.assist });
+          console.log(`✅ Map KDA (overlay Top) cho ${searchName}: ${best.kill}/${best.death}/${best.assist}`);
+          continue;
+        }
+        console.warn(`⚠️ Overlay Top cho "${searchName}" không tìm được KDA đủ gần (top=${nameOverlayTop}).`);
+      }
     }
 
     console.warn(`⚠️ Không tìm thấy KDA nào cho "${searchName}".`);
