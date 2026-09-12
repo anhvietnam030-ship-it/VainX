@@ -3,6 +3,7 @@ const dns = require('node:dns');
 dns.setDefaultResultOrder('ipv4first');
 
 const axios = require('axios');
+const sharp = require('sharp');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
@@ -87,7 +88,7 @@ async function finalizeRankSessionIfReady(session, room, roomId, kdaMap) {
     if (roomId === 'admin-test') {
       room = {
         id: 'admin-test',
-        label: 'Phòng ADMIN TEST',
+        label: `${(session.mode || '5v5').toUpperCase()} Rank`,
         mode: session.mode || '5v5',
         isRank: true,
       };
@@ -340,8 +341,45 @@ async function downloadImageBuffer(imageUrl) {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     timeout: 15000,
   });
-  const imageBuffer = Buffer.from(imageResponse.data, 'binary');
-  console.log(`✅ Đã tải ảnh (${imageBuffer.length} bytes)`);
+  let imageBuffer = Buffer.from(imageResponse.data, 'binary');
+  const origKB = (imageBuffer.length / 1024).toFixed(1);
+  console.log(`✅ Đã tải ảnh (${origKB} KB)`);
+
+  const MAX_SIZE = 900 * 1024;
+  if (imageBuffer.length > MAX_SIZE) {
+    console.log(`⚠️ Ảnh ${origKB}KB > 900KB → tự resize...`);
+    try {
+      let width = 1600;
+      let quality = 80;
+      let resized = await sharp(imageBuffer)
+        .resize({ width, withoutEnlargement: true })
+        .jpeg({ quality })
+        .toBuffer();
+
+      while (resized.length > MAX_SIZE && quality > 40) {
+        quality -= 10;
+        resized = await sharp(imageBuffer)
+          .resize({ width, withoutEnlargement: true })
+          .jpeg({ quality })
+          .toBuffer();
+      }
+
+      while (resized.length > MAX_SIZE && width > 800) {
+        width -= 200;
+        resized = await sharp(imageBuffer)
+          .resize({ width, withoutEnlargement: true })
+          .jpeg({ quality })
+          .toBuffer();
+      }
+
+      const newKB = (resized.length / 1024).toFixed(1);
+      console.log(`✅ Sau resize: ${newKB}KB (width=${width}, quality=${quality})`);
+      imageBuffer = resized;
+    } catch (err) {
+      console.error('❌ Lỗi resize, dùng ảnh gốc:', err.message);
+    }
+  }
+
   return imageBuffer;
 }
 
@@ -425,6 +463,15 @@ function parseMatchResult(ocrText) {
   if (raw.includes('victory') || raw === 'win' || raw.includes('chiến') || raw.includes('chien') || raw.includes('thắng') || raw.includes('thang')) return 'win';
   if (raw.includes('defeat') || raw === 'lose' || raw.includes('thất') || raw.includes('that') || raw.includes('bại') || raw.includes('bai') || raw === 'thua') return 'loss';
   return null;
+}
+
+function detectModeFromKdaCount(ocrText) {
+  const matches = ocrText.match(/\d+\s*\/\s*\d+\s*\/\s*\d+/g) || [];
+  const count = matches.length;
+  let mode = null;
+  if (count >= 8) mode = '5v5';
+  else if (count >= 4) mode = '3v3';
+  return { mode, count };
 }
 
 // ===== ANNOUNCEMENT =====
@@ -821,7 +868,7 @@ console.log(`ℹ️ [messageCreate listener] RANK_RESULT_CHANNEL_ID_ENV = "${RAN
 
 client.on('messageCreate', async (message) => {
   try {
-    console.log(`🔔 [messageCreate] author=${message.author.tag} channelId=${message.channelId} attachments=${message.attachments.size} isBot=${message.author.bot} isGuild=${!!message.guild} content="${(message.content||'').slice(0,50)}"`);
+    console.log(`🔔 [messageCreate] author=${message.author.tag} channelId=${message.channelId} attachments=${message.attachments.size} isBot=${message.author.bot} isGuild=${!!message.guild}`);
 
     if (message.author.bot) return;
     if (!message.guild) return;
@@ -846,40 +893,30 @@ client.on('messageCreate', async (message) => {
     let session = rankSessions.getActiveSessionForUser(message.author.id);
     let adminTestMode = false;
 
+    if (submitterIsAdmin && session && session.roomId === 'admin-test') {
+      console.log(`🧪 Admin: bỏ qua session admin-test cũ ${session.id}`);
+      session = null;
+    }
+
     if (!session && submitterIsAdmin) {
       session = rankSessions.getLatestActiveSession();
-      if (session) {
+      if (session && session.roomId === 'admin-test') {
+        session = null;
+      } else if (session) {
         adminTestMode = true;
         console.log(`🧪 Admin dùng session mới nhất: ${session.id} (${session.roomId})`);
       }
     }
 
-    // 🧪 ADMIN TEST MODE: tạo session mới với MODE đọc từ caption
     if (!session && submitterIsAdmin) {
       adminTestMode = true;
-
-      const caption = (message.content || '').toLowerCase().trim();
-      let testMode = null;
-      if (/\b3v3\b|\b33\b/.test(caption)) testMode = '3v3';
-      else if (/\b5v5\b|\b55\b/.test(caption)) testMode = '5v5';
-
-      if (!testMode) {
-        const m = await message.reply({
-          content: `⚠️ **Không xác định được chế độ.**\n` +
-                   `Gõ kèm ảnh: \`3v3\` hoặc \`5v5\` trong **cùng tin nhắn** với ảnh.\n` +
-                   `Ví dụ: kéo ảnh vào + gõ caption là \`3v3\` rồi Enter.`
-        }).catch(() => null);
-        if (m) setTimeout(() => m.delete().catch(() => {}), 30000);
-        return;
-      }
-
       const sessionId = rankSessions.createAdminTestSession(
         message.author.id,
         message.author.username,
-        testMode
+        '5v5'
       );
       session = rankSessions.getSession(sessionId);
-      console.log(`🧪 Admin test mode: tạo session ${testMode} → sẽ tính ELO vào ${testMode}.`);
+      console.log(`🧪 Admin test mode: tạo session ${sessionId} (mode tạm 5v5, sẽ đọc KDA để chốt).`);
     }
 
     if (!session) {
@@ -946,6 +983,16 @@ client.on('messageCreate', async (message) => {
     }
     if (!ocrText) return editOrIgnore('❌ Không đọc được ảnh.');
 
+    if (adminTestMode && isFakeAdminSession) {
+      const { mode: detectedMode, count: kdaCount } = detectModeFromKdaCount(ocrText);
+      if (!detectedMode) {
+        return editOrIgnore('❌ Ảnh gửi không đúng.');
+      }
+      rankSessions.setSessionMode(session.id, detectedMode);
+      session.mode = detectedMode;
+      console.log(`🧪 Admin test: đếm ${kdaCount} KDA → mode=${detectedMode}`);
+    }
+
     const fakeRoom = { players: new Map(session.players), code: session.code };
     const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin, overlayLines });
 
@@ -955,7 +1002,6 @@ client.on('messageCreate', async (message) => {
     if (!result) return editOrIgnore('❌ Không tìm thấy kết quả trận.');
     if (result === 'surrender') return editOrIgnore('⚠️ Trận này kết thúc bằng **ĐẦU HÀNG** — bot **không tính ELO**.');
 
-    // ✅ FIX: Bỏ fallback KDA bừa — không match tên → từ chối
     const senderKDA = kdaMap.get(message.author.id);
     if (!senderKDA) {
       if (submitterIsAdmin) {
@@ -977,7 +1023,7 @@ client.on('messageCreate', async (message) => {
     if (!saved) return editOrIgnore('❌ Không lưu được kết quả.');
 
     if (adminTestMode) {
-      console.log(`🧪 [Admin test] mode=${session.mode} result=${result} KDA=${senderKDA.kill}/${senderKDA.death}/${senderKDA.assist} → gọi finalizeRankSessionIfReady.`);
+      console.log(`🧪 [Admin test] mode=${session.mode} result=${result} KDA=${senderKDA.kill}/${senderKDA.death}/${senderKDA.assist} → gọi finalize.`);
     }
 
     const eloUpdates = await finalizeRankSessionIfReady(session, room, session.roomId, kdaMap);
@@ -995,7 +1041,7 @@ client.on('messageCreate', async (message) => {
 
       await editOrIgnore(
         `🧪 **[ADMIN TEST]** Đã xử lý ảnh thành công.\n` +
-        `• Chế độ: **${session.mode.toUpperCase()}**\n` +
+        `• Chế độ: **${session.mode.toUpperCase()}** (tự nhận diện)\n` +
         `• Kết quả: **${result === 'win' ? 'Thắng' : 'Thua'}**\n` +
         `• KDA: ${senderKDA.kill}/${senderKDA.death}/${senderKDA.assist}\n` +
         eloLine
@@ -2140,20 +2186,42 @@ async function joinRoom(interaction, roomId) {
   const room = getRoom(roomId);
   if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
   if (isBanned(room, interaction.user.id)) return interaction.reply({ content: t(interaction, `❌ Bạn bị cấm khỏi **${room.label}**.`, `❌ You're banned from **${room.label}**.`), ephemeral: true });
+
   if (config.JOIN_ROLE_ID) {
-    let member = interaction.member;
-    if (!member?.roles?.cache?.has(config.JOIN_ROLE_ID)) {
-      try {
-        member = await interaction.guild.members.fetch(interaction.user.id);
-      } catch (err) {
-        console.error('⚠️ Không fetch được member để check JOIN_ROLE_ID:', err.message);
+    let hasRole = false;
+    let hasAdminRole = false;
+    let debugRoles = 'N/A';
+    try {
+      const member = await interaction.guild.members.fetch({
+        user: interaction.user.id,
+        force: true,
+        cache: false,
+      });
+      debugRoles = member.roles.cache.map(r => r.id).join(',') || 'N/A';
+      hasRole = member.roles.cache.has(config.JOIN_ROLE_ID);
+      hasAdminRole =
+        member.permissions?.has(PermissionFlagsBits.Administrator) ||
+        (config.ADMIN_ROLE_ID && member.roles.cache.has(config.ADMIN_ROLE_ID));
+    } catch (err) {
+      console.error('⚠️ Không fetch được member:', err.message);
+      if (interaction.member?.roles?.cache) {
+        debugRoles = interaction.member.roles.cache.map(r => r.id).join(',') || 'N/A';
+        hasRole = interaction.member.roles.cache.has(config.JOIN_ROLE_ID);
+        hasAdminRole =
+          interaction.member.permissions?.has(PermissionFlagsBits.Administrator) ||
+          (config.ADMIN_ROLE_ID && interaction.member.roles.cache.has(config.ADMIN_ROLE_ID));
       }
     }
-    if (!member?.roles?.cache?.has(config.JOIN_ROLE_ID)) {
-      console.log(`[JOIN_ROLE_ID check] user=${interaction.user.id} cần=${config.JOIN_ROLE_ID} có=[${member?.roles?.cache?.map(r => r.id).join(',') || 'N/A'}]`);
-      return interaction.reply({ content: t(interaction, `❌ Cần role <@&${config.JOIN_ROLE_ID}>.`, `❌ Need <@&${config.JOIN_ROLE_ID}> role.`), ephemeral: true });
+
+    if (!hasRole && !hasAdminRole) {
+      console.log(`[JOIN_ROLE_ID check] user=${interaction.user.id} cần=${config.JOIN_ROLE_ID} có=[${debugRoles}]`);
+      return interaction.reply({ content: t(interaction, `❌ Cần role <@&${config.JOIN_ROLE_ID}>.`, `❌ Cần role <@&${config.JOIN_ROLE_ID}> hoặc Administrator.`), ephemeral: true });
+    }
+    if (hasAdminRole && !hasRole) {
+      console.log(`[JOIN_ROLE_ID check] user=${interaction.user.id} vào bằng quyền ADMIN`);
     }
   }
+
   const existing = findRoomOfUser(interaction.user.id);
   if (existing && existing.id !== room.id) return interaction.reply({ content: t(interaction, `⚠️ Bạn đang ở **${existing.label}**.`, `⚠️ You're in **${existing.label}**.`), ephemeral: true });
   if (existing && existing.id === room.id) return interaction.reply({ content: t(interaction, 'ℹ️ Bạn đã ở trong phòng này.', 'ℹ️ Already in room.'), ephemeral: true });
@@ -2264,7 +2332,6 @@ async function giveCode(interaction, roomId) {
   return interaction.followUp({ content: personal, ephemeral: true });
 }
 
-// ===== KEEP-ALIVE + BOOTSTRAP =====
 startKeepAliveServer();
 startSelfPing();
 

@@ -345,7 +345,6 @@ async function downloadImageBuffer(imageUrl) {
   const origKB = (imageBuffer.length / 1024).toFixed(1);
   console.log(`✅ Đã tải ảnh (${origKB} KB)`);
 
-  // ✅ Auto-resize nếu ảnh > 900KB (OCR.space free giới hạn 1MB)
   const MAX_SIZE = 900 * 1024;
   if (imageBuffer.length > MAX_SIZE) {
     console.log(`⚠️ Ảnh ${origKB}KB > 900KB → tự resize...`);
@@ -466,7 +465,6 @@ function parseMatchResult(ocrText) {
   return null;
 }
 
-// ✅ Đếm số KDA trong ảnh → đoán mode 3v3 (6 KDA) hay 5v5 (10 KDA).
 function detectModeFromKdaCount(ocrText) {
   const matches = ocrText.match(/\d+\s*\/\s*\d+\s*\/\s*\d+/g) || [];
   const count = matches.length;
@@ -895,7 +893,6 @@ client.on('messageCreate', async (message) => {
     let session = rankSessions.getActiveSessionForUser(message.author.id);
     let adminTestMode = false;
 
-    // 🧪 Admin: BỎ QUA session admin-test cũ
     if (submitterIsAdmin && session && session.roomId === 'admin-test') {
       console.log(`🧪 Admin: bỏ qua session admin-test cũ ${session.id}`);
       session = null;
@@ -911,7 +908,6 @@ client.on('messageCreate', async (message) => {
       }
     }
 
-    // 🧪 ADMIN TEST MODE: tạo session tạm, mode sẽ update sau khi OCR đếm KDA
     if (!session && submitterIsAdmin) {
       adminTestMode = true;
       const sessionId = rankSessions.createAdminTestSession(
@@ -987,10 +983,9 @@ client.on('messageCreate', async (message) => {
     }
     if (!ocrText) return editOrIgnore('❌ Không đọc được ảnh.');
 
-    // 🧪 ADMIN TEST: đếm KDA → đoán mode, update session
     if (adminTestMode && isFakeAdminSession) {
       const { mode: detectedMode, count: kdaCount } = detectModeFromKdaCount(ocrText);
-            if (!detectedMode) {
+      if (!detectedMode) {
         return editOrIgnore('❌ Ảnh gửi không đúng.');
       }
       rankSessions.setSessionMode(session.id, detectedMode);
@@ -1007,7 +1002,6 @@ client.on('messageCreate', async (message) => {
     if (!result) return editOrIgnore('❌ Không tìm thấy kết quả trận.');
     if (result === 'surrender') return editOrIgnore('⚠️ Trận này kết thúc bằng **ĐẦU HÀNG** — bot **không tính ELO**.');
 
-    // ✅ Không match tên → từ chối, KHÔNG bịa KDA
     const senderKDA = kdaMap.get(message.author.id);
     if (!senderKDA) {
       if (submitterIsAdmin) {
@@ -2192,32 +2186,42 @@ async function joinRoom(interaction, roomId) {
   const room = getRoom(roomId);
   if (!room) return interaction.reply({ content: t(interaction, '❌ Phòng không tồn tại.', '❌ Room not found.'), ephemeral: true });
   if (isBanned(room, interaction.user.id)) return interaction.reply({ content: t(interaction, `❌ Bạn bị cấm khỏi **${room.label}**.`, `❌ You're banned from **${room.label}**.`), ephemeral: true });
-   if (config.JOIN_ROLE_ID) {
+
+  if (config.JOIN_ROLE_ID) {
     let hasRole = false;
+    let hasAdminRole = false;
     let debugRoles = 'N/A';
     try {
-      // ✅ Force fetch member từ API — bỏ qua cache (fix lỗi mobile interaction.member partial)
       const member = await interaction.guild.members.fetch({
         user: interaction.user.id,
         force: true,
-        cache: false,  // Không ghi đè cache, tránh race condition
+        cache: false,
       });
       debugRoles = member.roles.cache.map(r => r.id).join(',') || 'N/A';
       hasRole = member.roles.cache.has(config.JOIN_ROLE_ID);
+      hasAdminRole =
+        member.permissions?.has(PermissionFlagsBits.Administrator) ||
+        (config.ADMIN_ROLE_ID && member.roles.cache.has(config.ADMIN_ROLE_ID));
     } catch (err) {
       console.error('⚠️ Không fetch được member:', err.message);
-      // Fallback: check interaction.member nếu có
       if (interaction.member?.roles?.cache) {
         debugRoles = interaction.member.roles.cache.map(r => r.id).join(',') || 'N/A';
         hasRole = interaction.member.roles.cache.has(config.JOIN_ROLE_ID);
+        hasAdminRole =
+          interaction.member.permissions?.has(PermissionFlagsBits.Administrator) ||
+          (config.ADMIN_ROLE_ID && interaction.member.roles.cache.has(config.ADMIN_ROLE_ID));
       }
     }
 
-    if (!hasRole) {
+    if (!hasRole && !hasAdminRole) {
       console.log(`[JOIN_ROLE_ID check] user=${interaction.user.id} cần=${config.JOIN_ROLE_ID} có=[${debugRoles}]`);
-      return interaction.reply({ content: t(interaction, `❌ Cần role <@&${config.JOIN_ROLE_ID}>.`, `❌ Need <@&${config.JOIN_ROLE_ID}> role.`), ephemeral: true });
+      return interaction.reply({ content: t(interaction, `❌ Cần role <@&${config.JOIN_ROLE_ID}>.`, `❌ Cần role <@&${config.JOIN_ROLE_ID}> hoặc Administrator.`), ephemeral: true });
+    }
+    if (hasAdminRole && !hasRole) {
+      console.log(`[JOIN_ROLE_ID check] user=${interaction.user.id} vào bằng quyền ADMIN`);
     }
   }
+
   const existing = findRoomOfUser(interaction.user.id);
   if (existing && existing.id !== room.id) return interaction.reply({ content: t(interaction, `⚠️ Bạn đang ở **${existing.label}**.`, `⚠️ You're in **${existing.label}**.`), ephemeral: true });
   if (existing && existing.id === room.id) return interaction.reply({ content: t(interaction, 'ℹ️ Bạn đã ở trong phòng này.', 'ℹ️ Already in room.'), ephemeral: true });

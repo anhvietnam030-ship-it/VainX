@@ -20,7 +20,6 @@ function createSession(roomId, players, mode, code) {
   return sessionId;
 }
 
-// ✅ FIX: Trả về object có kèm `id` để finalize/addResult dùng được.
 function getSession(sessionId) {
   const session = sessions.get(sessionId);
   if (!session) return null;
@@ -63,7 +62,25 @@ function getLatestActiveSession() {
   return latest;
 }
 
+// ✅ Set mode cho session admin-test (dùng sau khi OCR đếm KDA để đoán mode).
+function setSessionMode(sessionId, mode) {
+  const session = sessions.get(sessionId);
+  if (!session) return false;
+  session.mode = mode;
+  return true;
+}
+
+// ✅ Tạo session admin test — DỌN session admin-test cũ của user trước.
 function createAdminTestSession(userId, username, mode = '5v5') {
+  let cleaned = 0;
+  for (const [id, s] of sessions) {
+    if (s.roomId === 'admin-test' && s.players.some(([pid]) => pid === userId)) {
+      sessions.delete(id);
+      cleaned++;
+    }
+  }
+  if (cleaned > 0) console.log(`🧪 Dọn ${cleaned} session admin-test cũ của ${username}`);
+
   const sessionId = `admin-test-${userId}-${Date.now()}`;
   const players = [
     [userId, { username, team: 1, ready: true, isBot: false }],
@@ -131,6 +148,7 @@ module.exports = {
   getActiveSessionByRoomId,
   getActiveSessionForUser,
   getLatestActiveSession,
+  setSessionMode,
   createAdminTestSession,
   addResult,
   finalizeSession,
