@@ -3,6 +3,7 @@ const dns = require('node:dns');
 dns.setDefaultResultOrder('ipv4first');
 
 const axios = require('axios');
+const sharp = require('sharp');
 const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
@@ -340,8 +341,46 @@ async function downloadImageBuffer(imageUrl) {
     headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
     timeout: 15000,
   });
-  const imageBuffer = Buffer.from(imageResponse.data, 'binary');
-  console.log(`✅ Đã tải ảnh (${imageBuffer.length} bytes)`);
+  let imageBuffer = Buffer.from(imageResponse.data, 'binary');
+  const origKB = (imageBuffer.length / 1024).toFixed(1);
+  console.log(`✅ Đã tải ảnh (${origKB} KB)`);
+
+  // ✅ Auto-resize nếu ảnh > 900KB (OCR.space free giới hạn 1MB)
+  const MAX_SIZE = 900 * 1024;
+  if (imageBuffer.length > MAX_SIZE) {
+    console.log(`⚠️ Ảnh ${origKB}KB > 900KB → tự resize...`);
+    try {
+      let width = 1600;
+      let quality = 80;
+      let resized = await sharp(imageBuffer)
+        .resize({ width, withoutEnlargement: true })
+        .jpeg({ quality })
+        .toBuffer();
+
+      while (resized.length > MAX_SIZE && quality > 40) {
+        quality -= 10;
+        resized = await sharp(imageBuffer)
+          .resize({ width, withoutEnlargement: true })
+          .jpeg({ quality })
+          .toBuffer();
+      }
+
+      while (resized.length > MAX_SIZE && width > 800) {
+        width -= 200;
+        resized = await sharp(imageBuffer)
+          .resize({ width, withoutEnlargement: true })
+          .jpeg({ quality })
+          .toBuffer();
+      }
+
+      const newKB = (resized.length / 1024).toFixed(1);
+      console.log(`✅ Sau resize: ${newKB}KB (width=${width}, quality=${quality})`);
+      imageBuffer = resized;
+    } catch (err) {
+      console.error('❌ Lỗi resize, dùng ảnh gốc:', err.message);
+    }
+  }
+
   return imageBuffer;
 }
 
@@ -872,7 +911,7 @@ client.on('messageCreate', async (message) => {
       }
     }
 
-    // 🧪 ADMIN TEST MODE: tạo session tạm (mode default 5v5), sẽ update sau khi OCR đếm KDA.
+    // 🧪 ADMIN TEST MODE: tạo session tạm, mode sẽ update sau khi OCR đếm KDA
     if (!session && submitterIsAdmin) {
       adminTestMode = true;
       const sessionId = rankSessions.createAdminTestSession(
