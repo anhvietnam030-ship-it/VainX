@@ -612,15 +612,34 @@ async function renderHiddenRoom(room) {
   const rowsUi = roomActionRows(room);
   for (const target of room.panelTargets) {
     try {
-      const ch = await client.channels.fetch(target.channelId).catch(() => null);
+      let ch;
+      try {
+        ch = await client.channels.fetch(target.channelId);
+      } catch (fetchChErr) {
+        console.error(`⚠️ renderHiddenRoom [${room.id}]: fetch channel lỗi tạm thời, bỏ qua (không tạo tin mới):`, fetchChErr.message);
+        continue;
+      }
       if (!ch) continue;
       if (target.messageId) {
-        const msg = await ch.messages.fetch(target.messageId).catch(() => null);
+        let msg;
+        try {
+          msg = await ch.messages.fetch(target.messageId);
+        } catch (fetchMsgErr) {
+          if (fetchMsgErr.code === 10008) {
+            target.messageId = null;
+          } else {
+            console.error(`⚠️ renderHiddenRoom [${room.id}]: fetch message lỗi tạm thời, bỏ qua (không tạo tin mới):`, fetchMsgErr.message);
+            continue;
+          }
+        }
         if (msg) {
           try { await msg.edit({ embeds: [embed], components: rowsUi }); continue; }
           catch (editErr) {
             if (editErr.code === 10008) { target.messageId = null; }
-            else { throw editErr; }
+            else {
+              console.error(`⚠️ renderHiddenRoom [${room.id}]: edit lỗi tạm thời, bỏ qua (không tạo tin mới):`, editErr.message);
+              continue;
+            }
           }
         }
       }
@@ -656,9 +675,32 @@ async function renderRoomInternal(room, channel) {
   const rowsUi = roomActionRows(room);
   try {
     if (room.panelMessageId && room.panelChannelId) {
-      const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
+      let ch;
+      try {
+        ch = await client.channels.fetch(room.panelChannelId);
+      } catch (fetchChErr) {
+        // ⚠️ Lỗi tạm thời (rate limit, mạng...) khi fetch channel — KHÔNG chắc
+        // panel cũ đã mất, nên KHÔNG được rơi xuống gửi tin mới (sẽ ra duplicate).
+        // Bỏ qua lần render này, lần gọi renderRoom() kế tiếp (blink 1.5s sau,
+        // hoặc hành động khác) sẽ tự thử lại.
+        console.error(`⚠️ renderRoom [${room.id}]: fetch channel lỗi tạm thời, bỏ qua lần render này (không tạo tin mới):`, fetchChErr.message);
+        return null;
+      }
       if (ch) {
-        const msg = await ch.messages.fetch(room.panelMessageId).catch(() => null);
+        let msg;
+        try {
+          msg = await ch.messages.fetch(room.panelMessageId);
+        } catch (fetchMsgErr) {
+          if (fetchMsgErr.code === 10008) {
+            // Tin nhắn thực sự không còn tồn tại -> cho phép tạo tin mới bên dưới.
+            room.panelChannelId = null;
+            room.panelMessageId = null;
+          } else {
+            // ⚠️ Lỗi tạm thời khi fetch message -> KHÔNG tạo tin mới, bỏ qua.
+            console.error(`⚠️ renderRoom [${room.id}]: fetch message lỗi tạm thời, bỏ qua lần render này (không tạo tin mới):`, fetchMsgErr.message);
+            return null;
+          }
+        }
         if (msg) {
           try {
             await msg.edit({ embeds: [embed], components: rowsUi });
@@ -668,9 +710,17 @@ async function renderRoomInternal(room, channel) {
             if (editErr.code === 10008) {
               room.panelChannelId = null;
               room.panelMessageId = null;
-            } else { throw editErr; }
+            } else {
+              // ⚠️ Edit lỗi tạm thời -> KHÔNG tạo tin mới, bỏ qua lần render này.
+              console.error(`⚠️ renderRoom [${room.id}]: edit lỗi tạm thời, bỏ qua lần render này (không tạo tin mới):`, editErr.message);
+              return null;
+            }
           }
         }
+      } else {
+        // channel.fetch() trả về null/undefined mà không throw -> không chắc
+        // chắn panel cũ đã mất, không tạo tin mới, bỏ qua lần render này.
+        return null;
       }
     }
     const msg = await channel.send({ embeds: [embed], components: rowsUi });
