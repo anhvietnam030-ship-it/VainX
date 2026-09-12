@@ -703,8 +703,30 @@ async function renderHiddenRoom(room) {
   }
 }
 
+// ✅ FIX DUPLICATE RACE: in-flight lock + debounce cho renderRoom
+const renderingRooms = new Set();
+const lastRenderAt = new Map();
+const RENDER_DEBOUNCE_MS = 800;
+
 async function renderRoom(room, channel) {
   if (room.hidden) return renderHiddenRoom(room);
+
+  // ✅ Nếu room đang render → bỏ qua lần gọi chồng (race condition)
+  if (renderingRooms.has(room.id)) {
+    console.log(`⏭️ renderRoom[${room.id}] đang chạy → bỏ qua lần gọi này.`);
+    return null;
+  }
+
+  // ✅ Debounce: nếu vừa render trong 800ms → bỏ qua
+  const last = lastRenderAt.get(room.id) || 0;
+  if (Date.now() - last < RENDER_DEBOUNCE_MS) {
+    console.log(`⏭️ renderRoom[${room.id}] bị debounce (<${RENDER_DEBOUNCE_MS}ms).`);
+    return null;
+  }
+
+  renderingRooms.add(room.id);
+  lastRenderAt.set(room.id, Date.now());
+
   const embed = roomEmbed(room);
   const rowsUi = roomActionRows(room);
   try {
@@ -731,7 +753,12 @@ async function renderRoom(room, channel) {
     room.panelMessageId = msg.id;
     persistence.flushState(rooms, eloData);
     return msg;
-  } catch (err) { console.error(`Lỗi render ${room.id}:`, err); return null; }
+  } catch (err) {
+    console.error(`Lỗi render ${room.id}:`, err);
+    return null;
+  } finally {
+    renderingRooms.delete(room.id);
+  }
 }
 
 const FLASH_COLORS = [0xffffff, 0xffd700, 0xff69b4, 0x00ffff, 0xff4500, 0x9b59b6];
@@ -990,8 +1017,10 @@ client.once('ready', async () => {
     if (room.isRank && room.players.size > 0) autoBalanceRankTeams(room);
 
     if (room.status === 'revealed' && room.revealedAt) {
-      if (room.isRank) { resetRoomWithCleanup(room); await renderRoom(room, channel); }
-      else {
+      if (room.isRank) {
+        // ✅ FIX DUPLICATE: KHÔNG render ở đây — cuối vòng lặp đã có render
+        resetRoomWithCleanup(room);
+      } else {
         const remaining = config.CODE_RESET_DELAY_MS - (Date.now() - room.revealedAt);
         if (remaining <= 0) resetRoomWithCleanup(room);
         else {
@@ -1702,7 +1731,6 @@ async function handleSlashCommand(interaction) {
 
   if (commandName === 'setup') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
-    // ✅ FIX DUPLICATE: chặn chạy lệnh khi bot chưa heal xong panel sau restart
     if (!panelsReady) return interaction.reply({ content: '⏳ Bot đang khởi động lại panel, thử lại sau ~5 giây.', ephemeral: true });
     const mode = interaction.options.getString('che_do', true);
     const soLuong = interaction.options.getInteger('so_luong');
@@ -1716,7 +1744,7 @@ async function handleSlashCommand(interaction) {
     if (roomsOfMode.length === 0) return interaction.reply({ content: `❌ Chế độ **${mode.toUpperCase()}** chưa có phòng nào.`, ephemeral: true });
     await interaction.reply({ content: `✅ Đang đăng ${roomsOfMode.length} panel **${mode.toUpperCase()}**...${note}`, ephemeral: true });
     for (const room of roomsOfMode) {
-      await deleteOldPanel(room);       // ✅ FIX DUPLICATE
+      await deleteOldPanel(room);
       room.panelChannelId = null;
       room.panelMessageId = null;
       await renderRoom(room, interaction.channel);
@@ -1727,7 +1755,6 @@ async function handleSlashCommand(interaction) {
 
   if (commandName === 'setup-rank') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
-    // ✅ FIX DUPLICATE: chặn chạy lệnh khi bot chưa heal xong panel sau restart
     if (!panelsReady) return interaction.reply({ content: '⏳ Bot đang khởi động lại panel, thử lại sau ~5 giây.', ephemeral: true });
     const mode = interaction.options.getString('che_do', true);
     const soLuong = interaction.options.getInteger('so_luong');
@@ -1741,7 +1768,7 @@ async function handleSlashCommand(interaction) {
     if (roomsOfMode.length === 0) return interaction.reply({ content: `❌ Chế độ **${mode.toUpperCase()} Rank** chưa có phòng nào.`, ephemeral: true });
     await interaction.reply({ content: `✅ Đang đăng ${roomsOfMode.length} panel rank **${mode.toUpperCase()}**...${note}`, ephemeral: true });
     for (const room of roomsOfMode) {
-      await deleteOldPanel(room);       // ✅ FIX DUPLICATE
+      await deleteOldPanel(room);
       room.panelChannelId = null;
       room.panelMessageId = null;
       await renderRoom(room, interaction.channel);
