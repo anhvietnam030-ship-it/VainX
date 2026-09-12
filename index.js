@@ -637,7 +637,7 @@ async function logAdmin(text) {
   if (ch) await ch.send(text).catch(() => {});
 }
 
-// ===== PURGE: xoá SẠCH tin bot trong channel (trừ panel bảo vệ) =====
+// ===== PURGE =====
 async function purgeChannelBotMessages(channel, protectedPanelIds = new Set()) {
   let total = 0;
   try {
@@ -697,100 +697,120 @@ async function renderHiddenRoom(room) {
   }
 }
 
-// ===== RENDER ROOM (chống duplicate bằng cách tìm panel cũ theo mode+index) =====
+// ===== QUEUE LOCK cho renderRoom =====
+// Mỗi room có 1 "hàng đợi" render. Nếu đang render → request sau ĐỢI request trước xong.
+// Đảm bảo không bao giờ có 2 request cùng fetch thấy channel trống → 2 lần send().
+const renderLocks = new Map(); // roomId → Promise
+
 async function renderRoom(room, channel) {
   if (room.hidden) return renderHiddenRoom(room);
 
-  const embed = roomEmbed(room);
-  const rowsUi = roomActionRows(room);
+  // ✅ Chờ render trước (nếu có) xong
+  const prev = renderLocks.get(room.id);
+  if (prev) {
+    try { await prev; } catch (_) {}
+  }
 
-  // 1. Có panelMessageId → edit thẳng
-  if (room.panelMessageId && room.panelChannelId) {
-    const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
-    if (ch) {
-      const msg = await ch.messages.fetch(room.panelMessageId).catch(() => null);
-      if (msg) {
-        try {
-          await msg.edit({ embeds: [embed], components: rowsUi });
-          persistence.saveState(rooms, eloData);
-          return msg;
-        } catch (editErr) {
-          if (editErr.code === 10008) {
-            room.panelChannelId = null;
-            room.panelMessageId = null;
-          } else {
-            console.error(`⚠️ renderRoom[${room.id}] edit lỗi:`, editErr.message);
+  const task = (async () => {
+    const embed = roomEmbed(room);
+    const rowsUi = roomActionRows(room);
+
+    // 1. Có panelMessageId → edit thẳng
+    if (room.panelMessageId && room.panelChannelId) {
+      const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
+      if (ch) {
+        const msg = await ch.messages.fetch(room.panelMessageId).catch(() => null);
+        if (msg) {
+          try {
+            await msg.edit({ embeds: [embed], components: rowsUi });
+            persistence.saveState(rooms, eloData);
+            return msg;
+          } catch (editErr) {
+            if (editErr.code === 10008) {
+              room.panelChannelId = null;
+              room.panelMessageId = null;
+            } else {
+              console.error(`⚠️ renderRoom[${room.id}] edit lỗi:`, editErr.message);
+            }
           }
-        }
-      } else {
-        room.panelChannelId = null;
-        room.panelMessageId = null;
-      }
-    }
-  }
-
-  // 2. Không có id → tìm panel cũ trong 100 tin gần nhất
-  const searchChannel = channel
-    || (room.panelChannelId && await client.channels.fetch(room.panelChannelId).catch(() => null));
-
-  if (searchChannel) {
-    try {
-      const recent = await searchChannel.messages.fetch({ limit: 100 }).catch(() => new Map());
-      const modeStr = room.mode.toUpperCase();
-      const idxStr = `#${room.index}`;
-
-      const oldPanels = Array.from(recent.values()).filter((m) => {
-        if (m.author.id !== client.user.id) return false;
-        const title = m.embeds?.[0]?.title || '';
-        if (!title) return false;
-        // Khớp linh hoạt: title chứa mode + #index + (Rank nếu là rank)
-        if (room.isRank) {
-          return title.includes('Rank') && title.includes(modeStr) && title.includes(idxStr);
         } else {
-          return !title.includes('Rank') && title.includes(modeStr) && title.includes(idxStr);
+          room.panelChannelId = null;
+          room.panelMessageId = null;
         }
-      });
-
-      console.log(`🔍 renderRoom[${room.id}]: fetch ${recent.size} tin, khớp ${oldPanels.length} panel.`);
-
-      if (oldPanels.length > 0) {
-        oldPanels.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
-        const keep = oldPanels[0];
-
-        for (let i = 1; i < oldPanels.length; i++) {
-          await oldPanels[i].delete().catch(() => {});
-          console.log(`🗑️ renderRoom[${room.id}]: xoá panel dư ${oldPanels[i].id}`);
-        }
-
-        await keep.edit({ embeds: [embed], components: rowsUi }).catch(() => {});
-        room.panelChannelId = searchChannel.id;
-        room.panelMessageId = keep.id;
-        persistence.flushState(rooms, eloData);
-        console.log(`♻️ renderRoom[${room.id}]: tìm lại panel cũ (${keep.id}) và edit.`);
-        return keep;
       }
-    } catch (err) {
-      console.warn(`⚠️ renderRoom[${room.id}] tìm panel cũ lỗi:`, err.message);
     }
-  }
 
-  // 3. Không tìm được panel nào → send mới
-  const sendChannel = channel
-    || (room.panelChannelId && await client.channels.fetch(room.panelChannelId).catch(() => null));
-  if (!sendChannel) {
-    console.error(`❌ renderRoom[${room.id}]: không có channel để send panel.`);
-    return null;
-  }
+    // 2. Không có id → tìm panel cũ trong channel
+    const searchChannel = channel
+      || (room.panelChannelId && await client.channels.fetch(room.panelChannelId).catch(() => null));
 
+    if (searchChannel) {
+      try {
+        const recent = await searchChannel.messages.fetch({ limit: 100 }).catch(() => new Map());
+        const modeStr = room.mode.toUpperCase();
+        const idxStr = `#${room.index}`;
+
+        const oldPanels = Array.from(recent.values()).filter((m) => {
+          if (m.author.id !== client.user.id) return false;
+          const title = m.embeds?.[0]?.title || '';
+          if (!title) return false;
+          if (room.isRank) {
+            return title.includes('Rank') && title.includes(modeStr) && title.includes(idxStr);
+          } else {
+            return !title.includes('Rank') && title.includes(modeStr) && title.includes(idxStr);
+          }
+        });
+
+        console.log(`🔍 renderRoom[${room.id}]: fetch ${recent.size} tin, khớp ${oldPanels.length} panel.`);
+
+        if (oldPanels.length > 0) {
+          oldPanels.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+          const keep = oldPanels[0];
+
+          for (let i = 1; i < oldPanels.length; i++) {
+            await oldPanels[i].delete().catch(() => {});
+            console.log(`🗑️ renderRoom[${room.id}]: xoá panel dư ${oldPanels[i].id}`);
+          }
+
+          await keep.edit({ embeds: [embed], components: rowsUi }).catch(() => {});
+          room.panelChannelId = searchChannel.id;
+          room.panelMessageId = keep.id;
+          persistence.flushState(rooms, eloData);
+          console.log(`♻️ renderRoom[${room.id}]: tìm lại panel cũ (${keep.id}) và edit.`);
+          return keep;
+        }
+      } catch (err) {
+        console.warn(`⚠️ renderRoom[${room.id}] tìm panel cũ lỗi:`, err.message);
+      }
+    }
+
+    // 3. Không tìm được panel nào → send mới
+    const sendChannel = channel
+      || (room.panelChannelId && await client.channels.fetch(room.panelChannelId).catch(() => null));
+    if (!sendChannel) {
+      console.error(`❌ renderRoom[${room.id}]: không có channel để send panel.`);
+      return null;
+    }
+
+    try {
+      const msg = await sendChannel.send({ embeds: [embed], components: rowsUi });
+      room.panelChannelId = sendChannel.id;
+      room.panelMessageId = msg.id;
+      persistence.flushState(rooms, eloData);
+      return msg;
+    } catch (err) {
+      console.error(`❌ renderRoom[${room.id}] send lỗi:`, err.message);
+      return null;
+    }
+  })();
+
+  renderLocks.set(room.id, task);
   try {
-    const msg = await sendChannel.send({ embeds: [embed], components: rowsUi });
-    room.panelChannelId = sendChannel.id;
-    room.panelMessageId = msg.id;
-    persistence.flushState(rooms, eloData);
-    return msg;
-  } catch (err) {
-    console.error(`❌ renderRoom[${room.id}] send lỗi:`, err.message);
-    return null;
+    return await task;
+  } finally {
+    if (renderLocks.get(room.id) === task) {
+      renderLocks.delete(room.id);
+    }
   }
 }
 
@@ -968,7 +988,6 @@ async function repostPanelsForChannel(channelId, roomList) {
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) { console.error(`❌ Không tìm thấy kênh panel: ${channelId}`); return; }
 
-  // ✅ Dùng purge để xoá sạch 100 tin/lần, lặp tối đa 10 vòng
   try {
     const deleted = await purgeChannelBotMessages(channel, new Set());
     console.log(`🧹 repostPanelsForChannel[${channelId}]: dọn ${deleted} tin bot.`);
@@ -1050,7 +1069,7 @@ client.once('ready', async () => {
   console.log('✅ Thông báo tự động 20:00-22:00, mỗi 30 phút.');
 });
 
-// ===== AUTO-SUBMIT: gửi ảnh thẳng vào kênh rank-result =====
+// ===== AUTO-SUBMIT =====
 const RANK_RESULT_CHANNEL_ID_ENV = String(process.env.RANK_RESULT_CHANNEL_ID || '').trim();
 console.log(`ℹ️ [messageCreate listener] RANK_RESULT_CHANNEL_ID_ENV = "${RANK_RESULT_CHANNEL_ID_ENV}"`);
 
@@ -1060,9 +1079,7 @@ client.on('messageCreate', async (message) => {
 
     if (message.author.bot) return;
     if (!message.guild) return;
-    if (!RANK_RESULT_CHANNEL_ID_ENV || message.channelId !== RANK_RESULT_CHANNEL_ID_ENV) {
-      return;
-    }
+    if (!RANK_RESULT_CHANNEL_ID_ENV || message.channelId !== RANK_RESULT_CHANNEL_ID_ENV) return;
 
     const attachment = message.attachments.find(a =>
       a.contentType && a.contentType.startsWith('image/')
