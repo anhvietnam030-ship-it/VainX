@@ -1055,7 +1055,6 @@ client.once('ready', async () => {
 
     if (room.status === 'revealed' && room.revealedAt) {
       if (room.isRank) {
-        // ✅ FIX DUPLICATE: KHÔNG render ở đây — cuối vòng lặp đã có render
         resetRoomWithCleanup(room);
       } else {
         const remaining = config.CODE_RESET_DELAY_MS - (Date.now() - room.revealedAt);
@@ -1780,13 +1779,11 @@ async function handleSlashCommand(interaction) {
     const roomsOfMode = getRoomsByMode(mode);
     if (roomsOfMode.length === 0) return interaction.reply({ content: `❌ Chế độ **${mode.toUpperCase()}** chưa có phòng nào.`, ephemeral: true });
 
-    // ✅ Reset panel id trước khi dọn channel
     for (const room of roomsOfMode) {
       room.panelChannelId = null;
       room.panelMessageId = null;
     }
 
-    // ✅ Bảo vệ panel của room KHÁC trong cùng channel
     const keepIds = new Set();
     for (const r of getAllRooms()) {
       if (roomsOfMode.includes(r)) continue;
@@ -1797,7 +1794,6 @@ async function handleSlashCommand(interaction) {
 
     await interaction.reply({ content: `✅ Đang dọn kênh + đăng ${roomsOfMode.length} panel **${mode.toUpperCase()}**...${note}`, ephemeral: true });
 
-    // ✅ Xoá SẠCH tin bot trong channel (fix panel mồ côi)
     await purgeChannelBotMessages(interaction.channel, keepIds);
     await new Promise(r => setTimeout(r, 1200));
 
@@ -1822,13 +1818,11 @@ async function handleSlashCommand(interaction) {
     const roomsOfMode = getRankRoomsByMode(mode);
     if (roomsOfMode.length === 0) return interaction.reply({ content: `❌ Chế độ **${mode.toUpperCase()} Rank** chưa có phòng nào.`, ephemeral: true });
 
-    // ✅ Reset panel id trước khi dọn channel
     for (const room of roomsOfMode) {
       room.panelChannelId = null;
       room.panelMessageId = null;
     }
 
-    // ✅ Bảo vệ panel của room KHÁC trong cùng channel
     const keepIds = new Set();
     for (const r of getAllRooms()) {
       if (roomsOfMode.includes(r)) continue;
@@ -1839,7 +1833,6 @@ async function handleSlashCommand(interaction) {
 
     await interaction.reply({ content: `✅ Đang dọn kênh + đăng ${roomsOfMode.length} panel rank **${mode.toUpperCase()}**...${note}`, ephemeral: true });
 
-    // ✅ Xoá SẠCH tin bot trong channel (fix panel mồ côi)
     await purgeChannelBotMessages(interaction.channel, keepIds);
     await new Promise(r => setTimeout(r, 1200));
 
@@ -2623,10 +2616,15 @@ startSelfPing();
 async function bootstrap() {
   await acquireSingleInstanceLock();
   initRooms();
-  const rankDefault = config.DEFAULT_RANK_ROOMS_PER_MODE || 0;
-  if (rankDefault > 0) {
-    for (const mode of Object.keys(config.CAPACITY)) addRankRoomsToMode(mode, rankDefault);
-  }
+
+  // ✅ FIX DUPLICATE: KHÔNG tự tạo thêm rank room ở bootstrap.
+  // initRooms() đã tạo sẵn phòng theo config; nếu admin muốn thêm thì dùng /setup-rank.
+  // Việc gọi addRankRoomsToMode ở đây gây ra 2 room cùng mode → 2 panel cùng channel.
+  // const rankDefault = config.DEFAULT_RANK_ROOMS_PER_MODE || 0;
+  // if (rankDefault > 0) {
+  //   for (const mode of Object.keys(config.CAPACITY)) addRankRoomsToMode(mode, rankDefault);
+  // }
+
   console.log(`ℹ️ Đã khởi tạo ${rooms.size} phòng.`);
   console.log(`ℹ️ RANK_RESULT_CHANNEL_ID (env) = ${process.env.RANK_RESULT_CHANNEL_ID || '(chưa set!)'}`);
   console.log(`ℹ️ PUBLIC_RESULT_CHANNEL_ID (env) = ${process.env.PUBLIC_RESULT_CHANNEL_ID || '(chưa set!)'}`);

@@ -35,8 +35,10 @@ module.exports = {
     '5v5': 10,
   },
 
-  ROOMS_PER_MODE: 2,
-  DEFAULT_RANK_ROOMS_PER_MODE: 2,
+  // ✅ FIX DUPLICATE: đặt = 1 để mỗi mode chỉ có 1 phòng khi khởi động.
+  // Nếu muốn tăng thêm, admin dùng lệnh /setup hoặc /setup-rank sau.
+  ROOMS_PER_MODE: 1,
+  DEFAULT_RANK_ROOMS_PER_MODE: 1,
   MAX_ROOMS_PER_MODE: 10,
   MAX_RANK_ROOMS_PER_MODE: 10,
 
@@ -100,7 +102,6 @@ module.exports = {
 
   RANK_DEFAULT_ELO: 0,
   RANK_RESULT_WINDOW_MS: 45 * 60 * 1000,
-  MAX_RANK_ROOMS_PER_MODE: 10,
 
   RANK_MEDALS: ['🥉', '🥈', '🥇'],
   RANK_COLORS: ['#CD7F32', '#C0C0C0', '#FFD700'],
