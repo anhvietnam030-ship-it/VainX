@@ -299,12 +299,51 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
+// ===== SINGLE-INSTANCE LOCK =====
+const INSTANCE_LOCK_FILE = path.join(__dirname, '.bot-instance.lock');
+
+function isProcessAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (err) { return false; }
+}
+
+async function acquireSingleInstanceLock() {
+  try {
+    if (fs.existsSync(INSTANCE_LOCK_FILE)) {
+      const raw = fs.readFileSync(INSTANCE_LOCK_FILE, 'utf8').trim();
+      const oldPid = parseInt(raw, 10);
+      if (oldPid && oldPid !== process.pid && isProcessAlive(oldPid)) {
+        console.warn(`⚠️ Phát hiện tiến trình bot cũ (PID ${oldPid}) vẫn đang chạy → kill để tránh duplicate.`);
+        try { process.kill(oldPid, 'SIGTERM'); } catch (err) { /* ignore */ }
+        for (let i = 0; i < 20 && isProcessAlive(oldPid); i++) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        if (isProcessAlive(oldPid)) {
+          console.warn(`⚠️ PID ${oldPid} không tự thoát, force kill (SIGKILL).`);
+          try { process.kill(oldPid, 'SIGKILL'); } catch (err) { /* ignore */ }
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+    }
+    fs.writeFileSync(INSTANCE_LOCK_FILE, String(process.pid));
+  } catch (err) {
+    console.error('⚠️ Không thể set up single-instance lock:', err.message);
+  }
+}
+
+function releaseSingleInstanceLock() {
+  try {
+    if (fs.existsSync(INSTANCE_LOCK_FILE) && fs.readFileSync(INSTANCE_LOCK_FILE, 'utf8').trim() === String(process.pid)) {
+      fs.unlinkSync(INSTANCE_LOCK_FILE);
+    }
+  } catch (err) { /* ignore */ }
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-
   ],
 });
 
@@ -564,39 +603,58 @@ async function logAdmin(text) {
   if (ch) await ch.send(text).catch(() => {});
 }
 
+// ✅ FIX DUPLICATE: helper xoá panel cũ trên Discord trước khi render panel mới
+async function deleteOldPanel(room) {
+  if (!room || !room.panelChannelId || !room.panelMessageId) return;
+  try {
+    const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
+    if (!ch) return;
+    const msg = await ch.messages.fetch(room.panelMessageId).catch(() => null);
+    if (msg) await msg.delete().catch(() => {});
+  } catch (err) {
+    console.warn(`⚠️ Không xoá được panel cũ ${room.id}:`, err.message);
+  }
+}
+
+// ✅ FIX DUPLICATE: xoá panel mồ côi (không khớp với panelMessageId của bất kỳ room nào)
+async function cleanupOrphanPanels(channelId, expectedMessageIds) {
+  if (!channelId) return 0;
+  try {
+    const ch = await client.channels.fetch(channelId).catch(() => null);
+    if (!ch) return 0;
+    const messages = await ch.messages.fetch({ limit: 100 });
+    const orphans = messages.filter((m) =>
+      m.author.id === client.user.id &&
+      m.embeds?.[0]?.title &&
+      /^📋\s*Phòng/.test(m.embeds[0].title) &&
+      !expectedMessageIds.has(m.id)
+    );
+    let count = 0;
+    for (const m of orphans.values()) {
+      await m.delete().catch(() => {});
+      count += 1;
+    }
+    return count;
+  } catch (err) {
+    console.warn(`⚠️ cleanupOrphanPanels lỗi:`, err.message);
+    return 0;
+  }
+}
+
 async function renderHiddenRoom(room) {
   const embed = roomEmbed(room);
   const rowsUi = roomActionRows(room);
   for (const target of room.panelTargets) {
     try {
-      let ch;
-      try {
-        ch = await client.channels.fetch(target.channelId);
-      } catch (fetchChErr) {
-        console.error(`⚠️ renderHiddenRoom [${room.id}]: fetch channel lỗi tạm thời, bỏ qua (không tạo tin mới):`, fetchChErr.message);
-        continue;
-      }
+      const ch = await client.channels.fetch(target.channelId).catch(() => null);
       if (!ch) continue;
       if (target.messageId) {
-        let msg;
-        try {
-          msg = await ch.messages.fetch(target.messageId);
-        } catch (fetchMsgErr) {
-          if (fetchMsgErr.code === 10008) {
-            target.messageId = null;
-          } else {
-            console.error(`⚠️ renderHiddenRoom [${room.id}]: fetch message lỗi tạm thời, bỏ qua (không tạo tin mới):`, fetchMsgErr.message);
-            continue;
-          }
-        }
+        const msg = await ch.messages.fetch(target.messageId).catch(() => null);
         if (msg) {
           try { await msg.edit({ embeds: [embed], components: rowsUi }); continue; }
           catch (editErr) {
             if (editErr.code === 10008) { target.messageId = null; }
-            else {
-              console.error(`⚠️ renderHiddenRoom [${room.id}]: edit lỗi tạm thời, bỏ qua (không tạo tin mới):`, editErr.message);
-              continue;
-            }
+            else { throw editErr; }
           }
         }
       }
@@ -606,58 +664,15 @@ async function renderHiddenRoom(room) {
   }
 }
 
-// ✅ Hàng đợi render theo từng phòng: chống race condition khi nhiều nơi
-// (blink interval 1.5s, toggleReady, test-fill-rank, tryRevealCode...) cùng
-// gọi renderRoom() cho CÙNG 1 phòng gần như đồng thời. Nếu không có hàng đợi
-// này, 2 lệnh gọi có thể cùng đọc room.panelMessageId cùng lúc rồi cùng thao
-// tác song song trên Discord API -> dễ sinh ra panel bị đăng lặp thay vì edit
-// tin cũ. Giờ mỗi phòng chỉ chạy 1 renderRoom() tại 1 thời điểm, các lệnh gọi
-// sau sẽ tự động đợi lệnh trước xong rồi mới chạy, thứ tự vẫn giữ nguyên.
-const roomRenderChains = new Map();
-
-function renderRoom(room, channel) {
-  const key = room.id;
-  const prev = roomRenderChains.get(key) || Promise.resolve();
-  const run = prev.then(
-    () => renderRoomInternal(room, channel),
-    () => renderRoomInternal(room, channel)
-  );
-  roomRenderChains.set(key, run.catch(() => {}));
-  return run;
-}
-
-async function renderRoomInternal(room, channel) {
+async function renderRoom(room, channel) {
   if (room.hidden) return renderHiddenRoom(room);
   const embed = roomEmbed(room);
   const rowsUi = roomActionRows(room);
   try {
     if (room.panelMessageId && room.panelChannelId) {
-      let ch;
-      try {
-        ch = await client.channels.fetch(room.panelChannelId);
-      } catch (fetchChErr) {
-        // ⚠️ Lỗi tạm thời (rate limit, mạng...) khi fetch channel — KHÔNG chắc
-        // panel cũ đã mất, nên KHÔNG được rơi xuống gửi tin mới (sẽ ra duplicate).
-        // Bỏ qua lần render này, lần gọi renderRoom() kế tiếp (blink 1.5s sau,
-        // hoặc hành động khác) sẽ tự thử lại.
-        console.error(`⚠️ renderRoom [${room.id}]: fetch channel lỗi tạm thời, bỏ qua lần render này (không tạo tin mới):`, fetchChErr.message);
-        return null;
-      }
+      const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
       if (ch) {
-        let msg;
-        try {
-          msg = await ch.messages.fetch(room.panelMessageId);
-        } catch (fetchMsgErr) {
-          if (fetchMsgErr.code === 10008) {
-            // Tin nhắn thực sự không còn tồn tại -> cho phép tạo tin mới bên dưới.
-            room.panelChannelId = null;
-            room.panelMessageId = null;
-          } else {
-            // ⚠️ Lỗi tạm thời khi fetch message -> KHÔNG tạo tin mới, bỏ qua.
-            console.error(`⚠️ renderRoom [${room.id}]: fetch message lỗi tạm thời, bỏ qua lần render này (không tạo tin mới):`, fetchMsgErr.message);
-            return null;
-          }
-        }
+        const msg = await ch.messages.fetch(room.panelMessageId).catch(() => null);
         if (msg) {
           try {
             await msg.edit({ embeds: [embed], components: rowsUi });
@@ -667,23 +682,14 @@ async function renderRoomInternal(room, channel) {
             if (editErr.code === 10008) {
               room.panelChannelId = null;
               room.panelMessageId = null;
-            } else {
-              // ⚠️ Edit lỗi tạm thời -> KHÔNG tạo tin mới, bỏ qua lần render này.
-              console.error(`⚠️ renderRoom [${room.id}]: edit lỗi tạm thời, bỏ qua lần render này (không tạo tin mới):`, editErr.message);
-              return null;
-            }
+            } else { throw editErr; }
           }
         }
-      } else {
-        // channel.fetch() trả về null/undefined mà không throw -> không chắc
-        // chắn panel cũ đã mất, không tạo tin mới, bỏ qua lần render này.
-        return null;
       }
     }
     const msg = await channel.send({ embeds: [embed], components: rowsUi });
     room.panelChannelId = channel.id;
     room.panelMessageId = msg.id;
-    // ✅ Flush NGAY để tránh mất panelMessageId nếu bot bị kill đột ngột
     persistence.flushState(rooms, eloData);
     return msg;
   } catch (err) { console.error(`Lỗi render ${room.id}:`, err); return null; }
@@ -863,8 +869,6 @@ async function repostPanelsForChannel(channelId, roomList) {
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) { console.error(`❌ Không tìm thấy kênh panel: ${channelId}`); return; }
 
-  // ✅ Xóa SẠCH mọi tin nhắn của bot (fetch tối đa 100, lặp nhiều lần nếu cần)
-  // để tránh duplicate khi server restart đột ngột.
   try {
     let deletedTotal = 0;
     for (let round = 1; round <= 5; round++) {
@@ -892,7 +896,6 @@ async function repostPanelsForChannel(channelId, roomList) {
     if (deletedTotal > 0) console.log(`🧹 Dọn ${deletedTotal} tin bot cũ ở kênh ${channelId}`);
   } catch (err) { console.error(`⚠️ Không dọn được panel cũ:`, err.message); }
 
-  // Đợi 1s để Discord cập nhật cache trước khi post mới
   await new Promise((r) => setTimeout(r, 1000));
 
   for (const room of roomList) {
@@ -901,6 +904,9 @@ async function repostPanelsForChannel(channelId, roomList) {
     await renderRoom(room, channel);
   }
 }
+
+// ✅ FIX DUPLICATE: cờ báo hiệu panel đã heal xong sau khi restart
+let panelsReady = false;
 
 async function autoHealPanels() {
   for (const mode of Object.keys(config.CAPACITY)) {
@@ -914,11 +920,28 @@ async function autoHealPanels() {
 client.once('ready', async () => {
   console.log(`Đã đăng nhập với tên ${client.user.tag}`);
 
-  // ✅ Đợi 3s cho kết nối Discord ổn định (tránh restart đột ngột gây duplicate panel)
   console.log('⏳ Đợi 3s cho bot ổn định trước khi đăng panel...');
   await new Promise((r) => setTimeout(r, 3000));
 
   await autoHealPanels();
+
+  // ✅ FIX DUPLICATE: dọn panel mồ côi sau khi heal xong
+  try {
+    const expectedIds = new Set(
+      getAllRooms().filter(r => r.panelMessageId).map(r => r.panelMessageId)
+    );
+    for (const mode of Object.keys(config.CAPACITY)) {
+      const cN = config.PANEL_CHANNELS.normal[mode];
+      const cR = config.PANEL_CHANNELS.rank[mode];
+      if (cN) await cleanupOrphanPanels(cN, expectedIds);
+      if (cR) await cleanupOrphanPanels(cR, expectedIds);
+    }
+  } catch (err) {
+    console.warn('⚠️ cleanupOrphanPanels tổng lỗi:', err.message);
+  }
+
+  // ✅ FIX DUPLICATE: bật cờ sau khi heal + cleanup xong
+  panelsReady = true;
 
   for (const room of getAllRooms()) {
     if (room.players.size === 0 || !room.panelChannelId) continue;
@@ -1156,9 +1179,6 @@ client.on('messageCreate', async (message) => {
 });
 
 // ===== INTERACTION HANDLER =====
-// ✅ Chặn duplicate: nếu 1 interaction.id bị bắn/xử lý nhiều lần (do gateway
-// resend lúc reconnect, hoặc 2 instance bot chạy chồng lúc redeploy) thì chỉ
-// xử lý lần đầu, các lần sau bỏ qua để không render/gửi panel 2 lần.
 const processedInteractionIds = new Set();
 const INTERACTION_DEDUPE_TTL_MS = 5 * 60 * 1000;
 
@@ -1643,6 +1663,8 @@ async function handleSlashCommand(interaction) {
 
   if (commandName === 'setup') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng được.', ephemeral: true });
+    // ✅ FIX DUPLICATE: chặn chạy lệnh khi bot chưa heal xong panel sau restart
+    if (!panelsReady) return interaction.reply({ content: '⏳ Bot đang khởi động lại panel, thử lại sau ~5 giây.', ephemeral: true });
     const mode = interaction.options.getString('che_do', true);
     const soLuong = interaction.options.getInteger('so_luong');
     let note = '';
@@ -1654,13 +1676,20 @@ async function handleSlashCommand(interaction) {
     const roomsOfMode = getRoomsByMode(mode);
     if (roomsOfMode.length === 0) return interaction.reply({ content: `❌ Chế độ **${mode.toUpperCase()}** chưa có phòng nào.`, ephemeral: true });
     await interaction.reply({ content: `✅ Đang đăng ${roomsOfMode.length} panel **${mode.toUpperCase()}**...${note}`, ephemeral: true });
-    for (const room of roomsOfMode) { room.panelChannelId = null; room.panelMessageId = null; await renderRoom(room, interaction.channel); }
+    for (const room of roomsOfMode) {
+      await deleteOldPanel(room);       // ✅ FIX DUPLICATE: xoá panel cũ trên Discord
+      room.panelChannelId = null;
+      room.panelMessageId = null;
+      await renderRoom(room, interaction.channel);
+    }
     persistence.saveState(rooms, eloData);
     return;
   }
 
   if (commandName === 'setup-rank') {
     if (!isAdmin(interaction)) return interaction.reply({ content: '❌ Chỉ admin mới dùng.', ephemeral: true });
+    // ✅ FIX DUPLICATE: chặn chạy lệnh khi bot chưa heal xong panel sau restart
+    if (!panelsReady) return interaction.reply({ content: '⏳ Bot đang khởi động lại panel, thử lại sau ~5 giây.', ephemeral: true });
     const mode = interaction.options.getString('che_do', true);
     const soLuong = interaction.options.getInteger('so_luong');
     let note = '';
@@ -1672,7 +1701,12 @@ async function handleSlashCommand(interaction) {
     const roomsOfMode = getRankRoomsByMode(mode);
     if (roomsOfMode.length === 0) return interaction.reply({ content: `❌ Chế độ **${mode.toUpperCase()} Rank** chưa có phòng nào.`, ephemeral: true });
     await interaction.reply({ content: `✅ Đang đăng ${roomsOfMode.length} panel rank **${mode.toUpperCase()}**...${note}`, ephemeral: true });
-    for (const room of roomsOfMode) { room.panelChannelId = null; room.panelMessageId = null; await renderRoom(room, interaction.channel); }
+    for (const room of roomsOfMode) {
+      await deleteOldPanel(room);       // ✅ FIX DUPLICATE: xoá panel cũ trên Discord
+      room.panelChannelId = null;
+      room.panelMessageId = null;
+      await renderRoom(room, interaction.channel);
+    }
     persistence.saveState(rooms, eloData);
     return;
   }
@@ -2448,6 +2482,7 @@ startKeepAliveServer();
 startSelfPing();
 
 async function bootstrap() {
+  await acquireSingleInstanceLock();
   initRooms();
   const rankDefault = config.DEFAULT_RANK_ROOMS_PER_MODE || 0;
   if (rankDefault > 0) {
@@ -2481,6 +2516,7 @@ function gracefulShutdown(signal) {
   shuttingDown = true;
   console.log(`ℹ️ Nhận ${signal}, đang flush state trước khi tắt...`);
   persistence.flushState(rooms, eloData);
+  releaseSingleInstanceLock();
   setTimeout(() => process.exit(0), 200);
 }
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
