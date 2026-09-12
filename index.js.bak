@@ -427,16 +427,6 @@ function parseMatchResult(ocrText) {
   return null;
 }
 
-// ✅ Đếm số KDA trong ảnh → đoán mode 3v3 (6 KDA) hay 5v5 (10 KDA).
-function detectModeFromKdaCount(ocrText) {
-  const matches = ocrText.match(/\d+\s*\/\s*\d+\s*\/\s*\d+/g) || [];
-  const count = matches.length;
-  let mode = null;
-  if (count >= 8) mode = '5v5';
-  else if (count >= 4) mode = '3v3';
-  return { mode, count };
-}
-
 // ===== ANNOUNCEMENT =====
 const ANNOUNCE_CHANNEL_ID = config.ANNOUNCE_CHANNEL_ID;
 
@@ -831,7 +821,7 @@ console.log(`ℹ️ [messageCreate listener] RANK_RESULT_CHANNEL_ID_ENV = "${RAN
 
 client.on('messageCreate', async (message) => {
   try {
-    console.log(`🔔 [messageCreate] author=${message.author.tag} channelId=${message.channelId} attachments=${message.attachments.size} isBot=${message.author.bot} isGuild=${!!message.guild}`);
+    console.log(`🔔 [messageCreate] author=${message.author.tag} channelId=${message.channelId} attachments=${message.attachments.size} isBot=${message.author.bot} isGuild=${!!message.guild} content="${(message.content||'').slice(0,50)}"`);
 
     if (message.author.bot) return;
     if (!message.guild) return;
@@ -856,32 +846,40 @@ client.on('messageCreate', async (message) => {
     let session = rankSessions.getActiveSessionForUser(message.author.id);
     let adminTestMode = false;
 
-    // 🧪 Admin: BỎ QUA session admin-test cũ
-    if (submitterIsAdmin && session && session.roomId === 'admin-test') {
-      console.log(`🧪 Admin: bỏ qua session admin-test cũ ${session.id}`);
-      session = null;
-    }
-
     if (!session && submitterIsAdmin) {
       session = rankSessions.getLatestActiveSession();
-      if (session && session.roomId === 'admin-test') {
-        session = null;
-      } else if (session) {
+      if (session) {
         adminTestMode = true;
         console.log(`🧪 Admin dùng session mới nhất: ${session.id} (${session.roomId})`);
       }
     }
 
-    // 🧪 ADMIN TEST MODE: tạo session tạm (mode default 5v5), sẽ update sau khi OCR đếm KDA.
+    // 🧪 ADMIN TEST MODE: tạo session mới với MODE đọc từ caption
     if (!session && submitterIsAdmin) {
       adminTestMode = true;
+
+      const caption = (message.content || '').toLowerCase().trim();
+      let testMode = null;
+      if (/\b3v3\b|\b33\b/.test(caption)) testMode = '3v3';
+      else if (/\b5v5\b|\b55\b/.test(caption)) testMode = '5v5';
+
+      if (!testMode) {
+        const m = await message.reply({
+          content: `⚠️ **Không xác định được chế độ.**\n` +
+                   `Gõ kèm ảnh: \`3v3\` hoặc \`5v5\` trong **cùng tin nhắn** với ảnh.\n` +
+                   `Ví dụ: kéo ảnh vào + gõ caption là \`3v3\` rồi Enter.`
+        }).catch(() => null);
+        if (m) setTimeout(() => m.delete().catch(() => {}), 30000);
+        return;
+      }
+
       const sessionId = rankSessions.createAdminTestSession(
         message.author.id,
         message.author.username,
-        '5v5'
+        testMode
       );
       session = rankSessions.getSession(sessionId);
-      console.log(`🧪 Admin test mode: tạo session ${sessionId} (mode tạm 5v5, sẽ đọc KDA để chốt).`);
+      console.log(`🧪 Admin test mode: tạo session ${testMode} → sẽ tính ELO vào ${testMode}.`);
     }
 
     if (!session) {
@@ -948,21 +946,6 @@ client.on('messageCreate', async (message) => {
     }
     if (!ocrText) return editOrIgnore('❌ Không đọc được ảnh.');
 
-    // 🧪 ADMIN TEST: đếm KDA → đoán mode, update session
-    if (adminTestMode && isFakeAdminSession) {
-      const { mode: detectedMode, count: kdaCount } = detectModeFromKdaCount(ocrText);
-      if (!detectedMode) {
-        return editOrIgnore(
-          `❌ **Không đọc được mode từ ảnh.**\n` +
-          `Chỉ đếm được \`${kdaCount}\` KDA trong ảnh — cần ít nhất 4 KDA.\n` +
-          `Chụp lại rõ hơn (đủ 6 hoặc 10 người).`
-        );
-      }
-      rankSessions.setSessionMode(session.id, detectedMode);
-      session.mode = detectedMode;
-      console.log(`🧪 Admin test: đếm ${kdaCount} KDA → mode=${detectedMode}`);
-    }
-
     const fakeRoom = { players: new Map(session.players), code: session.code };
     const kdaMap = extractAllKDAResult(ocrText, fakeRoom, { skipCodeCheck: submitterIsAdmin, overlayLines });
 
@@ -972,7 +955,7 @@ client.on('messageCreate', async (message) => {
     if (!result) return editOrIgnore('❌ Không tìm thấy kết quả trận.');
     if (result === 'surrender') return editOrIgnore('⚠️ Trận này kết thúc bằng **ĐẦU HÀNG** — bot **không tính ELO**.');
 
-    // ✅ Không match tên → từ chối, KHÔNG bịa KDA
+    // ✅ FIX: Bỏ fallback KDA bừa — không match tên → từ chối
     const senderKDA = kdaMap.get(message.author.id);
     if (!senderKDA) {
       if (submitterIsAdmin) {
@@ -994,7 +977,7 @@ client.on('messageCreate', async (message) => {
     if (!saved) return editOrIgnore('❌ Không lưu được kết quả.');
 
     if (adminTestMode) {
-      console.log(`🧪 [Admin test] mode=${session.mode} result=${result} KDA=${senderKDA.kill}/${senderKDA.death}/${senderKDA.assist} → gọi finalize.`);
+      console.log(`🧪 [Admin test] mode=${session.mode} result=${result} KDA=${senderKDA.kill}/${senderKDA.death}/${senderKDA.assist} → gọi finalizeRankSessionIfReady.`);
     }
 
     const eloUpdates = await finalizeRankSessionIfReady(session, room, session.roomId, kdaMap);
@@ -1012,7 +995,7 @@ client.on('messageCreate', async (message) => {
 
       await editOrIgnore(
         `🧪 **[ADMIN TEST]** Đã xử lý ảnh thành công.\n` +
-        `• Chế độ: **${session.mode.toUpperCase()}** (tự nhận diện)\n` +
+        `• Chế độ: **${session.mode.toUpperCase()}**\n` +
         `• Kết quả: **${result === 'win' ? 'Thắng' : 'Thua'}**\n` +
         `• KDA: ${senderKDA.kill}/${senderKDA.death}/${senderKDA.assist}\n` +
         eloLine
@@ -2281,6 +2264,7 @@ async function giveCode(interaction, roomId) {
   return interaction.followUp({ content: personal, ephemeral: true });
 }
 
+// ===== KEEP-ALIVE + BOOTSTRAP =====
 startKeepAliveServer();
 startSelfPing();
 
