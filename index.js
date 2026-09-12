@@ -637,53 +637,15 @@ async function logAdmin(text) {
   if (ch) await ch.send(text).catch(() => {});
 }
 
-// ✅ FIX DUPLICATE: xoá panel cũ trên Discord trước khi render panel mới
-async function deleteOldPanel(room) {
-  if (!room || !room.panelChannelId || !room.panelMessageId) return;
-  try {
-    const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
-    if (!ch) return;
-    const msg = await ch.messages.fetch(room.panelMessageId).catch(() => null);
-    if (msg) await msg.delete().catch(() => {});
-  } catch (err) {
-    console.warn(`⚠️ Không xoá được panel cũ ${room.id}:`, err.message);
-  }
-}
-
-// ✅ FIX DUPLICATE: dọn panel mồ côi (không khớp panelMessageId của room nào)
-async function cleanupOrphanPanels(channelId, expectedMessageIds) {
-  if (!channelId) return 0;
-  try {
-    const ch = await client.channels.fetch(channelId).catch(() => null);
-    if (!ch) return 0;
-    const messages = await ch.messages.fetch({ limit: 100 });
-    const orphans = messages.filter((m) =>
-      m.author.id === client.user.id &&
-      m.embeds?.[0]?.title &&
-      /^📋\s*Phòng/.test(m.embeds[0].title) &&
-      !expectedMessageIds.has(m.id)
-    );
-    let count = 0;
-    for (const m of orphans.values()) {
-      await m.delete().catch(() => {});
-      count += 1;
-    }
-    return count;
-  } catch (err) {
-    console.warn(`⚠️ cleanupOrphanPanels lỗi:`, err.message);
-    return 0;
-  }
-}
-
-// ✅ FIX DUPLICATE TRIỆT ĐỂ: xoá SẠCH mọi tin bot trong channel (trừ panel cần bảo vệ)
+// ===== PURGE: xoá SẠCH tin bot trong channel (trừ panel bảo vệ) =====
 async function purgeChannelBotMessages(channel, protectedPanelIds = new Set()) {
   let total = 0;
   try {
     for (let round = 0; round < 10; round++) {
-      const msgs = await channel.messages.fetch({ limit: 100 });
-      if (msgs.size === 0) break;
+      const messages = await channel.messages.fetch({ limit: 100 });
+      if (messages.size === 0) break;
 
-      const botMsgs = msgs.filter(m => m.author.id === client.user.id && !protectedPanelIds.has(m.id));
+      const botMsgs = messages.filter(m => m.author.id === client.user.id && !protectedPanelIds.has(m.id));
       if (botMsgs.size === 0) break;
 
       const now = Date.now();
@@ -691,19 +653,19 @@ async function purgeChannelBotMessages(channel, protectedPanelIds = new Set()) {
       const recent = botMsgs.filter(m => now - m.createdTimestamp < TWO_WEEKS_MS);
       const old = botMsgs.filter(m => now - m.createdTimestamp >= TWO_WEEKS_MS);
 
-      if (recent.length === 1) {
-        await recent[0].delete().catch(() => {});
+      if (recent.size === 1) {
+        await recent.first().delete().catch(() => {});
         total += 1;
-      } else if (recent.length > 1) {
+      } else if (recent.size > 1) {
         const deleted = await channel.bulkDelete(recent, true).catch(() => new Map());
         total += deleted.size;
       }
-      for (const m of old) {
+      for (const m of old.values()) {
         await m.delete().catch(() => {});
         total += 1;
       }
 
-      if (msgs.size < 100) break;
+      if (messages.size < 100) break;
     }
     console.log(`🧹 purgeChannelBotMessages[${channel.id}]: xoá ${total} tin bot.`);
   } catch (err) {
@@ -735,10 +697,7 @@ async function renderHiddenRoom(room) {
   }
 }
 
-// ✅ FIX DUPLICATE TRIỆT ĐỂ:
-// - Bỏ in-flight lock + debounce (gây skip render → mất panelMessageId → send mới).
-// - Mỗi lần render: nếu có id → edit; nếu không có id → tìm panel cũ trong channel
-//   theo title (khớp cả khi có emoji prefix như 📋) rồi edit; nếu thực sự không có → send mới.
+// ===== RENDER ROOM (chống duplicate bằng cách tìm panel cũ theo mode+index) =====
 async function renderRoom(room, channel) {
   if (room.hidden) return renderHiddenRoom(room);
 
@@ -770,35 +729,34 @@ async function renderRoom(room, channel) {
     }
   }
 
-  // 2. Không có id → tìm panel cũ trong channel theo title
+  // 2. Không có id → tìm panel cũ trong 100 tin gần nhất
   const searchChannel = channel
     || (room.panelChannelId && await client.channels.fetch(room.panelChannelId).catch(() => null));
 
   if (searchChannel) {
-       try {
+    try {
       const recent = await searchChannel.messages.fetch({ limit: 100 }).catch(() => new Map());
+      const modeStr = room.mode.toUpperCase();
+      const idxStr = `#${room.index}`;
+
       const oldPanels = Array.from(recent.values()).filter((m) => {
         if (m.author.id !== client.user.id) return false;
         const title = m.embeds?.[0]?.title || '';
         if (!title) return false;
-
-        // ✅ Regex linh hoạt: match theo mode + #index, chấp nhận mọi prefix/emoji
-        const modeStr = room.mode.toUpperCase();
-        const idxStr = `#${room.index}`;
-
+        // Khớp linh hoạt: title chứa mode + #index + (Rank nếu là rank)
         if (room.isRank) {
           return title.includes('Rank') && title.includes(modeStr) && title.includes(idxStr);
         } else {
           return !title.includes('Rank') && title.includes(modeStr) && title.includes(idxStr);
         }
       });
+
       console.log(`🔍 renderRoom[${room.id}]: fetch ${recent.size} tin, khớp ${oldPanels.length} panel.`);
 
       if (oldPanels.length > 0) {
         oldPanels.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
         const keep = oldPanels[0];
 
-        // Xoá các panel dư (nếu có >1)
         for (let i = 1; i < oldPanels.length; i++) {
           await oldPanels[i].delete().catch(() => {});
           console.log(`🗑️ renderRoom[${room.id}]: xoá panel dư ${oldPanels[i].id}`);
@@ -1010,7 +968,7 @@ async function repostPanelsForChannel(channelId, roomList) {
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) { console.error(`❌ Không tìm thấy kênh panel: ${channelId}`); return; }
 
-  // ✅ Dùng purge (xoá sạch 100 tin/lần, lặp tối đa 10 lần = tối đa 1000 tin)
+  // ✅ Dùng purge để xoá sạch 100 tin/lần, lặp tối đa 10 vòng
   try {
     const deleted = await purgeChannelBotMessages(channel, new Set());
     console.log(`🧹 repostPanelsForChannel[${channelId}]: dọn ${deleted} tin bot.`);
@@ -1020,46 +978,7 @@ async function repostPanelsForChannel(channelId, roomList) {
 
   if (roomList.length === 0) return;
 
-  // ✅ Chờ 1.5s để Discord cập nhật cache tin đã xoá
   await new Promise((r) => setTimeout(r, 1500));
-
-  for (const room of roomList) {
-    room.panelChannelId = null;
-    room.panelMessageId = null;
-    await renderRoom(room, channel);
-  }
-}
-
-  try {
-    let deletedTotal = 0;
-    for (let round = 1; round <= 5; round++) {
-      const messages = await channel.messages.fetch({ limit: 100 });
-      const botMessages = messages.filter((m) => m.author.id === client.user.id);
-      if (botMessages.size === 0) break;
-
-      const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
-      const now = Date.now();
-      const recent = botMessages.filter((m) => now - m.createdTimestamp < TWO_WEEKS_MS);
-      const old = botMessages.filter((m) => now - m.createdTimestamp >= TWO_WEEKS_MS);
-
-      if (recent.size === 1) {
-        await recent.first().delete().catch(() => {});
-        deletedTotal += 1;
-      } else if (recent.size > 1) {
-        const deleted = await channel.bulkDelete(recent, true).catch(() => new Map());
-        deletedTotal += deleted.size;
-      }
-      for (const msg of old.values()) {
-        await msg.delete().catch(() => {});
-        deletedTotal += 1;
-      }
-    }
-    if (deletedTotal > 0) console.log(`🧹 Dọn ${deletedTotal} tin bot cũ ở kênh ${channelId}`);
-  } catch (err) { console.error(`⚠️ Không dọn được panel cũ:`, err.message); }
-
-  if (roomList.length === 0) return;
-
-  await new Promise((r) => setTimeout(r, 1000));
 
   for (const room of roomList) {
     room.panelChannelId = null;
@@ -1086,20 +1005,6 @@ client.once('ready', async () => {
   await new Promise((r) => setTimeout(r, 3000));
 
   await autoHealPanels();
-
-  try {
-    const expectedIds = new Set(
-      getAllRooms().filter(r => r.panelMessageId).map(r => r.panelMessageId)
-    );
-    for (const mode of Object.keys(config.CAPACITY)) {
-      const cN = config.PANEL_CHANNELS.normal[mode];
-      const cR = config.PANEL_CHANNELS.rank[mode];
-      if (cN) await cleanupOrphanPanels(cN, expectedIds);
-      if (cR) await cleanupOrphanPanels(cR, expectedIds);
-    }
-  } catch (err) {
-    console.warn('⚠️ cleanupOrphanPanels tổng lỗi:', err.message);
-  }
 
   panelsReady = true;
 
@@ -1156,28 +1061,20 @@ client.on('messageCreate', async (message) => {
     if (message.author.bot) return;
     if (!message.guild) return;
     if (!RANK_RESULT_CHANNEL_ID_ENV || message.channelId !== RANK_RESULT_CHANNEL_ID_ENV) {
-      console.log(`🔔 [messageCreate] bỏ qua vì kênh không khớp (env="${RANK_RESULT_CHANNEL_ID_ENV}" vs msg="${message.channelId}")`);
       return;
     }
 
     const attachment = message.attachments.find(a =>
       a.contentType && a.contentType.startsWith('image/')
     );
-    if (!attachment) {
-      console.log(`🔔 [messageCreate] không có ảnh đính kèm.`);
-      return;
-    }
-
-    console.log(`🔔 [messageCreate] có ảnh! contentType=${attachment.contentType}`);
+    if (!attachment) return;
 
     const submitterIsAdmin = await isAdminUserId(message.author.id).catch(() => false);
-    console.log(`🔔 [messageCreate] submitterIsAdmin=${submitterIsAdmin}`);
 
     let session = rankSessions.getActiveSessionForUser(message.author.id);
     let adminTestMode = false;
 
     if (submitterIsAdmin && session && session.roomId === 'admin-test') {
-      console.log(`🧪 Admin: bỏ qua session admin-test cũ ${session.id}`);
       session = null;
     }
 
@@ -1187,7 +1084,6 @@ client.on('messageCreate', async (message) => {
         session = null;
       } else if (session) {
         adminTestMode = true;
-        console.log(`🧪 Admin dùng session mới nhất: ${session.id} (${session.roomId})`);
       }
     }
 
@@ -1199,7 +1095,6 @@ client.on('messageCreate', async (message) => {
         '5v5'
       );
       session = rankSessions.getSession(sessionId);
-      console.log(`🧪 Admin test mode: tạo session ${sessionId} (mode tạm 5v5, sẽ đọc KDA để chốt).`);
     }
 
     if (!session) {
@@ -1217,7 +1112,6 @@ client.on('messageCreate', async (message) => {
         if (m) setTimeout(() => m.delete().catch(() => {}), 30000);
         return;
       }
-      console.log(`🔔 [messageCreate] không tìm thấy session nào → bỏ qua.`);
       return;
     }
 
@@ -1225,7 +1119,6 @@ client.on('messageCreate', async (message) => {
     const room = isFakeAdminSession ? null : getRoom(session.roomId);
 
     if (!isFakeAdminSession && (!room || !room.isRank)) {
-      console.log(`🔔 [messageCreate] room không hợp lệ hoặc không phải rank.`);
       return;
     }
 
@@ -1273,7 +1166,6 @@ client.on('messageCreate', async (message) => {
       }
       rankSessions.setSessionMode(session.id, detectedMode);
       session.mode = detectedMode;
-      console.log(`🧪 Admin test: đếm ${kdaCount} KDA → mode=${detectedMode}`);
     }
 
     const fakeRoom = { players: new Map(session.players), code: session.code };
@@ -1304,10 +1196,6 @@ client.on('messageCreate', async (message) => {
       imageUrl: attachment.url,
     });
     if (!saved) return editOrIgnore('❌ Không lưu được kết quả.');
-
-    if (adminTestMode) {
-      console.log(`🧪 [Admin test] mode=${session.mode} result=${result} KDA=${senderKDA.kill}/${senderKDA.death}/${senderKDA.assist} → gọi finalize.`);
-    }
 
     const eloUpdates = await finalizeRankSessionIfReady(session, room, session.roomId, kdaMap);
     persistence.saveState(rooms, eloData);
