@@ -299,6 +299,50 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
+// ===== SINGLE-INSTANCE LOCK =====
+// ✅ Chống chạy 2 tiến trình bot song song trên cùng server (nguyên nhân gây
+// duplicate panel/tin nhắn khi 2 process cùng login chung 1 token và cùng
+// nhận/xử lý 1 interaction). Ghi PID ra file; nếu phát hiện tiến trình cũ
+// còn sống lúc khởi động, kill nó trước khi tiếp tục.
+const INSTANCE_LOCK_FILE = path.join(__dirname, '.bot-instance.lock');
+
+function isProcessAlive(pid) {
+  try { process.kill(pid, 0); return true; }
+  catch (err) { return false; }
+}
+
+async function acquireSingleInstanceLock() {
+  try {
+    if (fs.existsSync(INSTANCE_LOCK_FILE)) {
+      const raw = fs.readFileSync(INSTANCE_LOCK_FILE, 'utf8').trim();
+      const oldPid = parseInt(raw, 10);
+      if (oldPid && oldPid !== process.pid && isProcessAlive(oldPid)) {
+        console.warn(`⚠️ Phát hiện tiến trình bot cũ (PID ${oldPid}) vẫn đang chạy → kill để tránh duplicate.`);
+        try { process.kill(oldPid, 'SIGTERM'); } catch (err) { /* ignore */ }
+        for (let i = 0; i < 20 && isProcessAlive(oldPid); i++) {
+          await new Promise((r) => setTimeout(r, 250));
+        }
+        if (isProcessAlive(oldPid)) {
+          console.warn(`⚠️ PID ${oldPid} không tự thoát, force kill (SIGKILL).`);
+          try { process.kill(oldPid, 'SIGKILL'); } catch (err) { /* ignore */ }
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+    }
+    fs.writeFileSync(INSTANCE_LOCK_FILE, String(process.pid));
+  } catch (err) {
+    console.error('⚠️ Không thể set up single-instance lock:', err.message);
+  }
+}
+
+function releaseSingleInstanceLock() {
+  try {
+    if (fs.existsSync(INSTANCE_LOCK_FILE) && fs.readFileSync(INSTANCE_LOCK_FILE, 'utf8').trim() === String(process.pid)) {
+      fs.unlinkSync(INSTANCE_LOCK_FILE);
+    }
+  } catch (err) { /* ignore */ }
+}
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -2377,6 +2421,7 @@ startKeepAliveServer();
 startSelfPing();
 
 async function bootstrap() {
+  await acquireSingleInstanceLock();
   initRooms();
   const rankDefault = config.DEFAULT_RANK_ROOMS_PER_MODE || 0;
   if (rankDefault > 0) {
@@ -2410,6 +2455,7 @@ function gracefulShutdown(signal) {
   shuttingDown = true;
   console.log(`ℹ️ Nhận ${signal}, đang flush state trước khi tắt...`);
   persistence.flushState(rooms, eloData);
+  releaseSingleInstanceLock();
   setTimeout(() => process.exit(0), 200);
 }
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
