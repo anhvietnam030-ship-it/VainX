@@ -279,12 +279,27 @@ function ensureRoom(mode, index) {
   return room;
 }
 
+// ✅ FIX: `count` là TỔNG SỐ PHÒNG mong muốn, không phải "tạo thêm N phòng".
+// Đồng thời chỉ đếm phòng THƯỜNG (không tính rank cùng mode).
 function addRoomsToMode(mode, count) {
-  const existing = getRoomsByMode(mode);
+  const existing = getNormalRoomsByMode(mode);
   const maxAllowed = config.MAX_ROOMS_PER_MODE;
+
+  // ✅ Nếu đã đủ → KHÔNG tạo gì, tránh nhân đôi panel
+  if (existing.length >= count) {
+    return {
+      created: [],
+      requested: count,
+      capped: false,
+      currentTotal: existing.length,
+      maxAllowed,
+    };
+  }
+
+  const needToAdd = count - existing.length;
   const usedIndices = new Set(existing.map(r => r.index));
   const canAdd = Math.max(0, maxAllowed - existing.length);
-  const toAdd = Math.min(count, canAdd);
+  const toAdd = Math.min(needToAdd, canAdd);
   const created = [];
   let idx = 1;
   while (created.length < toAdd && idx <= maxAllowed) {
@@ -296,7 +311,13 @@ function addRoomsToMode(mode, count) {
     }
     idx++;
   }
-  return { created, requested: count, capped: count > toAdd, currentTotal: existing.length + created.length, maxAllowed };
+  return {
+    created,
+    requested: count,
+    capped: needToAdd > toAdd,
+    currentTotal: existing.length + created.length,
+    maxAllowed,
+  };
 }
 
 function removeExtraRoom(roomId) {
@@ -362,12 +383,27 @@ function buildRankRoom(mode, index) {
   room.timers.resultWindow = null;
   return room;
 }
+
+// ✅ FIX: `count` là TỔNG SỐ PHÒNG RANK mong muốn, không phải "tạo thêm N".
 function addRankRoomsToMode(mode, count) {
   const existing = getRankRoomsByMode(mode);
   const maxAllowed = config.MAX_RANK_ROOMS_PER_MODE || config.MAX_ROOMS_PER_MODE;
+
+  // ✅ Nếu đã đủ → KHÔNG tạo gì, tránh nhân đôi panel
+  if (existing.length >= count) {
+    return {
+      created: [],
+      requested: count,
+      capped: false,
+      currentTotal: existing.length,
+      maxAllowed,
+    };
+  }
+
+  const needToAdd = count - existing.length;
   const usedIndices = new Set(existing.map(r => r.index));
   const canAdd = Math.max(0, maxAllowed - existing.length);
-  const toAdd = Math.min(count, canAdd);
+  const toAdd = Math.min(needToAdd, canAdd);
   const created = [];
   let idx = 1;
   while (created.length < toAdd && idx <= maxAllowed) {
@@ -379,8 +415,15 @@ function addRankRoomsToMode(mode, count) {
     }
     idx++;
   }
-  return { created, requested: count, capped: count > toAdd, currentTotal: existing.length + created.length, maxAllowed };
+  return {
+    created,
+    requested: count,
+    capped: needToAdd > toAdd,
+    currentTotal: existing.length + created.length,
+    maxAllowed,
+  };
 }
+
 function removeRankRoom(roomId) {
   const room = rooms.get(roomId);
   if (!room || !room.isRank) return { ok: false, reason: 'not_found' };
@@ -636,7 +679,6 @@ function extractAllKDAResult(text, room, opts = {}) {
 
     // Tạo tất cả cặp (name, KDA) với score
     // Top quan trọng hơn (hệ số 10), Left phụ (hệ số 1)
-    // → tự động match đúng dù name bên trái hay phải KDA
     const pairs = [];
     for (const nameC of overlayNameCandidates) {
       for (let kdaIdx = 0; kdaIdx < overlayKdaCandidates.length; kdaIdx++) {
