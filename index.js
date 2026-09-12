@@ -1085,7 +1085,20 @@ client.on('messageCreate', async (message) => {
 });
 
 // ===== INTERACTION HANDLER =====
+// ✅ Chặn duplicate: nếu 1 interaction.id bị bắn/xử lý nhiều lần (do gateway
+// resend lúc reconnect, hoặc 2 instance bot chạy chồng lúc redeploy) thì chỉ
+// xử lý lần đầu, các lần sau bỏ qua để không render/gửi panel 2 lần.
+const processedInteractionIds = new Set();
+const INTERACTION_DEDUPE_TTL_MS = 5 * 60 * 1000;
+
 client.on('interactionCreate', async (interaction) => {
+  if (processedInteractionIds.has(interaction.id)) {
+    console.warn(`⚠️ Interaction ${interaction.id} đã được xử lý trước đó, bỏ qua (chống duplicate).`);
+    return;
+  }
+  processedInteractionIds.add(interaction.id);
+  setTimeout(() => processedInteractionIds.delete(interaction.id), INTERACTION_DEDUPE_TTL_MS);
+
   try {
     if (interaction.isChatInputCommand()) await handleSlashCommand(interaction);
     else if (interaction.isButton()) await handleButton(interaction);
