@@ -300,32 +300,70 @@ setInterval(() => {
 }, 10 * 60 * 1000);
 
 // ===== SINGLE-INSTANCE LOCK =====
+// ⚠️ Trong container (Docker/Wispbyte/Pterodactyl), PID KHÔNG ổn định giữa các
+// lần restart. PID nhỏ như 40 có thể là shell wrapper của entrypoint ở lần
+// chạy mới → nếu kill theo lock file cũ, bot sẽ tự sát (exit 143, crash loop).
+// → Trong container: chỉ ghi lock, KHÔNG kill.
+// → Ngoài container (local): kill PID cũ nếu lock còn mới (< 5 phút).
 const INSTANCE_LOCK_FILE = path.join(__dirname, '.bot-instance.lock');
+const LOCK_STALE_MS = 5 * 60 * 1000;
 
 function isProcessAlive(pid) {
   try { process.kill(pid, 0); return true; }
   catch (err) { return false; }
 }
 
+function isContainerized() {
+  if (process.env.DISABLE_INSTANCE_LOCK === '1') return true;
+  if (process.env.WISPBYTE || process.env.PTERODACTYL || process.env.DOCKER_CONTAINER) return true;
+  try {
+    if (fs.existsSync('/.dockerenv')) return true;
+    const cgroup = fs.readFileSync('/proc/1/cgroup', 'utf8');
+    if (cgroup.includes('docker') || cgroup.includes('kubepods') || cgroup.includes('containerd')) return true;
+  } catch (_) {}
+  return false;
+}
+
 async function acquireSingleInstanceLock() {
   try {
+    if (isContainerized()) {
+      fs.writeFileSync(INSTANCE_LOCK_FILE, `${process.pid}|${Date.now()}`);
+      console.log('ℹ️ Container detected → skip instance lock kill (an toàn cho Wispbyte/Docker).');
+      return;
+    }
+
     if (fs.existsSync(INSTANCE_LOCK_FILE)) {
-      const raw = fs.readFileSync(INSTANCE_LOCK_FILE, 'utf8').trim();
-      const oldPid = parseInt(raw, 10);
-      if (oldPid && oldPid !== process.pid && isProcessAlive(oldPid)) {
-        console.warn(`⚠️ Phát hiện tiến trình bot cũ (PID ${oldPid}) vẫn đang chạy → kill để tránh duplicate.`);
-        try { process.kill(oldPid, 'SIGTERM'); } catch (err) { /* ignore */ }
+      let oldPid = 0;
+      let oldAge = Infinity;
+      try {
+        const raw = fs.readFileSync(INSTANCE_LOCK_FILE, 'utf8').trim();
+        if (raw.includes('|')) {
+          const [p, ts] = raw.split('|');
+          oldPid = parseInt(p, 10);
+          oldAge = Date.now() - parseInt(ts, 10);
+        } else {
+          oldPid = parseInt(raw, 10);
+          try { oldAge = Date.now() - fs.statSync(INSTANCE_LOCK_FILE).mtimeMs; } catch (_) {}
+        }
+      } catch (_) {}
+
+      const isFresh = oldAge < LOCK_STALE_MS;
+      if (oldPid && oldPid !== process.pid && isFresh && isProcessAlive(oldPid)) {
+        console.warn(`⚠️ Phát hiện tiến trình bot cũ (PID ${oldPid}, ${Math.round(oldAge/1000)}s) → kill.`);
+        try { process.kill(oldPid, 'SIGTERM'); } catch (_) {}
         for (let i = 0; i < 20 && isProcessAlive(oldPid); i++) {
           await new Promise((r) => setTimeout(r, 250));
         }
         if (isProcessAlive(oldPid)) {
           console.warn(`⚠️ PID ${oldPid} không tự thoát, force kill (SIGKILL).`);
-          try { process.kill(oldPid, 'SIGKILL'); } catch (err) { /* ignore */ }
+          try { process.kill(oldPid, 'SIGKILL'); } catch (_) {}
           await new Promise((r) => setTimeout(r, 500));
         }
+      } else if (oldPid && !isFresh) {
+        console.warn(`ℹ️ Lock file cũ (${Math.round(oldAge/1000)}s) → bỏ qua, không kill.`);
       }
     }
-    fs.writeFileSync(INSTANCE_LOCK_FILE, String(process.pid));
+    fs.writeFileSync(INSTANCE_LOCK_FILE, `${process.pid}|${Date.now()}`);
   } catch (err) {
     console.error('⚠️ Không thể set up single-instance lock:', err.message);
   }
@@ -333,9 +371,10 @@ async function acquireSingleInstanceLock() {
 
 function releaseSingleInstanceLock() {
   try {
-    if (fs.existsSync(INSTANCE_LOCK_FILE) && fs.readFileSync(INSTANCE_LOCK_FILE, 'utf8').trim() === String(process.pid)) {
-      fs.unlinkSync(INSTANCE_LOCK_FILE);
-    }
+    if (!fs.existsSync(INSTANCE_LOCK_FILE)) return;
+    const raw = fs.readFileSync(INSTANCE_LOCK_FILE, 'utf8').trim();
+    const pid = parseInt(raw.split('|')[0], 10);
+    if (pid === process.pid) fs.unlinkSync(INSTANCE_LOCK_FILE);
   } catch (err) { /* ignore */ }
 }
 
@@ -603,7 +642,7 @@ async function logAdmin(text) {
   if (ch) await ch.send(text).catch(() => {});
 }
 
-// ✅ FIX DUPLICATE: helper xoá panel cũ trên Discord trước khi render panel mới
+// ✅ FIX DUPLICATE: xoá panel cũ trên Discord trước khi render panel mới
 async function deleteOldPanel(room) {
   if (!room || !room.panelChannelId || !room.panelMessageId) return;
   try {
@@ -616,7 +655,7 @@ async function deleteOldPanel(room) {
   }
 }
 
-// ✅ FIX DUPLICATE: xoá panel mồ côi (không khớp với panelMessageId của bất kỳ room nào)
+// ✅ FIX DUPLICATE: dọn panel mồ côi (không khớp panelMessageId của room nào)
 async function cleanupOrphanPanels(channelId, expectedMessageIds) {
   if (!channelId) return 0;
   try {
@@ -1677,7 +1716,7 @@ async function handleSlashCommand(interaction) {
     if (roomsOfMode.length === 0) return interaction.reply({ content: `❌ Chế độ **${mode.toUpperCase()}** chưa có phòng nào.`, ephemeral: true });
     await interaction.reply({ content: `✅ Đang đăng ${roomsOfMode.length} panel **${mode.toUpperCase()}**...${note}`, ephemeral: true });
     for (const room of roomsOfMode) {
-      await deleteOldPanel(room);       // ✅ FIX DUPLICATE: xoá panel cũ trên Discord
+      await deleteOldPanel(room);       // ✅ FIX DUPLICATE
       room.panelChannelId = null;
       room.panelMessageId = null;
       await renderRoom(room, interaction.channel);
@@ -1702,7 +1741,7 @@ async function handleSlashCommand(interaction) {
     if (roomsOfMode.length === 0) return interaction.reply({ content: `❌ Chế độ **${mode.toUpperCase()} Rank** chưa có phòng nào.`, ephemeral: true });
     await interaction.reply({ content: `✅ Đang đăng ${roomsOfMode.length} panel rank **${mode.toUpperCase()}**...${note}`, ephemeral: true });
     for (const room of roomsOfMode) {
-      await deleteOldPanel(room);       // ✅ FIX DUPLICATE: xoá panel cũ trên Discord
+      await deleteOldPanel(room);       // ✅ FIX DUPLICATE
       room.panelChannelId = null;
       room.panelMessageId = null;
       await renderRoom(room, interaction.channel);
