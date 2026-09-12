@@ -680,6 +680,43 @@ async function cleanupOrphanPanels(channelId, expectedMessageIds) {
   }
 }
 
+// ✅ FIX DUPLICATE TRIỆT ĐỂ: xoá SẠCH mọi tin bot trong channel (trừ panel cần bảo vệ)
+async function purgeChannelBotMessages(channel, protectedPanelIds = new Set()) {
+  let total = 0;
+  try {
+    for (let round = 0; round < 10; round++) {
+      const msgs = await channel.messages.fetch({ limit: 100 });
+      if (msgs.size === 0) break;
+
+      const botMsgs = msgs.filter(m => m.author.id === client.user.id && !protectedPanelIds.has(m.id));
+      if (botMsgs.size === 0) break;
+
+      const now = Date.now();
+      const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
+      const recent = botMsgs.filter(m => now - m.createdTimestamp < TWO_WEEKS_MS);
+      const old = botMsgs.filter(m => now - m.createdTimestamp >= TWO_WEEKS_MS);
+
+      if (recent.length === 1) {
+        await recent[0].delete().catch(() => {});
+        total += 1;
+      } else if (recent.length > 1) {
+        const deleted = await channel.bulkDelete(recent, true).catch(() => new Map());
+        total += deleted.size;
+      }
+      for (const m of old) {
+        await m.delete().catch(() => {});
+        total += 1;
+      }
+
+      if (msgs.size < 100) break;
+    }
+    console.log(`🧹 purgeChannelBotMessages[${channel.id}]: xoá ${total} tin bot.`);
+  } catch (err) {
+    console.error('❌ purgeChannelBotMessages lỗi:', err.message);
+  }
+  return total;
+}
+
 async function renderHiddenRoom(room) {
   const embed = roomEmbed(room);
   const rowsUi = roomActionRows(room);
@@ -1742,11 +1779,29 @@ async function handleSlashCommand(interaction) {
     }
     const roomsOfMode = getRoomsByMode(mode);
     if (roomsOfMode.length === 0) return interaction.reply({ content: `❌ Chế độ **${mode.toUpperCase()}** chưa có phòng nào.`, ephemeral: true });
-    await interaction.reply({ content: `✅ Đang đăng ${roomsOfMode.length} panel **${mode.toUpperCase()}**...${note}`, ephemeral: true });
+
+    // ✅ Reset panel id trước khi dọn channel
     for (const room of roomsOfMode) {
-      await deleteOldPanel(room);
       room.panelChannelId = null;
       room.panelMessageId = null;
+    }
+
+    // ✅ Bảo vệ panel của room KHÁC trong cùng channel
+    const keepIds = new Set();
+    for (const r of getAllRooms()) {
+      if (roomsOfMode.includes(r)) continue;
+      if (r.panelChannelId === interaction.channel.id && r.panelMessageId) {
+        keepIds.add(r.panelMessageId);
+      }
+    }
+
+    await interaction.reply({ content: `✅ Đang dọn kênh + đăng ${roomsOfMode.length} panel **${mode.toUpperCase()}**...${note}`, ephemeral: true });
+
+    // ✅ Xoá SẠCH tin bot trong channel (fix panel mồ côi)
+    await purgeChannelBotMessages(interaction.channel, keepIds);
+    await new Promise(r => setTimeout(r, 1200));
+
+    for (const room of roomsOfMode) {
       await renderRoom(room, interaction.channel);
     }
     persistence.saveState(rooms, eloData);
@@ -1766,11 +1821,29 @@ async function handleSlashCommand(interaction) {
     }
     const roomsOfMode = getRankRoomsByMode(mode);
     if (roomsOfMode.length === 0) return interaction.reply({ content: `❌ Chế độ **${mode.toUpperCase()} Rank** chưa có phòng nào.`, ephemeral: true });
-    await interaction.reply({ content: `✅ Đang đăng ${roomsOfMode.length} panel rank **${mode.toUpperCase()}**...${note}`, ephemeral: true });
+
+    // ✅ Reset panel id trước khi dọn channel
     for (const room of roomsOfMode) {
-      await deleteOldPanel(room);
       room.panelChannelId = null;
       room.panelMessageId = null;
+    }
+
+    // ✅ Bảo vệ panel của room KHÁC trong cùng channel
+    const keepIds = new Set();
+    for (const r of getAllRooms()) {
+      if (roomsOfMode.includes(r)) continue;
+      if (r.panelChannelId === interaction.channel.id && r.panelMessageId) {
+        keepIds.add(r.panelMessageId);
+      }
+    }
+
+    await interaction.reply({ content: `✅ Đang dọn kênh + đăng ${roomsOfMode.length} panel rank **${mode.toUpperCase()}**...${note}`, ephemeral: true });
+
+    // ✅ Xoá SẠCH tin bot trong channel (fix panel mồ côi)
+    await purgeChannelBotMessages(interaction.channel, keepIds);
+    await new Promise(r => setTimeout(r, 1200));
+
+    for (const room of roomsOfMode) {
       await renderRoom(room, interaction.channel);
     }
     persistence.saveState(rooms, eloData);
