@@ -767,6 +767,7 @@ async function renderRoom(room, channel) {
   const embed = roomEmbed(room);
   const rowsUi = roomActionRows(room);
   try {
+    // 1. Có panelMessageId → edit thẳng
     if (room.panelMessageId && room.panelChannelId) {
       const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
       if (ch) {
@@ -785,6 +786,45 @@ async function renderRoom(room, channel) {
         }
       }
     }
+
+    // ✅ FIX DUPLICATE: không có id → tìm panel cũ trong 30 tin gần nhất
+    const searchChannel = channel
+      || (room.panelChannelId && await client.channels.fetch(room.panelChannelId).catch(() => null));
+    if (searchChannel) {
+      try {
+        const recent = await searchChannel.messages.fetch({ limit: 30 }).catch(() => new Map());
+        const roomTitleFragment = `Phòng ${room.mode.toUpperCase()}`;
+        const roomTitleExact = room.label;
+
+        // Tìm tất cả panel cũ của room này (dựa theo label chính xác)
+        const oldPanels = Array.from(recent.values()).filter((m) =>
+          m.author.id === client.user.id &&
+          m.embeds?.[0]?.title === roomTitleExact
+        );
+
+        if (oldPanels.length > 0) {
+          // Giữ cái mới nhất, xoá các cái cũ hơn (nếu có nhiều)
+          oldPanels.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+          const keep = oldPanels[0];
+
+          for (let i = 1; i < oldPanels.length; i++) {
+            await oldPanels[i].delete().catch(() => {});
+            console.log(`🗑️ Xoá panel dư của ${room.id}: ${oldPanels[i].id}`);
+          }
+
+          await keep.edit({ embeds: [embed], components: rowsUi }).catch(() => {});
+          room.panelChannelId = searchChannel.id;
+          room.panelMessageId = keep.id;
+          persistence.flushState(rooms, eloData);
+          console.log(`♻️ renderRoom[${room.id}]: tìm lại panel cũ (${keep.id}) và edit thay vì send mới.`);
+          return keep;
+        }
+      } catch (err) {
+        console.warn(`⚠️ Không tìm được panel cũ ${room.id}:`, err.message);
+      }
+    }
+
+    // 2. Chỉ send mới khi thực sự không có panel nào
     const msg = await channel.send({ embeds: [embed], components: rowsUi });
     room.panelChannelId = channel.id;
     room.panelMessageId = msg.id;
