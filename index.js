@@ -612,7 +612,8 @@ async function renderRoom(room, channel) {
     const msg = await channel.send({ embeds: [embed], components: rowsUi });
     room.panelChannelId = channel.id;
     room.panelMessageId = msg.id;
-    persistence.saveState(rooms, eloData);
+    // ✅ Flush NGAY để tránh mất panelMessageId nếu bot bị kill đột ngột
+    persistence.flushState(rooms, eloData);
     return msg;
   } catch (err) { console.error(`Lỗi render ${room.id}:`, err); return null; }
 }
@@ -791,15 +792,37 @@ async function repostPanelsForChannel(channelId, roomList) {
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) { console.error(`❌ Không tìm thấy kênh panel: ${channelId}`); return; }
 
+  // ✅ Xóa SẠCH mọi tin nhắn của bot (fetch tối đa 100, lặp nhiều lần nếu cần)
+  // để tránh duplicate khi server restart đột ngột.
   try {
-    const messages = await channel.messages.fetch({ limit: 50 });
-    const botMessages = messages.filter((m) => m.author.id === client.user.id);
-    if (botMessages.size > 0) {
-      await channel.bulkDelete(botMessages, true).catch(async () => {
-        for (const msg of botMessages.values()) await msg.delete().catch(() => {});
-      });
+    let deletedTotal = 0;
+    for (let round = 1; round <= 5; round++) {
+      const messages = await channel.messages.fetch({ limit: 100 });
+      const botMessages = messages.filter((m) => m.author.id === client.user.id);
+      if (botMessages.size === 0) break;
+
+      const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
+      const now = Date.now();
+      const recent = botMessages.filter((m) => now - m.createdTimestamp < TWO_WEEKS_MS);
+      const old = botMessages.filter((m) => now - m.createdTimestamp >= TWO_WEEKS_MS);
+
+      if (recent.size === 1) {
+        await recent.first().delete().catch(() => {});
+        deletedTotal += 1;
+      } else if (recent.size > 1) {
+        const deleted = await channel.bulkDelete(recent, true).catch(() => new Map());
+        deletedTotal += deleted.size;
+      }
+      for (const msg of old.values()) {
+        await msg.delete().catch(() => {});
+        deletedTotal += 1;
+      }
     }
+    if (deletedTotal > 0) console.log(`🧹 Dọn ${deletedTotal} tin bot cũ ở kênh ${channelId}`);
   } catch (err) { console.error(`⚠️ Không dọn được panel cũ:`, err.message); }
+
+  // Đợi 1s để Discord cập nhật cache trước khi post mới
+  await new Promise((r) => setTimeout(r, 1000));
 
   for (const room of roomList) {
     room.panelChannelId = null;
@@ -819,6 +842,11 @@ async function autoHealPanels() {
 
 client.once('ready', async () => {
   console.log(`Đã đăng nhập với tên ${client.user.tag}`);
+
+  // ✅ Đợi 3s cho kết nối Discord ổn định (tránh restart đột ngột gây duplicate panel)
+  console.log('⏳ Đợi 3s cho bot ổn định trước khi đăng panel...');
+  await new Promise((r) => setTimeout(r, 3000));
+
   await autoHealPanels();
 
   for (const room of getAllRooms()) {
