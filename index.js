@@ -740,13 +740,82 @@ async function renderHiddenRoom(room) {
   }
 }
 
-// ✅ FIX DUPLICATE RACE: in-flight lock + debounce cho renderRoom
-const renderingRooms = new Set();
-const lastRenderAt = new Map();
-const RENDER_DEBOUNCE_MS = 800;
-
+// ✅ FIX DUPLICATE TRIỆT ĐỂ: bỏ in-flight lock + debounce (gây race skip render),
+// thay bằng logic "luôn tìm panel cũ trong channel trước khi send mới".
 async function renderRoom(room, channel) {
   if (room.hidden) return renderHiddenRoom(room);
+
+  const embed = roomEmbed(room);
+  const rowsUi = roomActionRows(room);
+  const searchChannel = channel
+    || (room.panelChannelId && await client.channels.fetch(room.panelChannelId).catch(() => null));
+
+  // 1. Có panelMessageId → edit thẳng
+  if (room.panelMessageId && room.panelChannelId) {
+    const ch = await client.channels.fetch(room.panelChannelId).catch(() => null);
+    if (ch) {
+      const msg = await ch.messages.fetch(room.panelMessageId).catch(() => null);
+      if (msg) {
+        try {
+          await msg.edit({ embeds: [embed], components: rowsUi });
+          persistence.saveState(rooms, eloData);
+          return msg;
+        } catch (editErr) {
+          if (editErr.code === 10008) {
+            room.panelChannelId = null;
+            room.panelMessageId = null;
+          } else {
+            console.error(`⚠️ renderRoom[${room.id}] edit lỗi:`, editErr.message);
+          }
+        }
+      }
+    }
+  }
+
+  // 2. Không có id → tìm panel cũ trong channel theo title chính xác
+  if (searchChannel) {
+    try {
+      const recent = await searchChannel.messages.fetch({ limit: 50 }).catch(() => new Map());
+      const oldPanels = Array.from(recent.values()).filter((m) =>
+        m.author.id === client.user.id &&
+        m.embeds?.[0]?.title === room.label
+      );
+
+      if (oldPanels.length > 0) {
+        oldPanels.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+        const keep = oldPanels[0];
+
+        // Xoá các panel cũ hơn (nếu có nhiều)
+        for (let i = 1; i < oldPanels.length; i++) {
+          await oldPanels[i].delete().catch(() => {});
+          console.log(`🗑️ renderRoom[${room.id}]: xoá panel dư ${oldPanels[i].id}`);
+        }
+
+        // Edit panel mới nhất
+        await keep.edit({ embeds: [embed], components: rowsUi }).catch(() => {});
+        room.panelChannelId = searchChannel.id;
+        room.panelMessageId = keep.id;
+        persistence.flushState(rooms, eloData);
+        console.log(`♻️ renderRoom[${room.id}]: tìm lại panel cũ (${keep.id}) và edit.`);
+        return keep;
+      }
+    } catch (err) {
+      console.warn(`⚠️ renderRoom[${room.id}] tìm panel cũ lỗi:`, err.message);
+    }
+  }
+
+  // 3. Không tìm được panel nào → send mới
+  try {
+    const msg = await channel.send({ embeds: [embed], components: rowsUi });
+    room.panelChannelId = channel.id;
+    room.panelMessageId = msg.id;
+    persistence.flushState(rooms, eloData);
+    return msg;
+  } catch (err) {
+    console.error(`❌ renderRoom[${room.id}] send lỗi:`, err.message);
+    return null;
+  }
+}
 
   // ✅ Nếu room đang render → bỏ qua lần gọi chồng (race condition)
   if (renderingRooms.has(room.id)) {
