@@ -775,14 +775,24 @@ async function renderRoom(room, channel) {
     || (room.panelChannelId && await client.channels.fetch(room.panelChannelId).catch(() => null));
 
   if (searchChannel) {
-    try {
-      const recent = await searchChannel.messages.fetch({ limit: 50 }).catch(() => new Map());
+       try {
+      const recent = await searchChannel.messages.fetch({ limit: 100 }).catch(() => new Map());
       const oldPanels = Array.from(recent.values()).filter((m) => {
         if (m.author.id !== client.user.id) return false;
         const title = m.embeds?.[0]?.title || '';
-        // ✅ FIX: title có thể có emoji prefix (📋) → so sánh linh hoạt
-        return title === room.label || title.endsWith(room.label) || title.includes(room.label);
+        if (!title) return false;
+
+        // ✅ Regex linh hoạt: match theo mode + #index, chấp nhận mọi prefix/emoji
+        const modeStr = room.mode.toUpperCase();
+        const idxStr = `#${room.index}`;
+
+        if (room.isRank) {
+          return title.includes('Rank') && title.includes(modeStr) && title.includes(idxStr);
+        } else {
+          return !title.includes('Rank') && title.includes(modeStr) && title.includes(idxStr);
+        }
       });
+      console.log(`🔍 renderRoom[${room.id}]: fetch ${recent.size} tin, khớp ${oldPanels.length} panel.`);
 
       if (oldPanels.length > 0) {
         oldPanels.sort((a, b) => b.createdTimestamp - a.createdTimestamp);
@@ -999,6 +1009,26 @@ async function repostPanelsForChannel(channelId, roomList) {
   if (!channelId) return;
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) { console.error(`❌ Không tìm thấy kênh panel: ${channelId}`); return; }
+
+  // ✅ Dùng purge (xoá sạch 100 tin/lần, lặp tối đa 10 lần = tối đa 1000 tin)
+  try {
+    const deleted = await purgeChannelBotMessages(channel, new Set());
+    console.log(`🧹 repostPanelsForChannel[${channelId}]: dọn ${deleted} tin bot.`);
+  } catch (err) {
+    console.error(`⚠️ Không dọn được panel cũ:`, err.message);
+  }
+
+  if (roomList.length === 0) return;
+
+  // ✅ Chờ 1.5s để Discord cập nhật cache tin đã xoá
+  await new Promise((r) => setTimeout(r, 1500));
+
+  for (const room of roomList) {
+    room.panelChannelId = null;
+    room.panelMessageId = null;
+    await renderRoom(room, channel);
+  }
+}
 
   try {
     let deletedTotal = 0;
