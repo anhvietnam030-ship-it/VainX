@@ -698,14 +698,11 @@ async function renderHiddenRoom(room) {
 }
 
 // ===== QUEUE LOCK cho renderRoom =====
-// Mỗi room có 1 "hàng đợi" render. Nếu đang render → request sau ĐỢI request trước xong.
-// Đảm bảo không bao giờ có 2 request cùng fetch thấy channel trống → 2 lần send().
-const renderLocks = new Map(); // roomId → Promise
+const renderLocks = new Map();
 
 async function renderRoom(room, channel) {
   if (room.hidden) return renderHiddenRoom(room);
 
-  // ✅ Chờ render trước (nếu có) xong
   const prev = renderLocks.get(room.id);
   if (prev) {
     try { await prev; } catch (_) {}
@@ -820,6 +817,10 @@ function startWaitingBlink(room, channel) {
   if (room.timers.blink) return;
   room._rainbowIndex = 0;
   room.timers.blink = setInterval(() => {
+    // ✅ FIX BACKLOG: nếu đang có render chạy → skip blink lần này
+    // → không thêm task vào queue → user action không bị chờ
+    if (renderLocks.has(room.id)) return;
+
     room._blinkOn = !room._blinkOn;
     room._rainbowIndex = (room._rainbowIndex ?? 0) + 1;
     if (room._blinkOn) room._flashColor = FLASH_COLORS[Math.floor(Math.random() * FLASH_COLORS.length)];
